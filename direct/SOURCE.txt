@@ -18,29 +18,33 @@ Audio:
   commit 410d96855b5df5410ff591a90efeafa889119224.
 - Nuked OPL3 v1.8 in OPL2-compatible nine-voice mode by default.
 
-MCP / AI authoring + autonomous design evaluation (v0.9):
-- Persistent authoring still rewrites only THINGS, LINEDEFS, SIDEDEFS
-  and SECTORS while topology/BSP-derived map lumps stay unchanged.
-- v0.7 pause, exact P_Ticker stepping, telemetry and PNG frame capture
-  remain the observation layer; v0.8 bounded ticcmd input remains agency.
-- evaluator.js adds deterministic hard constraints and weighted scoring
-  over deaths, final health, damage, traversal, stuck actions, kills and pacing.
-- Optional AI-vision rubric scores can be attached to a stored trial so
-  atmosphere/readability/navigation judgments share one evaluation report
-  with engine telemetry instead of replacing the measurable metrics.
-- doom_run_design_trial resets the metric window, executes up to 16 bounded
-  input actions (700 world tics total), stores per-action before/after data,
-  calculates a score, and returns the final PNG for visual inspection.
-- doom_evaluate_playtest re-scores live telemetry or a stored trial, including
-  optional visual assessments and explicit reasons for failed criteria.
-- doom_get_trial_history and doom_compare_trials preserve up to 20 recent
-  in-process trials so authored WAD iterations can be ranked by the same goal.
-- Evaluation is advisory and playtest-only; it never mutates or serializes
-  level content. The final playable artifact remains an ordinary PWAD.
+MCP / AI closed-loop level authoring (v1.0):
+- v0.6 bounded persistent authoring still rewrites only THINGS, LINEDEFS,
+  SIDEDEFS and SECTORS while topology/BSP-derived map lumps stay unchanged.
+- v0.7 frame capture/telemetry/exact world-tic stepping, v0.8 bounded
+  ticcmd agency and v0.9 deterministic design-goal evaluation remain intact.
+- v1_server.js composes those layers into bounded design sessions rather
+  than embedding another hidden LLM or bypassing the MCP host's reasoning.
+- doom_begin_design_session checkpoints the current map as a baseline PWAD.
+- doom_run_authoring_iteration applies at most 12 allow-listed semantic edits,
+  exports an iteration PWAD, reloads that candidate as the fresh baseline,
+  then runs a deterministic trial from the restarted map and returns PNG + score.
+- Sessions are capped at eight iterations; each trial remains capped at
+  sixteen actions and 700 actual P_Ticker world tics.
+- doom_review_design_iteration attaches AI-vision rubric scores to the same
+  engine telemetry report. Evaluation never mutates authored content itself.
+- Every iteration is a real local PWAD checkpoint, so a previous candidate
+  or the session baseline can be restored before branching another revision.
+- doom_finalize_design_session selects an explicit/best passing checkpoint,
+  restores it and copies the ordinary playable PWAD to the requested final name.
+- Non-passing finalization requires an explicit force flag.
+- 127.0.0.1:3777/control remains authoring, :3778/playtest remains direct
+  playtest/vision, and :3779/orchestrate is the v1 compositional bridge.
 
-Loop:
-AI goal -> author -> deterministic trial -> telemetry score + final frame
--> vision rubric -> evaluate -> revise or accept -> PWAD export/reload.
+Closed loop:
+design goal -> bounded edit plan -> candidate PWAD checkpoint/reload
+-> autonomous deterministic trial -> telemetry + PNG -> vision/evaluation
+-> next bounded revision or restore -> passing candidate -> final PWAD.
 
 Shareware game data:
 - Redistributable DOOM shareware IWAD fetched from SDL archive during CI.
