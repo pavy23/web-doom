@@ -2,6 +2,8 @@
 // while intentionally providing a no-audio browser backend. This lets us
 // validate the engine/video/input port before implementing WebAudio.
 
+#include <string.h>
+
 #include "doomdef.h"
 #include "doomstat.h"
 #include "sounds.h"
