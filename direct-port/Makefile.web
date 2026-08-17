@@ -58,8 +58,14 @@ prepare-opl:
 	grep -q "OPL3_GenerateStream" choco_opl/opl_sdl.c
 
 webdoom.html: $(SOURCES) doom1.wad shell.html
-	$(CC) $(CFLAGS) $(SOURCES) -o $@ $(EMFLAGS) -lm
+	@rm -f emcc-build.log
+	@($(CC) $(CFLAGS) $(SOURCES) -o $@ $(EMFLAGS) -lm >emcc-build.log 2>&1) || { \
+		echo "===== Emscripten failure diagnostics ====="; \
+		tail -n 240 emcc-build.log; \
+		exit 1; \
+	}
+	@tail -n 40 emcc-build.log
 
 clean:
 	rm -rf choco_opl
-	rm -f webdoom.html webdoom.js webdoom.wasm webdoom.data
+	rm -f webdoom.html webdoom.js webdoom.wasm webdoom.data emcc-build.log
