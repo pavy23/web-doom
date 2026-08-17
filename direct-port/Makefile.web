@@ -19,6 +19,9 @@ VISUAL_PRE_JS := $(GITHUB_WORKSPACE)/direct-port/authoring_visual_bridge.js
 PLAYTEST_SOURCE := $(GITHUB_WORKSPACE)/direct-port/doom_playtest.c
 PLAYTEST_PATCH := $(GITHUB_WORKSPACE)/direct-port/patch_playtest_ticker.py
 PLAYTEST_PRE_JS := $(GITHUB_WORKSPACE)/direct-port/playtest_bridge.js
+AGENT_SOURCE := $(GITHUB_WORKSPACE)/direct-port/doom_agent_input.c
+AGENT_PATCH := $(GITHUB_WORKSPACE)/direct-port/patch_agent_input.py
+AGENT_PRE_JS := $(GITHUB_WORKSPACE)/direct-port/agent_input_bridge.js
 RELOAD_SOURCE := $(GITHUB_WORKSPACE)/direct-port/doom_reload.c
 RELOAD_PATCH := $(GITHUB_WORKSPACE)/direct-port/patch_control_reload.py
 RELOAD_PRE_JS := $(GITHUB_WORKSPACE)/direct-port/authoring_reload_bridge.js
@@ -33,7 +36,7 @@ CFLAGS := -O2 -w -std=gnu89 -DNORMALUNIX -D__EMSCRIPTEN__ $(PORT_FLAGS) -I. -Ich
 
 SOURCES := \
   doomdef.c doomstat.c dstrings.c \
-  i_system.c i_sound.c i_video.c i_net.c doom_control.c doom_linedefs.c doom_visuals.c doom_playtest.c doom_reload.c \
+  i_system.c i_sound.c i_video.c i_net.c doom_control.c doom_linedefs.c doom_visuals.c doom_playtest.c doom_agent_input.c doom_reload.c \
   choco_opl/i_oplmusic.c choco_opl/memio.c choco_opl/mus2mid.c \
   choco_opl/midifile.c choco_opl/opl.c choco_opl/opl_queue.c \
   choco_opl/opl_sdl.c choco_opl/opl3.c \
@@ -61,6 +64,7 @@ EMFLAGS := $(PORT_FLAGS) \
   --pre-js $(LINEDEF_PRE_JS) \
   --pre-js $(VISUAL_PRE_JS) \
   --pre-js $(PLAYTEST_PRE_JS) \
+  --pre-js $(AGENT_PRE_JS) \
   --preload-file doom1.wad@doom1.wad \
   --shell-file shell.html
 
@@ -90,6 +94,9 @@ prepare-control:
 	test -f $(PLAYTEST_SOURCE)
 	test -f $(PLAYTEST_PATCH)
 	test -f $(PLAYTEST_PRE_JS)
+	test -f $(AGENT_SOURCE)
+	test -f $(AGENT_PATCH)
+	test -f $(AGENT_PRE_JS)
 	test -f $(RELOAD_SOURCE)
 	test -f $(RELOAD_PATCH)
 	test -f $(RELOAD_PRE_JS)
@@ -97,11 +104,13 @@ prepare-control:
 	cp $(LINEDEF_SOURCE) doom_linedefs.c
 	cp $(VISUAL_SOURCE) doom_visuals.c
 	cp $(PLAYTEST_SOURCE) doom_playtest.c
+	cp $(AGENT_SOURCE) doom_agent_input.c
 	cp $(RELOAD_SOURCE) doom_reload.c
 	python3 $(LINEDEF_PATCH) doom_control.c
 	python3 $(VISUAL_PATCH) doom_control.c
 	python3 $(RELOAD_PATCH) doom_control.c
 	python3 $(PLAYTEST_PATCH) "$(CURDIR)"
+	python3 $(AGENT_PATCH) "$(CURDIR)"
 	grep -q "doomctl_get_state_json" doom_control.c
 	grep -q "doomctl_spawn_enemy" doom_control.c
 	grep -q "doomctl_remove_nearest_enemy_json" doom_control.c
@@ -128,8 +137,13 @@ prepare-control:
 	grep -q "doomctl_set_playtest_paused" doom_playtest.c
 	grep -q "doomctl_step_playtest_tics" doom_playtest.c
 	grep -q "doomctl_get_playtest_telemetry_json" doom_playtest.c
+	grep -q "doomctl_agent_after_world_tic" doom_playtest.c
 	grep -q "doomctl_playtest_after_world_tic" p_tick.c
 	grep -q "doomctl_consume_world_step" p_tick.c
+	grep -q "doomctl_queue_agent_input" doom_agent_input.c
+	grep -q "doomctl_apply_agent_ticcmd" doom_agent_input.c
+	grep -q "doomctl_get_agent_input_status_json" doom_agent_input.c
+	grep -q "doomctl_apply_agent_ticcmd(cmd)" g_game.c
 	grep -q "doomctl_load_pwad_json" doom_reload.c
 	grep -q "doomctl_reload_current_map_json" doom_reload.c
 	grep -q "W_AddFile" doom_reload.c
@@ -149,7 +163,7 @@ validate-mcp:
 	"$$EMSDK_NODE" --check $(MCP_PLAYTEST_SERVER)
 	"$$EMSDK_NODE" -e "JSON.parse(require('fs').readFileSync('$(MCP_PACKAGE)', 'utf8')); console.error('MCP package.json valid')"
 	npm install --prefix $(MCP_DIR) --ignore-scripts --no-audit --no-fund
-	"$$EMSDK_NODE" --input-type=module -e "import { pathToFileURL } from 'node:url'; const m = await import(pathToFileURL('$(MCP_PLAYTEST_SERVER)').href); const s = m.createMcpServer(); if (!s) process.exit(1); console.error('MCP v0.7 authoring + playtest import/self-test passed')"
+	"$$EMSDK_NODE" --input-type=module -e "import { pathToFileURL } from 'node:url'; const m = await import(pathToFileURL('$(MCP_PLAYTEST_SERVER)').href); const s = m.createMcpServer(); if (!s) process.exit(1); console.error('MCP v0.8 authoring + autonomous playtest import/self-test passed')"
 	grep -q "doom_get_state" $(MCP_SERVER)
 	grep -q "doom_get_enemies" $(MCP_SERVER)
 	grep -q "doom_get_sectors" $(MCP_SERVER)
@@ -174,6 +188,10 @@ validate-mcp:
 	grep -q "doom_get_playtest_telemetry" $(MCP_PLAYTEST_SERVER)
 	grep -q "doom_reset_playtest_metrics" $(MCP_PLAYTEST_SERVER)
 	grep -q "doom_capture_frame" $(MCP_PLAYTEST_SERVER)
+	grep -q "doom_agent_input_status" $(MCP_PLAYTEST_SERVER)
+	grep -q "doom_cancel_agent_input" $(MCP_PLAYTEST_SERVER)
+	grep -q "doom_run_input" $(MCP_PLAYTEST_SERVER)
+	grep -q "doom_run_input_sequence" $(MCP_PLAYTEST_SERVER)
 	grep -q "type: 'image'" $(MCP_PLAYTEST_SERVER)
 	grep -q "serveStdio" $(MCP_PLAYTEST_SERVER)
 
@@ -188,5 +206,5 @@ webdoom.html: $(SOURCES) doom1.wad shell.html
 
 clean:
 	rm -rf choco_opl
-	rm -f doom_control.c doom_linedefs.c doom_visuals.c doom_playtest.c doom_reload.c
+	rm -f doom_control.c doom_linedefs.c doom_visuals.c doom_playtest.c doom_agent_input.c doom_reload.c
 	rm -f webdoom.html webdoom.js webdoom.wasm webdoom.data emcc-build.log
