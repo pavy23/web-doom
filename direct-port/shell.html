@@ -39,7 +39,7 @@
       <canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
       <div id="hud">
         <div id="topbar">
-          <div class="badge">LINUXDOOM 1.10 · DIRECT WEBASSEMBLY PORT</div>
+          <div class="badge">LINUXDOOM 1.10 · DIRECT WASM · GENMIDI FM</div>
           <div id="controls">
             <button id="restart" type="button">RESTART</button>
             <button id="fullscreen" type="button">FULLSCREEN</button>
@@ -86,6 +86,10 @@
       try {
         if (typeof SDL2 !== 'undefined' && SDL2.audioContext && SDL2.audioContext.state !== 'running') {
           const result = SDL2.audioContext.resume();
+          if (result && typeof result.catch === 'function') result.catch(console.error);
+        }
+        if (globalThis.__doomMusicContext && globalThis.__doomMusicContext.state !== 'running') {
+          const result = globalThis.__doomMusicContext.resume();
           if (result && typeof result.catch === 'function') result.catch(console.error);
         }
       } catch (err) {
@@ -136,9 +140,6 @@
       startButton.disabled = true;
       statusEl.textContent = 'Starting DOOM + audio…';
 
-      // callMain runs synchronously until LinuxDOOM reaches our first Asyncify
-      // yield.  That means SDL/Mixer creates the WebAudio context while this
-      // click gesture is still active, satisfying browser autoplay policy.
       try {
         const result = Module.callMain([]);
         resumeAudioContext();
@@ -157,8 +158,6 @@
       }
     });
 
-    // Extra resilience for browsers that suspend audio after tab/background
-    // transitions: any later interaction attempts to resume it again.
     for (const eventName of ['pointerdown', 'keydown', 'touchstart']) {
       window.addEventListener(eventName, resumeAudioContext, { passive: true });
     }
@@ -177,6 +176,7 @@
     document.getElementById('restart').addEventListener('click', () => location.reload());
   </script>
 
+  <script src="opl_music.js"></script>
   {{{ SCRIPT }}}
 </body>
 </html>
