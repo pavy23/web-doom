@@ -1,6 +1,8 @@
 import http from 'node:http';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { Readable } from 'node:stream';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { WebSocket, WebSocketServer } from 'ws';
@@ -11,6 +13,8 @@ const PORT = Number(process.env.DOOM_MCP_PORT || 3777);
 const UPSTREAM = new URL(
   process.env.DOOM_MCP_UPSTREAM || 'https://pavy23.github.io/web-doom/direct/'
 );
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const EXPORT_DIR = path.resolve(process.env.DOOM_MCP_EXPORT_DIR || path.join(MODULE_DIR, 'exports'));
 
 let browserSocket = null;
 let nextRequestId = 1;
@@ -85,7 +89,8 @@ async function proxyPublishedGame(req, res) {
         ok: true,
         browserConnected: Boolean(bridgeConnected()),
         playUrl: `http://${HOST}:${PORT}/`,
-        upstream: UPSTREAM.href
+        upstream: UPSTREAM.href,
+        exportDir: EXPORT_DIR
       });
       res.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',
@@ -104,7 +109,7 @@ async function proxyPublishedGame(req, res) {
     const upstreamResponse = await fetch(upstreamUrl, {
       redirect: 'follow',
       cache: 'no-store',
-      headers: { 'user-agent': 'web-doom-mcp/0.2' }
+      headers: { 'user-agent': 'web-doom-mcp/0.3' }
     });
 
     res.statusCode = upstreamResponse.status;
@@ -179,6 +184,7 @@ export function startBridge() {
 
   httpServer.listen(PORT, HOST, () => {
     console.error(`DOOM MCP: local game bridge at http://${HOST}:${PORT}/`);
+    console.error(`DOOM MCP: PWAD exports will be written to ${EXPORT_DIR}`);
   });
 
   return httpServer;
@@ -210,12 +216,32 @@ function filteredEnemies(state, { visibleOnly = false, maxDistance, limit = 32 }
     .slice(0, limit);
 }
 
+function filteredSectors(state, { maxDistance, limit = 64 } = {}) {
+  if (!state?.ready || !Array.isArray(state.sectors)) return [];
+
+  return state.sectors
+    .filter(sector => maxDistance == null || sector.distance <= maxDistance)
+    .sort((a, b) => {
+      if (a.current !== b.current) return a.current ? -1 : 1;
+      return a.distance - b.distance;
+    })
+    .slice(0, limit);
+}
+
+function safeExportFilename(requested, episode, mapNumber) {
+  const fallback = `ai_E${episode}M${mapNumber}.wad`;
+  const raw = String(requested || fallback).trim() || fallback;
+  const base = raw.toLowerCase().endsWith('.wad') ? raw : `${raw}.wad`;
+  const safe = base.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^\.+/, '');
+  return safe || fallback;
+}
+
 export function createMcpServer() {
   const server = new McpServer(
-    { name: 'web-doom-control', version: '0.2.0' },
+    { name: 'web-doom-control', version: '0.3.0' },
     {
       instructions:
-        'Use doom_get_state or doom_get_enemies before mutating the game. The browser must be open through the local bridge URL and the game must be started.'
+        'Use read tools before mutating the game. Authoring mutations are journaled and can be exported with doom_export_pwad. The browser must be open through the local bridge URL and the game must be started.'
     }
   );
 
@@ -230,7 +256,8 @@ export function createMcpServer() {
     async () => jsonResult({
       connected: Boolean(bridgeConnected()),
       playUrl: `http://${HOST}:${PORT}/`,
-      upstream: UPSTREAM.href
+      upstream: UPSTREAM.href,
+      exportDir: EXPORT_DIR
     })
   );
 
@@ -238,7 +265,7 @@ export function createMcpServer() {
     'doom_get_state',
     {
       title: 'Get live DOOM state',
-      description: 'Read the current map, player stats and live enemies from the running LinuxDOOM simulation.',
+      description: 'Read the current map, current sector, player stats and live enemies from the running LinuxDOOM simulation.',
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true }
     },
@@ -282,10 +309,61 @@ export function createMcpServer() {
   );
 
   server.registerTool(
+    'doom_get_sectors',
+    {
+      title: 'Inspect DOOM sectors',
+      description: 'Read runtime sectors with floor/ceiling heights, light level, special, tag, approximate sector origin and distance from the player. Current sector is returned first.',
+      inputSchema: z.object({
+        maxDistance: z.number().min(0).max(32768).optional(),
+        limit: z.number().int().min(1).max(256).optional()
+      }),
+      annotations: { readOnlyHint: true }
+    },
+    async ({ maxDistance, limit = 64 }) => {
+      try {
+        const state = await bridgeCall('get_sectors', { limit: 256 });
+        const sectors = filteredSectors(state, { maxDistance, limit });
+        return jsonResult({
+          ready: Boolean(state?.ready),
+          sectorCount: state?.sectorCount,
+          currentSector: state?.currentSector,
+          filters: { maxDistance: maxDistance ?? null, limit },
+          count: sectors.length,
+          sectors
+        });
+      } catch (error) {
+        return toolError(error);
+      }
+    }
+  );
+
+  server.registerTool(
+    'doom_set_sector_light',
+    {
+      title: 'Set DOOM sector light',
+      description: 'Set a sector light level from 0 to 255. The live change is also recorded in the authoring ChangeSet for later PWAD export.',
+      inputSchema: z.object({
+        sector: z.number().int().min(0).max(4095),
+        light: z.number().int().min(0).max(255)
+      }),
+      annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false }
+    },
+    async ({ sector, light }) => {
+      try {
+        const result = await bridgeCall('set_sector_light', { sector, light });
+        if (result.light < 0) throw new Error(`Engine rejected sector light edit with code ${result.light}`);
+        return jsonResult({ sector, light: result.light, journaled: true });
+      } catch (error) {
+        return toolError(error);
+      }
+    }
+  );
+
+  server.registerTool(
     'doom_heal',
     {
       title: 'Heal DOOM player',
-      description: 'Add health to the current player, capped at 200.',
+      description: 'Add health to the current player, capped at 200. This is a play/debug mutation and is not part of PWAD authoring export.',
       inputSchema: z.object({
         amount: z.number().int().min(1).max(200)
       })
@@ -305,7 +383,7 @@ export function createMcpServer() {
     'doom_give_ammo',
     {
       title: 'Give DOOM ammunition',
-      description: 'Give bullets, shells, cells or rockets to the current player, respecting the current max-ammo limit.',
+      description: 'Give bullets, shells, cells or rockets to the current player, respecting max ammo. This is not exported to PWAD.',
       inputSchema: z.object({
         type: z.enum(['bullets', 'shells', 'cells', 'rockets']),
         amount: z.number().int().min(1).max(1000)
@@ -329,7 +407,7 @@ export function createMcpServer() {
     'doom_teleport',
     {
       title: 'Teleport DOOM player',
-      description: 'Move the current player to integer map coordinates using Doom\'s own collision-aware P_TeleportMove logic.',
+      description: 'Move the current player to integer map coordinates using Doom collision-aware P_TeleportMove logic. Player movement is not exported to PWAD.',
       inputSchema: z.object({
         x: z.number().int().min(-32768).max(32767),
         y: z.number().int().min(-32768).max(32767)
@@ -351,7 +429,7 @@ export function createMcpServer() {
     'doom_spawn_enemy',
     {
       title: 'Spawn enemies in front of the DOOM player',
-      description: 'Spawn one to eight Episode-1-safe monsters in a fan in front of the player. Doom collision checks reject blocked spawn positions.',
+      description: 'Spawn one to eight Episode-1-safe monsters in front of the player. Successful spawns are journaled as THINGS edits for PWAD export.',
       inputSchema: z.object({
         type: z.enum(spawnableEnemyTypes),
         count: z.number().int().min(1).max(8).optional(),
@@ -374,7 +452,8 @@ export function createMcpServer() {
           requested: count,
           spawned: result.spawned,
           rejectedByCollision: count - result.spawned,
-          distance
+          distance,
+          journaled: result.spawned > 0
         });
       } catch (error) {
         return toolError(error);
@@ -386,7 +465,7 @@ export function createMcpServer() {
     'doom_remove_nearest_enemy',
     {
       title: 'Remove nearest DOOM enemy',
-      description: 'Remove the nearest matching live enemy using Doom actor removal. Optionally limit the operation to enemies currently visible in the forward view.',
+      description: 'Remove the nearest matching live enemy. Original map enemies are journaled as THINGS removals; removing an AI-spawned enemy cancels that pending spawn.',
       inputSchema: z.object({
         visibleOnly: z.boolean().optional(),
         maxDistance: z.number().int().min(0).max(8192).optional()
@@ -401,6 +480,72 @@ export function createMcpServer() {
         });
         if (result.error) throw new Error(result.error);
         return jsonResult(result);
+      } catch (error) {
+        return toolError(error);
+      }
+    }
+  );
+
+  server.registerTool(
+    'doom_get_changeset',
+    {
+      title: 'Inspect DOOM authoring ChangeSet',
+      description: 'Read the persistent authoring edits accumulated for the current map: sector light changes plus spawned and removed map things.',
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: true }
+    },
+    async () => {
+      try {
+        return jsonResult(await bridgeCall('get_changeset'));
+      } catch (error) {
+        return toolError(error);
+      }
+    }
+  );
+
+  server.registerTool(
+    'doom_export_pwad',
+    {
+      title: 'Export current AI-authored DOOM map as PWAD',
+      description: 'Build a PWAD override for the current ExMy map from the original map lumps plus the authoring ChangeSet, then save the .wad file to the local MCP exports directory.',
+      inputSchema: z.object({
+        filename: z.string().min(1).max(120).optional()
+      }),
+      annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: false }
+    },
+    async ({ filename } = {}) => {
+      try {
+        const changeset = await bridgeCall('get_changeset');
+        if (!changeset?.ready) throw new Error('DOOM map is not ready for export');
+
+        const safeName = safeExportFilename(filename, changeset.episode, changeset.map);
+        const exported = await bridgeCall('export_pwad', { filename: safeName }, 15000);
+        if (!exported?.base64 || exported.size <= 0) {
+          throw new Error(exported?.error || 'Browser did not return PWAD bytes');
+        }
+
+        const bytes = Buffer.from(exported.base64, 'base64');
+        if (bytes.length !== exported.size) {
+          throw new Error(`PWAD size mismatch: browser=${exported.size}, decoded=${bytes.length}`);
+        }
+
+        await mkdir(EXPORT_DIR, { recursive: true });
+        const outputPath = path.join(EXPORT_DIR, safeName);
+        await writeFile(outputPath, bytes);
+
+        return jsonResult({
+          exported: true,
+          filename: safeName,
+          path: outputPath,
+          bytes: bytes.length,
+          episode: changeset.episode,
+          map: changeset.map,
+          changes: {
+            sectorLights: changeset.sectorLightCount,
+            spawnedThings: changeset.spawnCount,
+            removedThings: changeset.removeCount
+          }
+        });
       } catch (error) {
         return toolError(error);
       }
