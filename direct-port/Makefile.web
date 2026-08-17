@@ -70,8 +70,10 @@ validate-mcp:
 	@test -n "$(GITHUB_WORKSPACE)" || (echo "GITHUB_WORKSPACE is required" && false)
 	test -f $(MCP_SERVER)
 	test -f $(MCP_PACKAGE)
-	node --check $(MCP_SERVER)
-	node -e "JSON.parse(require('fs').readFileSync('$(MCP_PACKAGE)', 'utf8')); console.error('MCP package.json valid')"
+	@test -n "$$EMSDK_NODE" || (echo "EMSDK_NODE is required" && false)
+	chmod +x "$$EMSDK_NODE"
+	"$$EMSDK_NODE" --check $(MCP_SERVER)
+	"$$EMSDK_NODE" -e "JSON.parse(require('fs').readFileSync('$(MCP_PACKAGE)', 'utf8')); console.error('MCP package.json valid')"
 	grep -q "doom_get_state" $(MCP_SERVER)
 	grep -q "serveStdio" $(MCP_SERVER)
 
