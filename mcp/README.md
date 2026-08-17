@@ -1,10 +1,10 @@
-# Web DOOM MCP Control Plane
+# Web DOOM MCP Authoring Plane
 
-This directory contains the local MCP control layer for the direct LinuxDOOM WebAssembly port.
+This directory contains the local MCP authoring/control layer for the direct LinuxDOOM WebAssembly port.
 
-It connects an MCP client (Claude Code, Cursor, Codex or the MCP Inspector) to a **live running DOOM simulation** instead of merely launching DOOM inside an MCP UI.
+It connects an MCP client such as Claude Code, Cursor, Codex or the MCP Inspector to a **live running DOOM simulation**, and now also records selected world edits so they can be exported as a playable PWAD.
 
-Current MCP version: **0.2.0**
+Current MCP version: **0.3.0**
 
 ## Architecture
 
@@ -13,9 +13,10 @@ MCP client
    │ stdio
    ▼
 mcp/server.js
-   ├── MCP tools
-   ├── local HTTP proxy  http://127.0.0.1:3777/
-   └── WebSocket /control
+   ├── semantic MCP tools
+   ├── localhost HTTP proxy  http://127.0.0.1:3777/
+   ├── WebSocket /control
+   └── local PWAD writer -> mcp/exports/
                          │
                          ▼
                   browser shell
@@ -26,12 +27,16 @@ mcp/server.js
                          │
                          ▼
                  doom_control.c
+                  ├── live state
+                  ├── actor/sector edits
+                  ├── ChangeSet journal
+                  └── PWAD writer
                          │
                          ▼
-              LinuxDOOM live state
+              LinuxDOOM live simulation
 ```
 
-The local HTTP server proxies the published `/direct/` build so the game and control WebSocket share the same localhost origin. The normal public GitHub Pages build does not attempt to open a local MCP connection.
+The local HTTP server proxies the published `/direct/` build so the game and control WebSocket share the same localhost origin. The normal public GitHub Pages build does **not** attempt to connect to localhost.
 
 ## Requirements
 
@@ -41,9 +46,9 @@ The local HTTP server proxies the published `/direct/` build so the game and con
 
 ## Install
 
-From a clone of this repository:
-
 ```bash
+git clone https://github.com/pavy23/web-doom.git
+cd web-doom
 git checkout direct-linuxdoom
 cd mcp
 npm install
@@ -51,7 +56,7 @@ npm install
 
 ## Quick manual test
 
-Start the MCP server directly:
+Start the local bridge directly:
 
 ```bash
 npm start
@@ -63,13 +68,15 @@ Then open:
 http://127.0.0.1:3777/
 ```
 
-Click **CLICK TO START**. When the browser bridge connects, the DOOM top bar shows **MCP CONNECTED**.
+Click **CLICK TO START**. When the browser bridge attaches, the top bar shows **MCP CONNECTED**.
 
-The health endpoint is also available for debugging:
+Health/debug endpoint:
 
 ```text
 http://127.0.0.1:3777/health
 ```
+
+It reports the current bridge state and PWAD export directory.
 
 ## MCP Inspector
 
@@ -79,11 +86,11 @@ From the `mcp` directory:
 npx @modelcontextprotocol/inspector node server.js
 ```
 
-Connect in the Inspector, then open `http://127.0.0.1:3777/` in a browser and start DOOM before calling live game tools.
+Then open `http://127.0.0.1:3777/` and start DOOM before calling live tools.
 
 ## MCP client configuration
 
-Configure the server as a local **stdio** MCP server. Use an absolute path on your machine:
+Configure `server.js` as a local **stdio** MCP server. Example:
 
 ```json
 {
@@ -92,69 +99,86 @@ Configure the server as a local **stdio** MCP server. Use an absolute path on yo
 }
 ```
 
-The MCP host owns the `server.js` process. Do not also run `npm start` at the same time unless you set a different `DOOM_MCP_PORT`, otherwise both processes will try to bind port 3777.
+When an MCP host launches the server, do not also run `npm start` on the same port. Both processes would otherwise try to bind `127.0.0.1:3777`.
 
-## Tools
+## Read / perception tools
 
 ### `doom_bridge_status`
 
-Reports whether a DOOM browser is connected and returns the localhost play URL.
+Reports bridge connection state, the localhost play URL, upstream Pages URL and PWAD export directory.
 
 ### `doom_get_state`
 
-Reads live simulation state, including:
+Reads live simulation state including:
 
-- episode / map / skill / game tic / level time
-- player health, armor and current weapon
-- player x/y/z and view angle
-- bullets, shells, cells and rockets
-- kill / item / secret counters
-- total map kills / items / secrets
-- all currently alive kill-counting enemies
+- episode / map / skill / tic / level time
+- current sector index
+- player health, armor, weapon and x/y/z/angle
+- ammunition and max ammunition
+- kill / item / secret statistics
+- live kill-counting enemies
 
-Each enemy now includes:
-
-- canonical enemy `name`
-- original numeric `type`
-- health and x/y/z
-- distance from the player
-- relative angle from the player's facing direction
-- `lineOfSight`, calculated by LinuxDOOM `P_CheckSight()`
-- `visible`, meaning line-of-sight **and** within the forward 90-degree view cone
+Each enemy includes canonical name, numeric type, health, coordinates, distance, relative angle, LinuxDOOM `P_CheckSight()` result and a forward-90-degree `visible` flag.
 
 ### `doom_get_enemies`
 
-Queries the enemy list and sorts it nearest-first.
-
-Optional filters:
+Returns enemies nearest-first with optional:
 
 - `visibleOnly`
 - `maxDistance`
 - `limit`
 
-Example intent:
+Example:
 
 ```text
 Tell me which enemies I can currently see.
 ```
 
-### `doom_heal`
+### `doom_get_sectors`
 
-Adds health to the active player, capped at 200.
+Reads runtime sector data and puts the current sector first.
 
-### `doom_give_ammo`
+Each sector includes:
 
-Adds one of `bullets`, `shells`, `cells`, or `rockets`. The engine's current max-ammo value is respected.
+- `index`
+- `current`
+- floor / ceiling height
+- light level
+- special
+- tag
+- approximate sector sound-origin x/y
+- distance from the player
 
-### `doom_teleport`
+Optional filters:
 
-Moves the player to integer map coordinates using LinuxDOOM's own collision-aware `P_TeleportMove()` path. A blocked destination is reported as an error instead of writing arbitrary coordinates into WASM memory.
+- `maxDistance`
+- `limit`
+
+Example:
+
+```text
+Inspect the room I am standing in and the nearby sectors.
+```
+
+## Live mutation / authoring tools
+
+### `doom_set_sector_light`
+
+Sets a sector light level from `0..255`.
+
+This is an **authoring mutation**: the live engine changes immediately and the edit is recorded in the current ChangeSet so it can be serialized to the map's `SECTORS` lump.
+
+Example:
+
+```text
+Make my current room much darker, around light level 32.
+```
 
 ### `doom_spawn_enemy`
 
 Spawns one to eight enemies in a fan in front of the player.
 
-The public Shareware build intentionally limits spawning to Episode-1-safe assets:
+Shareware-safe types:
 
 - `zombieman`
 - `shotgun_guy`
@@ -163,15 +187,9 @@ The public Shareware build intentionally limits spawning to Episode-1-safe asset
 - `spectre`
 - `baron_of_hell`
 
-Parameters:
+The engine uses `P_SpawnMobj()` and validates placement with `P_CheckPosition()`. Successful spawns receive persistent `mapthing_t` data and are journaled as additions to the exported `THINGS` lump.
 
-- `type`
-- optional `count` (`1..8`)
-- optional `distance` (`64..1024` map units, default `160`)
-
-The implementation calls LinuxDOOM `P_SpawnMobj()`, checks each requested position with `P_CheckPosition()`, and removes blocked spawns. Successful monsters are attached to the original thinker/actor simulation and target the player.
-
-Example intent:
+Example:
 
 ```text
 Spawn three imps in front of me.
@@ -179,51 +197,142 @@ Spawn three imps in front of me.
 
 ### `doom_remove_nearest_enemy`
 
-Removes the nearest live enemy with LinuxDOOM `P_RemoveMobj()`.
+Removes the nearest live enemy through `P_RemoveMobj()`.
+
+If the enemy came from the original map, its original `spawnpoint` is journaled as a `THINGS` removal. If it was spawned during the current authoring session, removing it cancels that pending spawn instead of creating a contradictory add/remove pair.
 
 Optional parameters:
 
 - `visibleOnly`
 - `maxDistance`
 
+### Play/debug-only mutations
+
+The following tools affect the live session but are deliberately **not serialized into PWAD output**:
+
+- `doom_heal`
+- `doom_give_ammo`
+- `doom_teleport`
+
+This separation prevents temporary playtest cheats from accidentally becoming level content.
+
+## ChangeSet
+
+### `doom_get_changeset`
+
+Returns the authoring journal for the current `ExMy` map.
+
+Current persistent operations:
+
+```text
+sector light edit  -> SECTORS record patch
+spawn enemy        -> THINGS record append
+remove map enemy   -> THINGS record removal
+remove new spawn   -> cancel pending THINGS append
+```
+
+The ChangeSet is intentionally per-current-map and lives in the running engine. Reloading the page or changing maps starts a fresh authoring session.
+
+## PWAD export
+
+### `doom_export_pwad`
+
+This is the key v0.3 authoring step.
+
+The engine locates the current map marker (`E1M1`, `E1M2`, etc.) and copies the complete Vanilla map lump set:
+
+```text
+ExMy
+THINGS
+LINEDEFS
+SIDEDEFS
+VERTEXES
+SEGS
+SSECTORS
+NODES
+SECTORS
+REJECT
+BLOCKMAP
+```
+
+During export:
+
+- `THINGS` is rebuilt from the original lump plus the actor ChangeSet.
+- `SECTORS` is copied and patched with journaled light edits.
+- all other current-map lumps are copied unchanged.
+- a standard `PWAD` header/directory is written inside Emscripten FS.
+- the browser reads the binary file and sends it through the localhost WebSocket.
+- `mcp/server.js` saves the result under `mcp/exports/`.
+
 Example intent:
 
 ```text
-Remove the nearest enemy I can see.
+Export what we changed as horror_e1m1.wad.
 ```
 
-## Security boundary
+Typical tool result:
 
-The MCP bridge does **not** expose raw WASM memory. JavaScript can only call functions explicitly exported by `direct-port/doom_control.c`.
+```json
+{
+  "exported": true,
+  "filename": "horror_e1m1.wad",
+  "path": "C:/.../web-doom/mcp/exports/horror_e1m1.wad",
+  "bytes": 123456,
+  "episode": 1,
+  "map": 1,
+  "changes": {
+    "sectorLights": 4,
+    "spawnedThings": 3,
+    "removedThings": 2
+  }
+}
+```
 
-Mutation helpers also go through original engine operations where possible:
+Set `DOOM_MCP_EXPORT_DIR` before launching the MCP server to choose a different output directory.
+
+## Suggested authoring loop
+
+```text
+1. Open DOOM through localhost MCP bridge
+2. Ask AI to inspect state / enemies / sectors
+3. Make live actor and lighting edits
+4. Play the modified level immediately
+5. Ask AI to inspect doom_get_changeset
+6. Iterate
+7. doom_export_pwad
+8. load/share the resulting PWAD with a compatible base IWAD/runtime
+```
+
+This is the first version where the MCP layer acts as a **content-authoring interface**, not only a live cheat/debug API.
+
+## Security / integrity boundary
+
+The MCP bridge does **not** expose arbitrary WASM memory. JavaScript can call only explicit functions exported by `direct-port/doom_control.c`.
+
+Authoring helpers also reuse original engine operations where possible:
 
 - sight: `P_CheckSight()`
 - spawn: `P_SpawnMobj()`
-- spawn collision validation: `P_CheckPosition()`
+- placement validation: `P_CheckPosition()`
 - removal: `P_RemoveMobj()`
 - player teleport: `P_TeleportMove()`
 
-The WebSocket control bridge auto-connects only when the game is loaded from `localhost` or `127.0.0.1`, which is how the local MCP proxy serves it.
+PWAD export uses LinuxDOOM's own WAD directory/lump access through `W_CheckNumForName()`, `W_LumpLength()` and `W_ReadLump()` and emits the historical on-disk `mapthing_t` / `mapsector_t` layouts.
 
-## Current milestone
+## Current limitations
 
-Version 0.2 proves this path:
+Version 0.3 intentionally persists only edits we can serialize safely without rebuilding the BSP:
 
-```text
-LLM
- ↓
-MCP semantic command
- ↓
-query live enemies / choose actor type
- ↓
-local bridge
- ↓
-explicit WASM C API
- ↓
-LinuxDOOM sight + actor + collision systems
- ↓
-live game-world mutation
-```
+- sector light changes ✅
+- actor spawn/remove ✅
+- floor/ceiling geometry changes ❌
+- linedef/door edits ❌
+- vertex/sector topology changes ❌
+- texture changes ❌
+- multi-map ChangeSets ❌
 
-Good next additions are sector/light editing, door/line activation, exact-tic stepping, save/restore snapshots and frame capture.
+Geometry/topology edits are a later milestone because changing vertices/lines/sectors can require regenerating `SEGS`, `SSECTORS`, `NODES`, `REJECT` and `BLOCKMAP` rather than simply patching runtime memory.
+
+## Next milestone
+
+The next useful step is **door/linedef + safe sector metadata authoring**, followed by PWAD import/reload and AI playtest iteration. Exact-tic stepping, snapshots and frame capture remain later debugging/agent milestones.
