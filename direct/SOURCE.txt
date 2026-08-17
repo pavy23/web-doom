@@ -5,14 +5,14 @@ Engine/game source baseline:
 https://github.com/id-Software/DOOM
 pinned commit: a77dfb96cb91780ca334d0d4cfd86957558007e0
 
-Browser platform and MCP control source:
+Browser platform and MCP authoring source:
 https://github.com/pavy23/web-doom/tree/direct-linuxdoom/direct-port
 https://github.com/pavy23/web-doom/tree/direct-linuxdoom/mcp
 
 Build system: Emscripten 6.0.5 + SDL2 + SDL2_mixer.
 The gameplay/rendering/game-state code remains id Software LinuxDOOM;
 browser-specific i_video/i_system/i_sound/i_net boundaries and the
-explicit doom_control.c state/control surface are maintained here.
+explicit doom_control.c state/authoring surface are maintained here.
 
 Sound effects:
 - DOOM DMX type-3 DS* lumps are parsed directly into the browser mixer.
@@ -30,22 +30,24 @@ Music:
   OPL post-mix path.
 - LinuxDOOM's commented DOS-style 0..15 * 8 volume handoff is restored.
 
-MCP / live engine control (v0.2):
+MCP / live authoring control (v0.3):
 - doom_control.c is compiled into WASM and only explicitly exported
   EMSCRIPTEN_KEEPALIVE functions are callable; raw memory is not exposed.
-- Enemy state is decoded to canonical names and includes distance,
-  relative angle, LinuxDOOM P_CheckSight() line-of-sight and a forward
-  90-degree visible flag.
-- Read tools can query/sort/filter nearby or currently visible enemies.
-- Episode-1-safe monsters can be spawned in front of the player using
-  P_SpawnMobj(); every requested position is validated by P_CheckPosition().
-- The nearest enemy can be removed through P_RemoveMobj(), optionally
-  constrained to the player's current visible set and a max distance.
-- Existing bounded mutations include heal, max-ammo-bounded give-ammo
-  and collision-aware player teleport through P_TeleportMove().
-- mcp/server.js provides the localhost stdio MCP + HTTP/WebSocket bridge.
-  The public GitHub Pages game does not connect to localhost; MCP mode is
-  used through the local proxy.
+- Enemy state includes canonical names, distance, relative angle,
+  P_CheckSight() line-of-sight and forward-view visibility.
+- Episode-1-safe actors can be spawned/removed using LinuxDOOM actor and
+  collision functions; these edits are journaled as persistent THINGS changes.
+- Runtime sectors expose floor/ceiling/light/special/tag metadata and the
+  current sector. Sector light edits are journaled as persistent SECTORS changes.
+- The in-engine ChangeSet currently records sector-light edits plus spawned
+  and removed map things for the current ExMy map.
+- doomctl_export_pwad() writes a PWAD containing the original current-map
+  lump set with THINGS and SECTORS rewritten from the ChangeSet.
+- The browser reads the generated PWAD from Emscripten FS and sends its bytes
+  through the localhost WebSocket bridge; mcp/server.js writes the .wad under
+  mcp/exports/ (or DOOM_MCP_EXPORT_DIR).
+- Debug/play-only mutations such as heal, ammo and player teleport are not
+  serialized into PWAD authoring output.
 - CI installs the official MCP server dependency and imports/constructs
   createMcpServer() as a self-test before compiling the game.
 
