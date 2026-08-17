@@ -30,16 +30,22 @@ Music:
   OPL post-mix path.
 - LinuxDOOM's commented DOS-style 0..15 * 8 volume handoff is restored.
 
-MCP / live engine control:
-- doom_control.c is compiled into the WASM and exposes only explicit
-  EMSCRIPTEN_KEEPALIVE functions; raw WASM memory is not exposed.
-- Current state includes map/tic/player/ammo/stats and live kill-counting
-  actors from LinuxDOOM's thinker list.
-- Current mutations include heal, max-ammo-bounded give-ammo and a
-  collision-aware teleport using LinuxDOOM P_TeleportMove().
-- mcp/server.js provides a localhost stdio MCP server plus HTTP/WebSocket
-  bridge. The public GitHub Pages game does not connect to localhost;
-  MCP mode is used through the local proxy.
+MCP / live engine control (v0.2):
+- doom_control.c is compiled into WASM and only explicitly exported
+  EMSCRIPTEN_KEEPALIVE functions are callable; raw memory is not exposed.
+- Enemy state is decoded to canonical names and includes distance,
+  relative angle, LinuxDOOM P_CheckSight() line-of-sight and a forward
+  90-degree visible flag.
+- Read tools can query/sort/filter nearby or currently visible enemies.
+- Episode-1-safe monsters can be spawned in front of the player using
+  P_SpawnMobj(); every requested position is validated by P_CheckPosition().
+- The nearest enemy can be removed through P_RemoveMobj(), optionally
+  constrained to the player's current visible set and a max distance.
+- Existing bounded mutations include heal, max-ammo-bounded give-ammo
+  and collision-aware player teleport through P_TeleportMove().
+- mcp/server.js provides the localhost stdio MCP + HTTP/WebSocket bridge.
+  The public GitHub Pages game does not connect to localhost; MCP mode is
+  used through the local proxy.
 - CI installs the official MCP server dependency and imports/constructs
   createMcpServer() as a self-test before compiling the game.
 
