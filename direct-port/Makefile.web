@@ -24,6 +24,7 @@ RELOAD_PATCH := $(GITHUB_WORKSPACE)/direct-port/patch_control_reload.py
 RELOAD_PRE_JS := $(GITHUB_WORKSPACE)/direct-port/authoring_reload_bridge.js
 MCP_DIR := $(GITHUB_WORKSPACE)/mcp
 MCP_SERVER := $(MCP_DIR)/server.js
+MCP_PLAYTEST_SERVER := $(MCP_DIR)/playtest_server.js
 MCP_PACKAGE := $(MCP_DIR)/package.json
 
 # LinuxDOOM 1.10 predates modern compiler diagnostics by decades. Suppress
@@ -140,13 +141,15 @@ prepare-control:
 validate-mcp:
 	@test -n "$(GITHUB_WORKSPACE)" || (echo "GITHUB_WORKSPACE is required" && false)
 	test -f $(MCP_SERVER)
+	test -f $(MCP_PLAYTEST_SERVER)
 	test -f $(MCP_PACKAGE)
 	@test -n "$$EMSDK_NODE" || (echo "EMSDK_NODE is required" && false)
 	chmod +x "$$EMSDK_NODE"
 	"$$EMSDK_NODE" --check $(MCP_SERVER)
+	"$$EMSDK_NODE" --check $(MCP_PLAYTEST_SERVER)
 	"$$EMSDK_NODE" -e "JSON.parse(require('fs').readFileSync('$(MCP_PACKAGE)', 'utf8')); console.error('MCP package.json valid')"
 	npm install --prefix $(MCP_DIR) --ignore-scripts --no-audit --no-fund
-	"$$EMSDK_NODE" --input-type=module -e "import { pathToFileURL } from 'node:url'; const m = await import(pathToFileURL('$(MCP_SERVER)').href); const s = m.createMcpServer(); if (!s) process.exit(1); console.error('MCP SDK import/self-test passed')"
+	"$$EMSDK_NODE" --input-type=module -e "import { pathToFileURL } from 'node:url'; const m = await import(pathToFileURL('$(MCP_PLAYTEST_SERVER)').href); const s = m.createMcpServer(); if (!s) process.exit(1); console.error('MCP v0.7 authoring + playtest import/self-test passed')"
 	grep -q "doom_get_state" $(MCP_SERVER)
 	grep -q "doom_get_enemies" $(MCP_SERVER)
 	grep -q "doom_get_sectors" $(MCP_SERVER)
@@ -158,12 +161,6 @@ validate-mcp:
 	grep -q "doom_list_visual_assets" $(MCP_SERVER)
 	grep -q "doom_set_wall_texture" $(MCP_SERVER)
 	grep -q "doom_set_sector_flat" $(MCP_SERVER)
-	grep -q "doom_pause_playtest" $(MCP_SERVER)
-	grep -q "doom_resume_playtest" $(MCP_SERVER)
-	grep -q "doom_step_tics" $(MCP_SERVER)
-	grep -q "doom_get_playtest_telemetry" $(MCP_SERVER)
-	grep -q "doom_reset_playtest_metrics" $(MCP_SERVER)
-	grep -q "doom_capture_frame" $(MCP_SERVER)
 	grep -q "doom_spawn_enemy" $(MCP_SERVER)
 	grep -q "doom_remove_nearest_enemy" $(MCP_SERVER)
 	grep -q "doom_get_changeset" $(MCP_SERVER)
@@ -171,7 +168,14 @@ validate-mcp:
 	grep -q "doom_list_exports" $(MCP_SERVER)
 	grep -q "doom_load_pwad" $(MCP_SERVER)
 	grep -q "doom_reload_current_map" $(MCP_SERVER)
-	grep -q "serveStdio" $(MCP_SERVER)
+	grep -q "doom_pause_playtest" $(MCP_PLAYTEST_SERVER)
+	grep -q "doom_resume_playtest" $(MCP_PLAYTEST_SERVER)
+	grep -q "doom_step_tics" $(MCP_PLAYTEST_SERVER)
+	grep -q "doom_get_playtest_telemetry" $(MCP_PLAYTEST_SERVER)
+	grep -q "doom_reset_playtest_metrics" $(MCP_PLAYTEST_SERVER)
+	grep -q "doom_capture_frame" $(MCP_PLAYTEST_SERVER)
+	grep -q "type: 'image'" $(MCP_PLAYTEST_SERVER)
+	grep -q "serveStdio" $(MCP_PLAYTEST_SERVER)
 
 webdoom.html: $(SOURCES) doom1.wad shell.html
 	@rm -f emcc-build.log
