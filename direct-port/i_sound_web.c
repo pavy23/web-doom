@@ -10,6 +10,10 @@
 #include "w_wad.h"
 #include "i_sound.h"
 
+// LinuxDOOM's config/defaults code expects this legacy platform symbol from
+// the original SNDSERV backend even though the browser does not spawn one.
+char *sndserver_filename = "";
+
 void I_InitSound(void) {}
 void I_UpdateSound(void) {}
 void I_SubmitSound(void) {}
