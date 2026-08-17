@@ -35,11 +35,12 @@ EMFLAGS := $(PORT_FLAGS) \
   -sFORCE_FILESYSTEM=1 \
   -sASSERTIONS=1 \
   -sENVIRONMENT=web \
+  --shell-file shell.html \
   --preload-file doom1.wad@doom1.wad
 
 all: webdoom.html
 
-webdoom.html: $(SOURCES) doom1.wad
+webdoom.html: $(SOURCES) doom1.wad shell.html
 	$(CC) $(CFLAGS) $(SOURCES) -o $@ $(EMFLAGS) -lm
 
 clean:
