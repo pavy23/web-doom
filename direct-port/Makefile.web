@@ -43,7 +43,7 @@ EMFLAGS := $(PORT_FLAGS) \
   -sENVIRONMENT=web \
   -sINVOKE_RUN=0 \
   -sEXIT_RUNTIME=0 \
-  -sEXPORTED_RUNTIME_METHODS=callMain,ccall \
+  -sEXPORTED_RUNTIME_METHODS=callMain,ccall,FS \
   --preload-file doom1.wad@doom1.wad \
   --shell-file shell.html
 
@@ -68,8 +68,13 @@ prepare-control:
 	grep -q "doomctl_get_state_json" doom_control.c
 	grep -q "doomctl_spawn_enemy" doom_control.c
 	grep -q "doomctl_remove_nearest_enemy_json" doom_control.c
+	grep -q "doomctl_get_sectors_json" doom_control.c
+	grep -q "doomctl_set_sector_light" doom_control.c
+	grep -q "doomctl_get_changeset_json" doom_control.c
+	grep -q "doomctl_export_pwad" doom_control.c
 	grep -q "P_CheckSight" doom_control.c
 	grep -q "P_CheckPosition" doom_control.c
+	grep -q 'memcpy(header, "PWAD"' doom_control.c
 
 validate-mcp:
 	@test -n "$(GITHUB_WORKSPACE)" || (echo "GITHUB_WORKSPACE is required" && false)
@@ -83,8 +88,12 @@ validate-mcp:
 	"$$EMSDK_NODE" --input-type=module -e "import { pathToFileURL } from 'node:url'; const m = await import(pathToFileURL('$(MCP_SERVER)').href); const s = m.createMcpServer(); if (!s) process.exit(1); console.error('MCP SDK import/self-test passed')"
 	grep -q "doom_get_state" $(MCP_SERVER)
 	grep -q "doom_get_enemies" $(MCP_SERVER)
+	grep -q "doom_get_sectors" $(MCP_SERVER)
+	grep -q "doom_set_sector_light" $(MCP_SERVER)
 	grep -q "doom_spawn_enemy" $(MCP_SERVER)
 	grep -q "doom_remove_nearest_enemy" $(MCP_SERVER)
+	grep -q "doom_get_changeset" $(MCP_SERVER)
+	grep -q "doom_export_pwad" $(MCP_SERVER)
 	grep -q "serveStdio" $(MCP_SERVER)
 
 webdoom.html: $(SOURCES) doom1.wad shell.html
