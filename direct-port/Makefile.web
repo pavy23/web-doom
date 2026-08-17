@@ -1,11 +1,13 @@
 # Build the original id Software LinuxDOOM 1.10 source directly for browsers.
 # Platform-specific i_*.c files are replaced by files from direct-port/ before make.
+# Music uses a build-prepared, pinned subset of Chocolate Doom's researched
+# Vanilla-DMX OPL path plus Nuked OPL3 v1.8 running in OPL2-compatible mode.
 
 CC := emcc
 
 PORT_FLAGS := -sUSE_SDL=2 -sUSE_SDL_MIXER=2
 
-CFLAGS := -O2 -std=gnu89 -DNORMALUNIX -D__EMSCRIPTEN__ $(PORT_FLAGS) \
+CFLAGS := -O2 -std=gnu89 -DNORMALUNIX -D__EMSCRIPTEN__ $(PORT_FLAGS) -Ichoco_opl \
   -Wno-implicit-int \
   -Wno-implicit-function-declaration \
   -Wno-int-conversion \
@@ -17,7 +19,10 @@ CFLAGS := -O2 -std=gnu89 -DNORMALUNIX -D__EMSCRIPTEN__ $(PORT_FLAGS) \
 
 SOURCES := \
   doomdef.c doomstat.c dstrings.c \
-  i_system.c i_sound.c i_music_opl_bridge.c i_video.c i_net.c \
+  i_system.c i_sound.c i_video.c i_net.c \
+  choco_opl/i_oplmusic.c choco_opl/memio.c choco_opl/mus2mid.c \
+  choco_opl/midifile.c choco_opl/opl.c choco_opl/opl_queue.c \
+  choco_opl/opl_sdl.c choco_opl/opl3.c \
   tables.c f_finale.c f_wipe.c d_main.c d_net.c d_items.c g_game.c \
   m_menu.c m_misc.c m_argv.c m_bbox.c m_fixed.c m_swap.c m_cheat.c m_random.c \
   am_map.c p_ceilng.c p_doors.c p_enemy.c p_floor.c p_inter.c p_lights.c \
@@ -37,7 +42,7 @@ EMFLAGS := $(PORT_FLAGS) \
   -sENVIRONMENT=web \
   -sINVOKE_RUN=0 \
   -sEXIT_RUNTIME=0 \
-  -sEXPORTED_RUNTIME_METHODS=callMain,FS \
+  -sEXPORTED_RUNTIME_METHODS=callMain \
   --preload-file doom1.wad@doom1.wad \
   --shell-file shell.html
 
