@@ -1,14 +1,14 @@
 {
   "name": "web-doom-mcp",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
-  "description": "Local MCP authoring, visual editing, PWAD export/reload, and control plane for the direct LinuxDOOM WebAssembly port",
+  "description": "Local MCP authoring, visual editing, AI playtest/vision, PWAD export/reload, and control plane for the direct LinuxDOOM WebAssembly port",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "start": "node server.js"
+    "start": "node playtest_server.js"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
