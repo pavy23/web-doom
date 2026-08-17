@@ -1,0 +1,78 @@
+name: Deploy Web DOOM
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Assemble static site
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p site/source
+          cp index.html main.js site/
+          touch site/.nojekyll
+
+          # Precompiled Linux DOOM WebAssembly binary. Pinned to a fixed commit.
+          curl -fL --retry 3 \
+            "https://raw.githubusercontent.com/ashtonmeuser/godot-wasm-doom/3fdb0ecdb3182d799f598e2575c7243efec22622/doom.wasm" \
+            -o site/doom.wasm
+
+          # Sanity-check WebAssembly magic and expected size (~6.8 MB).
+          test "$(od -An -tx1 -N4 site/doom.wasm | tr -d ' \n')" = "0061736d"
+          test "$(stat -c%s site/doom.wasm)" -gt 6000000
+
+          # Corresponding source/provenance bundle for the GPL DOOM-derived binary.
+          curl -fL --retry 3 \
+            "https://github.com/diekmann/wasm-fizzbuzz/archive/51a7030bea563d96027301a36619c17347b9270d.tar.gz" \
+            -o site/source/wasm-fizzbuzz-51a7030.tar.gz
+
+          cat > site/SOURCE.txt <<'EOF'
+          Web DOOM source provenance
+          ==========================
+
+          Original id Software DOOM source:
+          https://github.com/id-Software/DOOM
+
+          Browser/WebAssembly port source:
+          https://github.com/diekmann/wasm-fizzbuzz/tree/51a7030bea563d96027301a36619c17347b9270d/doom
+
+          Corresponding source archive shipped with this deployment:
+          ./source/wasm-fizzbuzz-51a7030.tar.gz
+
+          Precompiled doom.wasm mirror used by the deployment workflow:
+          https://github.com/ashtonmeuser/godot-wasm-doom/blob/3fdb0ecdb3182d799f598e2575c7243efec22622/doom.wasm
+
+          The DOOM source release is GPL licensed. Commercial DOOM WAD files are not added by this repository.
+          EOF
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
