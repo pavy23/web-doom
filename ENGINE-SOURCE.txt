@@ -1,0 +1,21 @@
+Sound-enabled browser engine
+============================
+
+doomgeneric source (GPL):
+https://github.com/ozkl/doomgeneric
+pinned commit: dcb7a8dbc7a16ce3dda29382ac9aae9d77d21284
+
+Original id Software DOOM source release:
+https://github.com/id-Software/DOOM
+
+Toolchain:
+Emscripten 6.0.5
+SDL2 + SDL2_mixer, MIDI enabled
+
+Shareware IWAD source:
+https://www.libsdl.org/projects/doom/data/doom1.wad.zip
+DOOM shareware v1.8, MD5: 5f4eb849b1af12887dec04a2a12e5e62
+
+Browser glue maintained in this repository:
+build/Makefile.web
+build/doomgeneric_web.c
