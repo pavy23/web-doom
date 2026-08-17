@@ -123,11 +123,24 @@ jobs:
           grep -q "doomctl_get_linedefs_json" webdoom.js
           grep -q "doomctl_set_linedef_action_json" webdoom.js
           grep -q "doomctl_activate_linedef_json" webdoom.js
+          grep -q "get_visuals" webdoom.js
+          grep -q "list_visual_assets" webdoom.js
+          grep -q "set_wall_texture" webdoom.js
+          grep -q "set_sector_flat" webdoom.js
+          grep -q "get_visual_changes" webdoom.js
+          grep -q "doomctl_get_visuals_json" webdoom.js
+          grep -q "doomctl_list_visual_assets_json" webdoom.js
+          grep -q "doomctl_set_wall_texture_json" webdoom.js
+          grep -q "doomctl_set_sector_flat_json" webdoom.js
           grep -q "doom_get_enemies" "$GITHUB_WORKSPACE/mcp/server.js"
           grep -q "doom_get_sectors" "$GITHUB_WORKSPACE/mcp/server.js"
           grep -q "doom_get_linedefs" "$GITHUB_WORKSPACE/mcp/server.js"
           grep -q "doom_set_linedef_action" "$GITHUB_WORKSPACE/mcp/server.js"
           grep -q "doom_activate_linedef" "$GITHUB_WORKSPACE/mcp/server.js"
+          grep -q "doom_get_visuals" "$GITHUB_WORKSPACE/mcp/server.js"
+          grep -q "doom_list_visual_assets" "$GITHUB_WORKSPACE/mcp/server.js"
+          grep -q "doom_set_wall_texture" "$GITHUB_WORKSPACE/mcp/server.js"
+          grep -q "doom_set_sector_flat" "$GITHUB_WORKSPACE/mcp/server.js"
           grep -q "doom_set_sector_light" "$GITHUB_WORKSPACE/mcp/server.js"
           grep -q "doom_spawn_enemy" "$GITHUB_WORKSPACE/mcp/server.js"
           grep -q "doom_remove_nearest_enemy" "$GITHUB_WORKSPACE/mcp/server.js"
@@ -143,6 +156,10 @@ jobs:
           grep -q "doomctl_get_linedefs_json" "$GITHUB_WORKSPACE/direct-port/doom_linedefs.c"
           grep -q "doomctl_set_linedef_action_json" "$GITHUB_WORKSPACE/direct-port/doom_linedefs.c"
           grep -q "P_UseSpecialLine" "$GITHUB_WORKSPACE/direct-port/doom_linedefs.c"
+          grep -q "doomctl_get_visuals_json" "$GITHUB_WORKSPACE/direct-port/doom_visuals.c"
+          grep -q "doomctl_build_sidedefs_lump" "$GITHUB_WORKSPACE/direct-port/doom_visuals.c"
+          grep -q "doomctl_patch_visual_sectors_lump" "$GITHUB_WORKSPACE/direct-port/doom_visuals.c"
+          grep -q "R_CheckTextureNumForName" "$GITHUB_WORKSPACE/direct-port/doom_visuals.c"
           grep -q "doomctl_load_pwad_json" "$GITHUB_WORKSPACE/direct-port/doom_reload.c"
           grep -q "lumpcache" "$GITHUB_WORKSPACE/direct-port/doom_reload.c"
 
@@ -190,28 +207,31 @@ jobs:
           - Nuked OPL3 v1.8 renders in OPL2-compatible nine-voice mode by default.
           - The earlier WebAudio oscillator approximation is retired.
 
-          MCP / AI level authoring (v0.5):
+          MCP / AI level authoring (v0.6):
           - doom_control.c: player/enemy/sector state, actor edits, sector-light edits,
             ChangeSet core and PWAD writer.
-          - doom_linedefs.c: existing LINEDEFS inspection, safe allow-listed Vanilla
-            door-action presets, special/tag journal, P_UseSpecialLine() playtest,
-            and LINEDEFS binary patching for export.
-          - Persistent export now rewrites THINGS, LINEDEFS and SECTORS while copying
-            topology/BSP-derived map lumps unchanged.
-          - Linedef authoring changes only special/tag; it does not move vertices or
-            pretend that topology can be changed without rebuilding BSP data.
+          - doom_linedefs.c: existing LINEDEFS inspection, allow-listed Vanilla door
+            actions, special/tag journal and P_UseSpecialLine() playtest.
+          - doom_visuals.c: nearby sector/sidedef material inspection, valid IWAD wall
+            texture/flat enumeration, live wall texture + floor/ceiling flat edits,
+            and SIDEDEFS/SECTORS persistence.
+          - Visual edits are asset-validated: wall names use R_CheckTextureNumForName()
+            and flats must resolve inside the loaded F_START..F_END range.
+          - Persistent export rewrites THINGS, LINEDEFS, SIDEDEFS and SECTORS while
+            VERTEXES/SEGS/SSECTORS/NODES/REJECT/BLOCKMAP remain unchanged.
+          - No v0.6 authoring operation moves vertices or changes topology.
           - doom_export_pwad writes a real current-map PWAD; mcp/server.js stores it
             under mcp/exports/ (or DOOM_MCP_EXPORT_DIR).
           - doom_load_pwad validates in Node and C, grows LinuxDOOM's lumpcache,
             appends through W_AddFile(), and rebuilds via G_InitNew().
-          - Imported PWAD becomes the fresh baseline; actor/sector/linedef ChangeSets
-            reset together after successful reload.
+          - Imported PWAD becomes the fresh baseline; actor/sector/linedef/visual
+            ChangeSets reset together after successful reload.
           - Loading/reloading protects all unexported authoring edits by default.
           - Heal/ammo/player teleport and linedef activation are playtest-only.
 
           Authoring loop:
-          AI inspect -> actor/sector/linedef edit -> playtest -> ChangeSet -> PWAD
-          export -> PWAD reload -> LinuxDOOM map rebuild -> next AI iteration.
+          AI inspect -> actor/logic/lighting/material edit -> playtest -> ChangeSet
+          -> PWAD export -> PWAD reload -> LinuxDOOM map rebuild -> next iteration.
 
           Shareware game data:
           - Redistributable DOOM shareware IWAD fetched from SDL archive during CI.
