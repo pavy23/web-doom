@@ -3,7 +3,7 @@
 
 CC := emcc
 
-PORT_FLAGS := -sUSE_SDL=2 -sUSE_SDL_MIXER=2 -sSDL2_MIXER_FORMATS='["mid"]'
+PORT_FLAGS := -sUSE_SDL=2 -sUSE_SDL_MIXER=2
 
 CFLAGS := -O2 -std=gnu89 -DNORMALUNIX -D__EMSCRIPTEN__ $(PORT_FLAGS) \
   -Wno-implicit-int \
