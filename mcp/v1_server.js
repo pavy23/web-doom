@@ -382,6 +382,8 @@ function sessionView(session) {
       candidateFile: item.candidateFile,
       edits: item.edits,
       appliedEdits: item.appliedEdits,
+      adoptedPreexistingChanges: item.adoptedPreexistingChanges,
+      preexistingChanges: item.preexistingChanges,
       changes: item.changes,
       trialId: item.trial.id,
       score: item.trial.evaluation.score,
@@ -530,15 +532,21 @@ export function createMcpServer() {
       sessionId: z.string().min(1),
       rationale: z.string().max(1000).optional(),
       edits: z.array(editShape).max(MAX_EDITS_PER_ITERATION),
-      actions: z.array(actionShape).min(1).max(MAX_ACTIONS_PER_TRIAL)
+      actions: z.array(actionShape).min(1).max(MAX_ACTIONS_PER_TRIAL),
+      adoptPendingChanges: z.boolean().optional()
     }),
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false }
-  }, async ({ sessionId, rationale = '', edits, actions }) => {
+  }, async ({ sessionId, rationale = '', edits, actions, adoptPendingChanges = false }) => {
     try {
       const session = findSession(sessionId);
       if (session.status !== 'active') throw new Error(`Design session is ${session.status}`);
       if (session.iterations.length >= session.maxIterations) {
         throw new Error(`Design session reached its ${session.maxIterations}-iteration limit`);
+      }
+
+      const preexistingChanges = await orchestrationCall('author_get_changeset');
+      if (hasAuthoringChanges(preexistingChanges) && !adoptPendingChanges) {
+        throw new Error('Out-of-band authoring changes are pending. Restore the current session candidate, or retry with adoptPendingChanges=true only if those edits are intentionally part of this iteration.');
       }
 
       const appliedEdits = await applyEdits(edits);
@@ -553,6 +561,8 @@ export function createMcpServer() {
         rationale: String(rationale || '').slice(0, 1000),
         edits,
         appliedEdits,
+        adoptedPreexistingChanges: Boolean(adoptPendingChanges && hasAuthoringChanges(preexistingChanges)),
+        preexistingChanges: compactChangeset(preexistingChanges),
         changes: compactChangeset(changeset),
         candidateFile: candidate.saved.filename,
         candidate: candidate.saved,
@@ -591,7 +601,7 @@ export function createMcpServer() {
       iteration: z.number().int().min(1),
       visualAssessment: visualAssessmentShape
     }),
-    annotations: { readOnlyHint: true }
+    annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ sessionId, iteration: iterationNumber, visualAssessment }) => {
     try {
       const session = findSession(sessionId);
