@@ -1,6 +1,6 @@
 # Web DOOM — Direct LinuxDOOM Browser Port
 
-A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, now with an experimental **MCP control plane** for reading and modifying a live DOOM simulation from AI clients.
+A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, with an experimental **MCP control plane** for reading and modifying a live DOOM simulation from AI clients.
 
 The `/direct/` build starts from the original LinuxDOOM source and replaces the platform-specific `i_*` boundaries for the browser. It does not use doomgeneric or Chocolate Doom as the game runtime.
 
@@ -62,12 +62,12 @@ The gameplay and renderer remain LinuxDOOM. Emscripten is the C → WebAssembly 
 - Click-to-start browser audio unlock
 - Custom browser shell — no Emscripten demo UI
 - Explicit live engine-control API compiled into WASM
-- Experimental local MCP server for AI control
+- Local MCP 0.2 control plane for AI queries and bounded world mutation
 - Reproducible GitHub Actions build and GitHub Pages publishing
 
 # MCP control plane
 
-The current experimental MCP layer connects a local AI client to a **live running DOOM engine**, rather than simply displaying DOOM inside an MCP-capable UI.
+The MCP layer connects a local AI client to a **live running DOOM engine**, rather than simply displaying DOOM inside an MCP-capable UI.
 
 ```text
 Claude / Cursor / Codex / MCP Inspector
@@ -95,23 +95,29 @@ Claude / Cursor / Codex / MCP Inspector
 
 The public GitHub Pages game behaves normally and does **not** connect to localhost. MCP mode is activated by running the local server, which proxies the published game through `127.0.0.1` so the browser and control WebSocket share the same local origin.
 
-### Current MCP tools
+### Current MCP tools — v0.2
 
 - `doom_bridge_status` — check whether a live browser is attached
 - `doom_get_state` — read map/player/enemy state
+- `doom_get_enemies` — nearest-first enemy query with visibility/distance filters
 - `doom_heal` — heal the current player, capped at 200
 - `doom_give_ammo` — give bullets, shells, cells or rockets while respecting max ammo
-- `doom_teleport` — collision-aware player movement through LinuxDOOM's own `P_TeleportMove()` path
+- `doom_teleport` — collision-aware player movement through LinuxDOOM `P_TeleportMove()`
+- `doom_spawn_enemy` — spawn Episode-1-safe enemies in front of the player
+- `doom_remove_nearest_enemy` — remove the nearest enemy, optionally only if currently visible
 
-`doom_get_state` currently exposes:
+`doom_get_state` now exposes enemy semantics as well as raw actor state:
 
-- episode / map / skill / game tic / level time
-- health / armor / weapon
-- player x/y/z and angle
-- bullets / shells / cells / rockets and max ammo
-- kill / item / secret counters
-- total map kills / items / secrets
-- live kill-counting monsters with type, health and coordinates
+- canonical enemy name and original numeric type
+- health and x/y/z
+- distance from the player
+- relative angle from the player's view direction
+- `lineOfSight` from LinuxDOOM `P_CheckSight()`
+- `visible` = line-of-sight plus the forward 90-degree view cone
+
+The public Shareware build intentionally limits MCP spawning to assets guaranteed by Episode 1: `zombieman`, `shotgun_guy`, `imp`, `demon`, `spectre`, and `baron_of_hell`.
+
+Spawns use `P_SpawnMobj()` and are validated with `P_CheckPosition()`. Blocked requested positions are discarded. Removal uses `P_RemoveMobj()`. This keeps actor creation/removal inside the original thinker, collision and world-linking systems instead of writing arbitrary coordinates into WASM memory.
 
 The bridge intentionally does **not** expose arbitrary WASM memory. JavaScript can only invoke functions explicitly exported by [`direct-port/doom_control.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/doom_control.c).
 
@@ -141,6 +147,14 @@ http://127.0.0.1:3777/
 ```
 
 Click **CLICK TO START**. When the local browser bridge attaches, the top bar shows **MCP CONNECTED**.
+
+Example AI intents after connecting an MCP host:
+
+```text
+Which enemies can I see right now?
+Spawn three imps in front of me.
+Remove the nearest visible enemy.
+```
 
 For an MCP host, configure `mcp/server.js` as a local stdio MCP server using Node.js 20 or newer. The server uses the current official `@modelcontextprotocol/server` package and the stdio server entry point.
 
@@ -272,9 +286,9 @@ fetch pinned id Software LinuxDOOM source
    ↓
 fetch + verify shareware IWAD / GENMIDI
    ↓
-install browser platform layer
+install browser platform layer + doom_control.c
    ↓
-install doom_control.c engine-control surface
+validate MCP server + official SDK import
    ↓
 restore narrow LinuxDOOM / Vanilla compatibility behavior
    ↓
@@ -305,17 +319,20 @@ Published provenance is recorded in [`direct/SOURCE.txt`](https://github.com/pav
 
 ## Next MCP milestones
 
-The current MCP layer is intentionally small. Good next steps are:
+Completed foundation:
 
-1. decode numeric actor types into readable monster/item names
-2. query nearest and currently visible enemies
-3. spawn/remove actors through original engine functions
-4. inspect and modify sector light/floor/ceiling properties
-5. activate doors and linedefs
-6. pause and advance the simulation by exact tics
-7. save/restore simulation snapshots
-8. capture frames for multimodal AI inspection
-9. inspect/load WAD and PWAD content through MCP
+- ✅ readable enemy type decoding
+- ✅ nearest / visible enemy queries
+- ✅ spawn / remove actors through original engine functions
+
+Next useful steps:
+
+1. inspect and modify sector light/floor/ceiling properties
+2. activate doors and linedefs
+3. pause and advance the simulation by exact tics
+4. save/restore simulation snapshots
+5. capture frames for multimodal AI inspection
+6. inspect/load WAD and PWAD content through MCP
 
 ## License and attribution
 
