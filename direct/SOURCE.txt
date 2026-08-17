@@ -21,5 +21,9 @@ Audio is implemented in this repository's direct-port/i_sound_web.c:
 - DOOM MUS music is converted by our code to Standard MIDI, then rendered
   by SDL2_mixer through the browser audio backend.
 
+The browser UI is also repository-owned: direct-port/shell.html replaces
+Emscripten's generated demo shell while Emscripten remains the C-to-WASM
+build toolchain underneath.
+
 The included IWAD is the redistributable DOOM shareware data fetched
 from SDL's long-standing DOOM project archive during CI.
