@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#050505">
+  <title>DOOM — Direct LinuxDOOM WebAssembly Port</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; background: #050505; overflow: hidden; }
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    #app { width: 100%; height: 100%; display: grid; place-items: center; background: radial-gradient(circle at center, #161616 0%, #050505 70%); }
+    #frame { position: relative; width: min(100vw, calc(100vh * 1.6)); aspect-ratio: 8 / 5; max-height: 100vh; background: #000; box-shadow: 0 0 60px rgba(0,0,0,.85); }
+    #canvas { display: block; width: 100%; height: 100%; background: #000; image-rendering: pixelated; outline: none; }
+    #hud { position: absolute; inset: 0; pointer-events: none; }
+    #topbar { position: absolute; top: 12px; left: 12px; right: 12px; display: flex; justify-content: space-between; align-items: center; gap: 10px; opacity: 0; transition: opacity .2s ease; }
+    #frame:hover #topbar, #frame:focus-within #topbar { opacity: 1; }
+    .badge { background: rgba(0,0,0,.72); border: 1px solid rgba(255,255,255,.16); border-radius: 7px; padding: 7px 9px; color: #ddd; font-size: 11px; letter-spacing: .04em; backdrop-filter: blur(6px); }
+    #controls { display: flex; gap: 7px; pointer-events: auto; }
+    button { appearance: none; border: 1px solid rgba(255,255,255,.22); background: rgba(0,0,0,.76); color: #eee; border-radius: 7px; padding: 7px 10px; font: inherit; font-size: 11px; cursor: pointer; }
+    button:hover { background: rgba(40,40,40,.92); }
+    #loading { position: absolute; inset: 0; display: grid; place-items: center; background: #050505; color: #ddd; transition: opacity .25s ease; }
+    #loading.hidden { opacity: 0; pointer-events: none; }
+    #loadingBox { text-align: center; }
+    #loadingTitle { font-size: 24px; font-weight: 800; letter-spacing: .18em; margin-bottom: 12px; }
+    #status { color: #999; font-size: 12px; min-height: 18px; }
+    #progress { width: min(320px, 70vw); margin-top: 10px; accent-color: #aaa; }
+    @media (max-aspect-ratio: 8/5) {
+      #frame { width: 100vw; height: auto; }
+    }
+  </style>
+</head>
+<body>
+  <main id="app">
+    <section id="frame">
+      <canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+      <div id="hud">
+        <div id="topbar">
+          <div class="badge">LINUXDOOM 1.10 · DIRECT WEBASSEMBLY PORT</div>
+          <div id="controls">
+            <button id="restart" type="button">RESTART</button>
+            <button id="fullscreen" type="button">FULLSCREEN</button>
+          </div>
+        </div>
+        <div id="loading">
+          <div id="loadingBox">
+            <div id="loadingTitle">DOOM</div>
+            <div id="status">Loading engine…</div>
+            <progress id="progress" value="0" max="100" hidden></progress>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const loading = document.getElementById('loading');
+    const statusEl = document.getElementById('status');
+    const progressEl = document.getElementById('progress');
+
+    var Module = {
+      canvas,
+      print: (...args) => console.log(...args),
+      printErr: (...args) => console.error(...args),
+      setStatus(text) {
+        if (!text) {
+          statusEl.textContent = '';
+          loading.classList.add('hidden');
+          canvas.focus();
+          return;
+        }
+        statusEl.textContent = text;
+        const m = text.match(/\((\d+)\/(\d+)\)/);
+        if (m) {
+          progressEl.hidden = false;
+          progressEl.max = Number(m[2]);
+          progressEl.value = Number(m[1]);
+        } else {
+          progressEl.hidden = true;
+        }
+      },
+      monitorRunDependencies(left) {
+        if (!left) return;
+        Module.setStatus(`Loading game data… (${Module.totalDependencies - left}/${Module.totalDependencies})`);
+      },
+      totalDependencies: 0
+    };
+
+    const oldMonitor = Module.monitorRunDependencies;
+    Module.monitorRunDependencies = function(left) {
+      this.totalDependencies = Math.max(this.totalDependencies, left);
+      oldMonitor(left);
+    };
+
+    document.getElementById('fullscreen').addEventListener('click', async () => {
+      try {
+        if (!document.fullscreenElement) await document.getElementById('frame').requestFullscreen();
+        else await document.exitFullscreen();
+      } catch (err) {
+        console.error('Fullscreen failed:', err);
+      }
+      canvas.focus();
+    });
+
+    document.getElementById('restart').addEventListener('click', () => location.reload());
+    window.addEventListener('load', () => canvas.focus());
+  </script>
+
+  {{{ SCRIPT }}}
+</body>
+</html>
