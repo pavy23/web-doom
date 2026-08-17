@@ -35,8 +35,11 @@ EMFLAGS := $(PORT_FLAGS) \
   -sFORCE_FILESYSTEM=1 \
   -sASSERTIONS=1 \
   -sENVIRONMENT=web \
-  --shell-file shell.html \
-  --preload-file doom1.wad@doom1.wad
+  -sINVOKE_RUN=0 \
+  -sEXIT_RUNTIME=0 \
+  -sEXPORTED_RUNTIME_METHODS=callMain \
+  --preload-file doom1.wad@doom1.wad \
+  --shell-file shell.html
 
 all: webdoom.html
 
