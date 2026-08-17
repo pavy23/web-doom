@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { Readable } from 'node:stream';
+import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { WebSocket, WebSocketServer } from 'ws';
@@ -14,6 +15,8 @@ const UPSTREAM = new URL(
 let browserSocket = null;
 let nextRequestId = 1;
 const pending = new Map();
+let httpServer = null;
+let wss = null;
 
 function jsonResult(value) {
   return {
@@ -122,58 +125,64 @@ async function proxyPublishedGame(req, res) {
   }
 }
 
-const httpServer = http.createServer(proxyPublishedGame);
-const wss = new WebSocketServer({ noServer: true });
+export function startBridge() {
+  if (httpServer) return httpServer;
 
-httpServer.on('upgrade', (req, socket, head) => {
-  let pathname = '/';
-  try {
-    pathname = new URL(req.url || '/', `http://${HOST}:${PORT}`).pathname;
-  } catch {
-    socket.destroy();
-    return;
-  }
+  httpServer = http.createServer(proxyPublishedGame);
+  wss = new WebSocketServer({ noServer: true });
 
-  if (pathname !== '/control') {
-    socket.destroy();
-    return;
-  }
-
-  wss.handleUpgrade(req, socket, head, ws => {
-    wss.emit('connection', ws, req);
-  });
-});
-
-wss.on('connection', ws => {
-  if (browserSocket && browserSocket !== ws) {
-    try { browserSocket.close(1012, 'Replaced by a newer DOOM browser'); } catch {}
-  }
-
-  browserSocket = ws;
-  console.error('DOOM MCP: browser bridge connected');
-
-  ws.on('message', raw => {
+  httpServer.on('upgrade', (req, socket, head) => {
+    let pathname = '/';
     try {
-      const message = JSON.parse(String(raw));
-      if (settlePending(message)) return;
-      if (message?.event) {
-        console.error(`DOOM MCP: browser event ${message.event}`);
-      }
-    } catch (error) {
-      console.error(`DOOM MCP: bad browser message: ${error?.message || error}`);
+      pathname = new URL(req.url || '/', `http://${HOST}:${PORT}`).pathname;
+    } catch {
+      socket.destroy();
+      return;
     }
+
+    if (pathname !== '/control') {
+      socket.destroy();
+      return;
+    }
+
+    wss.handleUpgrade(req, socket, head, ws => {
+      wss.emit('connection', ws, req);
+    });
   });
 
-  ws.on('close', () => {
-    if (browserSocket === ws) browserSocket = null;
-    rejectAllPending('DOOM browser bridge disconnected');
-    console.error('DOOM MCP: browser bridge disconnected');
-  });
-});
+  wss.on('connection', ws => {
+    if (browserSocket && browserSocket !== ws) {
+      try { browserSocket.close(1012, 'Replaced by a newer DOOM browser'); } catch {}
+    }
 
-httpServer.listen(PORT, HOST, () => {
-  console.error(`DOOM MCP: local game bridge at http://${HOST}:${PORT}/`);
-});
+    browserSocket = ws;
+    console.error('DOOM MCP: browser bridge connected');
+
+    ws.on('message', raw => {
+      try {
+        const message = JSON.parse(String(raw));
+        if (settlePending(message)) return;
+        if (message?.event) {
+          console.error(`DOOM MCP: browser event ${message.event}`);
+        }
+      } catch (error) {
+        console.error(`DOOM MCP: bad browser message: ${error?.message || error}`);
+      }
+    });
+
+    ws.on('close', () => {
+      if (browserSocket === ws) browserSocket = null;
+      rejectAllPending('DOOM browser bridge disconnected');
+      console.error('DOOM MCP: browser bridge disconnected');
+    });
+  });
+
+  httpServer.listen(PORT, HOST, () => {
+    console.error(`DOOM MCP: local game bridge at http://${HOST}:${PORT}/`);
+  });
+
+  return httpServer;
+}
 
 const ammoTypes = {
   bullets: 0,
@@ -182,7 +191,7 @@ const ammoTypes = {
   rockets: 3
 };
 
-function createMcpServer() {
+export function createMcpServer() {
   const server = new McpServer(
     { name: 'web-doom-control', version: '0.1.0' },
     {
@@ -292,5 +301,13 @@ function createMcpServer() {
   return server;
 }
 
-void serveStdio(createMcpServer);
-console.error('DOOM MCP: stdio server ready');
+function isDirectExecution() {
+  if (!process.argv[1]) return false;
+  return pathToFileURL(process.argv[1]).href === import.meta.url;
+}
+
+if (isDirectExecution()) {
+  startBridge();
+  void serveStdio(createMcpServer);
+  console.error('DOOM MCP: stdio server ready');
+}
