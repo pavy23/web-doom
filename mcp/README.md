@@ -1,63 +1,31 @@
-# Web DOOM MCP Authoring Plane
+# Web DOOM MCP — Authoring + AI Playtest
 
-This directory contains the local MCP authoring/control layer for the direct LinuxDOOM WebAssembly port.
+This directory contains the local MCP layer for the direct LinuxDOOM WebAssembly port.
 
-The project now supports a closed AI authoring loop over an existing DOOM map: inspect the live simulation, edit actors/lighting/door semantics/materials, playtest immediately, export a real PWAD, reload that PWAD as the next baseline, and continue iterating.
+Current MCP version: **0.7.0**.
 
-Current MCP version: **0.6.0**
-
-## What v0.6 adds
-
-v0.6 is the last planned low-level authoring expansion before moving to AI playtest/vision.
+v0.6 completed the bounded authoring surface over existing geometry. v0.7 changes the direction of the project: AI can now **observe and measure the result it authored**, not only mutate it.
 
 ```text
-AI inspection
-   ↓
-nearby sectors / linedefs / sidedefs
-   ↓
-valid IWAD visual asset list
-   ↓
-wall texture + floor/ceiling flat edits
-   ↓
-combined ChangeSet
-   ↓
-THINGS + LINEDEFS + SIDEDEFS + SECTORS
-   ↓
-PWAD export
-   ↓
-reload as next baseline
-```
-
-The important boundary remains unchanged: **existing geometry only**. v0.6 does not move vertices, create rooms or rebuild BSP-derived data.
-
-## Architecture
-
-```text
-MCP client
-   │ stdio
-   ▼
-mcp/server.js
-   ├── semantic inspection / mutation tools
-   ├── localhost HTTP proxy
-   ├── WebSocket /control
-   └── PWAD store -> mcp/exports/
-                         │
-                         ▼
-                  browser shell
-                         │
-                  window.DoomControl
-                         │
-                 Emscripten ccall
-      ┌──────────────────┼──────────────────┐
-      ▼                  ▼                  ▼
- doom_control.c     doom_linedefs.c    doom_visuals.c
- actor/sector       door/trigger       material authoring
- ChangeSet/PWAD     LINEDEFS patch     SIDEDEFS/SECTORS
-      └──────────────────┼──────────────────┘
-                         ▼
-                    doom_reload.c
-                         ▼
-                  LinuxDOOM runtime
+AI goal
+  ↓
+inspect live DOOM
+  ↓
+edit actors / lighting / doors / materials
+  ↓
+playtest
+  ↓
+pause world
+  ↓
+PNG frame + telemetry
+  ↓
+exact world-tic stepping when needed
+  ↓
+evaluate / revise
+  ↓
+PWAD export + reload
+  ↓
+next iteration
 ```
 
 ## Setup
@@ -79,310 +47,214 @@ Open:
 http://127.0.0.1:3777/
 ```
 
-Click **CLICK TO START**. The top bar shows **MCP CONNECTED** when attached.
+Click **CLICK TO START**. The normal authoring bridge uses `127.0.0.1:3777/control`; v0.7 also opens a dedicated local playtest/vision bridge at `127.0.0.1:3778/playtest`.
 
-For MCP Inspector:
+For an MCP host, configure the v0.7 entry point:
 
-```bash
-npx @modelcontextprotocol/inspector node server.js
+```json
+{
+  "command": "node",
+  "args": ["C:/absolute/path/to/web-doom/mcp/playtest_server.js"]
+}
 ```
 
-For another MCP host, configure `server.js` as a local stdio server using an absolute path. Do not also run a second `npm start` on the same port.
+`npm start` already launches this entry point. Do not separately launch `server.js` on the same authoring port.
 
-# Inspection tools
+# v0.7 playtest / vision tools
 
-## `doom_bridge_status`
+## `doom_playtest_status`
 
-Reports MCP version, browser connection, play URL and export directory.
+Reports whether the dedicated playtest/vision browser bridge is attached.
 
-## `doom_get_state`
+## `doom_pause_playtest`
 
-Reads map/player/current-sector/statistics and live enemy state.
+Pauses **world simulation** while the browser render/event loop and MCP connections remain alive.
 
-## `doom_get_enemies`
+LinuxDOOM already gates world updates inside `P_Ticker()` when `paused` is true. The browser build adds a narrow step hook to that existing gate rather than replacing the game loop.
 
-Returns enemies nearest-first with optional visibility and distance filters.
+## `doom_resume_playtest`
 
-## `doom_get_sectors`
+Resumes normal real-time world simulation and clears any unused step budget.
 
-Reads sector floor/ceiling height, light, special, tag and approximate distance.
+## `doom_step_tics`
 
-## `doom_get_linedefs`
+While paused, advances exactly the requested number of `P_Ticker()` world tics.
 
-Reads nearby linedefs with special/action, tag, flags, front/back sectors and geometry references.
+```text
+35 world tics ≈ 1 second of normal DOOM simulation
+```
 
-## `doom_get_visuals`
-
-Reads current visual material assignments without touching geometry.
-
-Sector entries include:
-
-- `floorFlat`
-- `ceilingFlat`
-- light level
-- current-sector flag
-- approximate distance
-
-Wall entries include:
-
-- linedef index
-- front/back side
-- sidedef index
-- sector index
-- `top`
-- `middle`
-- `bottom`
-- approximate distance
+The MCP tool waits until the exact step budget has been consumed before returning telemetry.
 
 Example:
 
 ```text
-Inspect the current room and tell me which wall textures and floor/ceiling flats it uses.
+Pause the playtest.
+Advance exactly 35 tics.
+Capture the frame and tell me what changed.
 ```
 
-## `doom_list_visual_assets`
+## `doom_get_playtest_telemetry`
 
-Lists **actual loaded** visual names that can safely be assigned.
+Returns a resettable measurement window containing:
 
-Parameters:
+- world tics and elapsed level time
+- current / visited sector count
+- approximate movement distance
+- current and minimum health
+- accumulated damage and healing
+- deaths
+- kills / items / secrets and deltas
+- armor
+- current ammunition
+- pause / pending-step state
 
-- `kind`: `all`, `wall`, or `flat`
-- `query`: optional substring filter
-- `limit`
+Telemetry is sampled after **actual P_Ticker world updates**, including exact MCP steps.
 
-Wall texture names come from the loaded `TEXTURE1/TEXTURE2` definitions. Flat names come from the active `F_START..F_END` range.
+## `doom_reset_playtest_metrics`
 
-The AI should call this before choosing replacement visuals instead of inventing asset names.
+Starts a new measurement baseline without changing level content.
 
-# Persistent authoring tools
-
-## Actors
-
-- `doom_spawn_enemy`
-- `doom_remove_nearest_enemy`
-
-These persist as `THINGS` additions/removals.
-
-## Lighting
-
-- `doom_set_sector_light`
-
-Persists as a `SECTORS` light-level patch.
-
-## Door / trigger semantics
-
-- `doom_set_linedef_action`
-
-Uses allow-listed Vanilla door presets and persists `special/tag` into `LINEDEFS`.
-
-## Wall materials
-
-### `doom_set_wall_texture`
-
-Changes one existing linedef sidedef texture slot:
+Use this before a controlled playtest pass:
 
 ```text
-line: existing linedef index
-side: front | back
-slot: top | middle | bottom
-texture: 1..8 character DOOM texture name
+Reset playtest metrics.
+Resume and let me play the opening encounter.
 ```
 
-The engine validates the name with LinuxDOOM `R_CheckTextureNumForName()` before changing runtime state. Invalid names are rejected.
+## `doom_capture_frame`
 
-The edit is journaled and written into the historical 30-byte `mapsidedef_t` record in `SIDEDEFS` during export.
+Captures the final SDL/Emscripten browser canvas as PNG and returns it as MCP **image content**, together with matching telemetry.
 
-Example:
+The captured image is the composed frame the human player sees, including the 3D view and normal DOOM overlays/status presentation.
+
+For deterministic observation, pause first:
 
 ```text
-Find a darker metal wall texture available in this IWAD and use it on the current room's visible wall.
+Pause the world.
+Capture the current frame.
+Evaluate visibility, visual hierarchy and enemy pressure using the image plus telemetry.
 ```
 
-## Floor / ceiling materials
+# Existing authoring tools
 
-### `doom_set_sector_flat`
+v0.7 retains all previous authoring functionality.
 
-Changes an existing sector's `floor` or `ceiling` flat.
+Inspection:
 
-The requested name must resolve to a lump inside the currently loaded flat namespace (`F_START..F_END`). The runtime sector updates immediately and the name is persisted in `SECTORS`.
+- `doom_get_state`
+- `doom_get_enemies`
+- `doom_get_sectors`
+- `doom_get_linedefs`
+- `doom_get_visuals`
+- `doom_list_visual_assets`
+- `doom_get_changeset`
 
-Example:
+Persistent mutations:
 
-```text
-Use a darker valid floor flat for the sector I am standing in.
-```
+- `doom_set_sector_light` → `SECTORS`
+- `doom_spawn_enemy` / `doom_remove_nearest_enemy` → `THINGS`
+- `doom_set_linedef_action` → `LINEDEFS`
+- `doom_set_wall_texture` → `SIDEDEFS`
+- `doom_set_sector_flat` → `SECTORS`
 
-# Playtest-only tools
+Persistence / iteration:
 
-These deliberately do not become level content:
+- `doom_export_pwad`
+- `doom_list_exports`
+- `doom_load_pwad`
+- `doom_reload_current_map`
 
+Playtest-only helpers:
+
+- `doom_activate_linedef`
 - `doom_heal`
 - `doom_give_ammo`
 - `doom_teleport`
-- `doom_activate_linedef`
 
-`doom_activate_linedef` invokes original `P_UseSpecialLine()` so a door/trigger can be tested live, but the activation event itself is not serialized.
-
-# Combined ChangeSet
-
-`doom_get_changeset` now combines all persistent journals since the current IWAD/PWAD baseline was loaded:
+# Architecture
 
 ```text
-actor spawn/remove      -> THINGS
-linedef special/tag     -> LINEDEFS
-wall texture            -> SIDEDEFS
-sector light            -> SECTORS
-floor/ceiling flat      -> SECTORS
+MCP client
+   │ stdio
+   ▼
+playtest_server.js  (v0.7 entry)
+   ├── imports all authoring tools from server.js
+   ├── pause / resume / exact step
+   ├── telemetry
+   └── MCP image frame capture
+       │
+       ├──────── authoring WebSocket :3777/control
+       │
+       └──────── playtest WebSocket  :3778/playtest
+                         │
+                         ▼
+                  Browser / DoomControl
+                         │
+                Emscripten ccall + canvas
+       ┌─────────────────┼──────────────────┐
+       ▼                 ▼                  ▼
+ doom_control.c    authoring modules   doom_playtest.c
+ actors/sector     linedef/visual      pause/step/metrics
+ PWAD/ChangeSet                           │
+       └─────────────────┬────────────────┘
+                         ▼
+                    LinuxDOOM
+                         │
+                         ▼
+               original P_Ticker()
 ```
 
-The server reports counts for:
+The public GitHub Pages build does not connect to localhost when opened normally. Local bridges activate only when the game is loaded through the local MCP proxy.
 
-- sector light edits
-- spawned things
-- removed things
-- linedef edits
-- sidedef texture edits
-- sector flat edits
+# Recommended AI evaluation loop
 
-If an edit is changed back to its baseline value, its visual journal entry becomes inactive rather than producing a redundant PWAD difference.
-
-# PWAD export / reload
-
-## `doom_export_pwad`
-
-Exports a standard current-map PWAD containing:
+A useful v0.7 session is:
 
 ```text
-ExMy
-THINGS
-LINEDEFS
-SIDEDEFS
-VERTEXES
-SEGS
-SSECTORS
-NODES
-SECTORS
-REJECT
-BLOCKMAP
+1. Inspect current room, enemies, doors and materials.
+2. Apply a bounded design change.
+3. Reset playtest metrics.
+4. Play normally or use controlled tic stepping.
+5. Pause.
+6. Capture frame + telemetry.
+7. Evaluate readability / pressure / damage / traversal.
+8. Revise authoring changes.
+9. Repeat observation.
+10. Export the accepted result as PWAD.
+11. Reload it as the next baseline.
 ```
 
-v0.6 rewrites or patches:
+Example:
+
+```text
+Make the opening room darker and more threatening without changing geometry.
+Use only assets that actually exist in the IWAD.
+Add two imps deeper in the room and keep the first encounter survivable.
+
+Reset the playtest metrics and let me test it.
+
+[after test]
+Pause the world, capture the frame and inspect the telemetry.
+If visibility is too poor or the encounter is too punishing, revise it.
+Then export the accepted version as horror_e1m1_v5.wad.
+```
+
+# Persistence boundary
+
+The playable artifact remains a normal PWAD. Current persistent map edits rewrite only safe existing-geometry records:
 
 ```text
 THINGS    actor placement
-LINEDEFS  special / tag
-SIDEDEFS  top / middle / bottom wall texture names
-SECTORS   light + floor / ceiling flat names
+LINEDEFS  existing special / tag behavior
+SIDEDEFS  wall textures
+SECTORS   light + floor/ceiling flats
 ```
 
-The following topology/BSP-derived lumps are copied unchanged:
+`VERTEXES`, `SEGS`, `SSECTORS`, `NODES`, `REJECT` and `BLOCKMAP` remain unchanged.
 
-```text
-VERTEXES
-SEGS
-SSECTORS
-NODES
-REJECT
-BLOCKMAP
-```
+The project still deliberately avoids arbitrary geometry generation until a real node/blockmap rebuild pipeline is introduced.
 
-This is intentional: v0.6 is **semantic/material authoring over existing geometry**, not a geometry editor.
+# What v0.7 does not yet do
 
-## `doom_list_exports`
-
-Lists local `.wad` iterations in `mcp/exports/` (or `DOOM_MCP_EXPORT_DIR`).
-
-## `doom_load_pwad`
-
-Validates a local export in Node and C, appends it with LinuxDOOM `W_AddFile()`, then rebuilds the current map through `G_InitNew()` / `P_SetupLevel()`.
-
-The imported PWAD becomes the new authoring baseline, so all actor/sector/linedef/visual ChangeSets reset together.
-
-## `doom_reload_current_map`
-
-Rebuilds the current map from the latest loaded baseline without adding another PWAD.
-
-Both load and reload protect pending unexported edits. Explicit `discardChanges: true` is required to discard them.
-
-# Example v0.6 authoring conversation
-
-```text
-Inspect the room I am standing in, including its visual materials.
-List some darker wall textures and floor flats that actually exist in this IWAD.
-
-Make this room feel more industrial and threatening:
-- lower the light to around 40
-- replace two nearby wall textures with darker valid alternatives
-- replace the floor with a darker valid flat
-- add two imps deeper in the room
-- make the exit door a reusable button-open door
-
-Show me the full ChangeSet.
-Let me play it.
-Export it as horror_e1m1_v4.wad.
-Load that file as the new baseline and verify the materials survived reload.
-```
-
-# Security / integrity boundary
-
-The MCP bridge does not expose arbitrary WASM memory.
-
-Visual authoring is bounded by explicit engine calls:
-
-- wall validation: `R_CheckTextureNumForName()`
-- flat validation: loaded WAD flat namespace
-- actor placement: `P_SpawnMobj()` / `P_CheckPosition()`
-- actor removal: `P_RemoveMobj()`
-- sight: `P_CheckSight()`
-- door playtest: `P_UseSpecialLine()`
-- runtime WAD override: `W_AddFile()`
-- map rebuild: `G_InitNew()` → `P_SetupLevel()`
-
-# Current authoring limits
-
-v0.6 can persist:
-
-- actor spawn/remove ✅
-- sector light ✅
-- linedef door/action special + tag ✅
-- sidedef top/middle/bottom texture ✅
-- sector floor/ceiling flat ✅
-- PWAD export/reload iteration ✅
-
-Still intentionally out of scope:
-
-- vertex movement / new rooms ❌
-- floor/ceiling height geometry editing ❌
-- adding/removing linedefs or sectors ❌
-- custom new texture graphics inside the PWAD ❌
-- BSP/node/blockmap regeneration ❌
-- multi-map project authoring ❌
-
-# Next milestone: v0.7 AI Playtest / Vision
-
-Low-level authoring is now sufficient for the experiment. The next milestone should stop expanding the map-edit API and instead let the AI **observe and evaluate its own result**.
-
-Planned direction:
-
-```text
-AI edit
-   ↓
-run DOOM
-   ↓
-frame capture + structured state
-   ↓
-AI evaluation
-   ↓
-revision proposal
-   ↓
-next ChangeSet / PWAD
-```
-
-Likely v0.7 capabilities:
-
-- frame/screenshot capture
-- pause/resume
-- exact `run_tics(n)` control
-- input injection for bounded playtest actions
-- structured playtest telemetry
-- first AI critique/revision loop
+The AI can **observe** a frame and telemetry, but it does not yet autonomously drive a complete level from start to exit. The next milestone is a higher-level playtest agent/input layer that can perform controlled movement/actions, evaluate design goals, and decide when to revise or accept the authored PWAD.
