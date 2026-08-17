@@ -10,6 +10,8 @@ CHOCO_COMMIT := 410d96855b5df5410ff591a90efeafa889119224
 CHOCO_DIR := /tmp/chocolate-doom-opl
 IMPORT_SCRIPT := $(GITHUB_WORKSPACE)/direct-port/import_vanilla_opl.py
 CONTROL_SOURCE := $(GITHUB_WORKSPACE)/direct-port/doom_control.c
+MCP_SERVER := $(GITHUB_WORKSPACE)/mcp/server.js
+MCP_PACKAGE := $(GITHUB_WORKSPACE)/mcp/package.json
 
 # LinuxDOOM 1.10 predates modern compiler diagnostics by decades. Suppress
 # legacy warnings so CI logs surface real adapter/link errors clearly.
@@ -44,7 +46,7 @@ EMFLAGS := $(PORT_FLAGS) \
   --preload-file doom1.wad@doom1.wad \
   --shell-file shell.html
 
-all: prepare-opl prepare-control
+all: prepare-opl prepare-control validate-mcp
 	$(MAKE) -f Makefile.web webdoom.html
 
 prepare-opl:
@@ -63,6 +65,15 @@ prepare-control:
 	test -f $(CONTROL_SOURCE)
 	cp $(CONTROL_SOURCE) doom_control.c
 	grep -q "doomctl_get_state_json" doom_control.c
+
+validate-mcp:
+	@test -n "$(GITHUB_WORKSPACE)" || (echo "GITHUB_WORKSPACE is required" && false)
+	test -f $(MCP_SERVER)
+	test -f $(MCP_PACKAGE)
+	node --check $(MCP_SERVER)
+	node -e "JSON.parse(require('fs').readFileSync('$(MCP_PACKAGE)', 'utf8')); console.error('MCP package.json valid')"
+	grep -q "doom_get_state" $(MCP_SERVER)
+	grep -q "serveStdio" $(MCP_SERVER)
 
 webdoom.html: $(SOURCES) doom1.wad shell.html
 	@rm -f emcc-build.log
