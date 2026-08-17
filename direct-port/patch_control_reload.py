@@ -4,7 +4,8 @@
 The authoring journal internals intentionally remain private/static in the
 repository-owned control surface. Runtime PWAD reload lives in a separate C
 translation unit, so the build copy gets one explicit wrapper that can reset the
-journal after a newly imported PWAD becomes the current baseline.
+actor/sector journal and the separate linedef journal after a newly imported PWAD
+becomes the current baseline.
 """
 
 from pathlib import Path
@@ -23,6 +24,7 @@ int doomctl_reset_changeset(void)
     doomctl_clear_journal_internal();
     doomctl_journal_episode = gameepisode;
     doomctl_journal_map = gamemap;
+    doomctl_reset_linedef_changes();
     return 1;
 }
 '''
@@ -43,13 +45,14 @@ def main() -> None:
         "static void doomctl_clear_journal_internal(void)",
         "static int doomctl_journal_episode",
         "int doomctl_export_pwad(const char *path)",
+        "extern void doomctl_reset_linedef_changes(void);",
     ]
     missing = [marker for marker in required if marker not in text]
     if missing:
         raise SystemExit(f"doom_control.c markers missing: {missing}")
 
     path.write_text(text.rstrip() + APPEND + "\n", encoding="utf-8")
-    print("Added doomctl_reset_changeset wrapper")
+    print("Added doomctl_reset_changeset wrapper with linedef journal reset")
 
 
 if __name__ == "__main__":
