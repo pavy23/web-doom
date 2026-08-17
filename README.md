@@ -31,7 +31,8 @@ id Software LinuxDOOM 1.10
           │
           ├── i_video.c   → browser video/input backend maintained here
           ├── i_system.c  → browser system/timing backend maintained here
-          ├── i_sound.c   → browser SFX + direct MUS/WebAudio backend maintained here
+          ├── i_sound.c   → browser DMX SFX backend maintained here
+          ├── OPL bridge  → MUS → GENMIDI → 2-op FM music backend maintained here
           └── i_net.c     → browser/network platform boundary maintained here
                     │
                     ↓
@@ -42,9 +43,9 @@ id Software LinuxDOOM 1.10
                  Browser
 ```
 
-There is **no doomgeneric or Chocolate Doom layer in the direct build**.
+There is **no doomgeneric or Chocolate Doom runtime layer in the direct build**.
 
-Emscripten is still used as the C → WebAssembly toolchain. SDL2 provides the low-level browser video/input bridge and SDL2_mixer is used for sound-effect mixing. Music does **not** depend on browser MIDI, Timidity, or an external SoundFont: the direct backend parses DOOM MUS data and synthesizes it with WebAudio.
+Emscripten is still used as the C → WebAssembly toolchain. SDL2 provides the low-level browser video/input bridge and SDL2_mixer is used for sound-effect mixing. Music does **not** depend on browser MIDI, Timidity, or an external SoundFont: the direct backend parses the original MUS events and uses the IWAD's own `GENMIDI` instrument bank to drive a repository-owned WebAudio FM synthesizer.
 
 ## Current direct-port features
 
@@ -54,8 +55,11 @@ Emscripten is still used as the C → WebAssembly toolchain. SDL2 provides the l
 - Keyboard, mouse and browser touch/event input
 - Single-player gameplay
 - DOOM shareware Episode 1 data (`E1M1`–`E1M9`)
-- Sound effects
-- Direct MUS music synthesis in WebAudio
+- Original DMX sound effects
+- Direct MUS parsing at DOOM's native 140 Hz timing
+- IWAD `GENMIDI`-driven OPL2/AdLib-style music synthesis
+- 128 melodic + 47 percussion GENMIDI instruments
+- 9-voice OPL2-style voice limit and voice stealing
 - Fullscreen control
 - Click-to-start audio unlock for browser autoplay policies
 - Custom DOOM web shell — no Emscripten demo UI
@@ -63,39 +67,85 @@ Emscripten is still used as the C → WebAssembly toolchain. SDL2 provides the l
 
 ## Direct audio implementation
 
-The direct port implements the original [`i_sound.h`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/i_sound.h) interface in this repository rather than importing doomgeneric's sound backend.
+The direct port implements the original [`i_sound.h`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/i_sound.h) boundary in this repository rather than importing doomgeneric's sound backend.
 
 ### Sound effects
 
 The browser SFX path:
 
-- reads DOOM `DS*` DMX type-3 sound-effect lumps from the WAD
-- converts the original 8-bit PCM data for browser playback
-- maps DOOM volume and stereo separation to mixer channels
-- applies DOOM pitch variation through sample-rate conversion
-- mixes the resulting sounds through SDL2_mixer / WebAudio
-
-### Music
-
-The browser music path is now independent of an external MIDI synthesizer:
-
 ```text
-DOOM WAD D_* music lump
+DOOM WAD DS* lump
         ↓
-original MUS event stream
+DMX type-3 parser
         ↓
-our MUS parser / scheduler
+8-bit PCM → WAV
         ↓
-program, note, volume, pan, pitch and percussion events
+pitch / volume / stereo separation
         ↓
-our WebAudio oscillator/noise synthesizer
+SDL2_mixer
         ↓
-🔊 browser audio
+WebAudio
 ```
 
-The implementation preserves DOOM's native **140 Hz MUS timing**, handles channel programs, note velocity, volume, expression, pan, pitch wheel, note release, all-notes-off events, percussion and looping. Instrument families are mapped to lightweight browser oscillator voices, while percussion is synthesized from oscillators/noise. This avoids the missing-MIDI-bank problem that caused music to be silent in the earlier direct build.
+This preserves the original SFX data and DOOM's pitch variation while adapting it to browser audio.
 
 Source: [`direct-port/i_sound_web.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_sound_web.c)
+
+### Music — GENMIDI OPL2-style FM
+
+The previous direct build used a lightweight oscillator/noise synthesizer. The current build goes substantially closer to classic DOOM's AdLib/OPL music path:
+
+```text
+DOOM WAD
+   ├── D_E1M1 / D_* MUS music data
+   └── GENMIDI instrument bank
+              │
+              ↓
+       our MUS parser / scheduler
+              │
+              ↓
+       GENMIDI instrument lookup
+              │
+              ↓
+    modulator + carrier operators
+              │
+              ↓
+       2-operator FM synthesis
+              │
+              ↓
+           WebAudio
+              │
+              ↓
+        🔊 browser audio
+```
+
+The public shareware IWAD contains a `GENMIDI` table with **128 melodic instruments and 47 percussion instruments**. The browser FM engine reads that table directly instead of substituting generic instrument-family waveforms.
+
+The synth uses GENMIDI fields including:
+
+- modulator and carrier frequency multipliers
+- operator output levels
+- attack / decay / sustain / release-style envelope rates
+- operator waveform selection
+- feedback and FM/additive connection mode
+- fixed-note instruments
+- per-voice base-note offsets
+- second-voice fine tuning
+- double-voice instruments
+- percussion mapping for notes 35–81
+
+It also models the classic OPL2 **9-voice limit** and steals older voices when the limit is exceeded.
+
+**Accuracy note:** this is an **OPL2/AdLib-style reconstruction using WebAudio FM graphs**, not yet a cycle-accurate or sample-accurate YM3812 chip emulator. The important step here is that the timbre is now driven by DOOM's actual `GENMIDI` instrument definitions rather than hand-picked generic oscillators.
+
+Music source:
+
+- [`direct-port/i_music_opl_bridge.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_music_opl_bridge.c) — LinuxDOOM C ↔ browser music bridge
+- [`direct-port/opl_music.js`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/opl_music.js) — MUS parser, GENMIDI parser and WebAudio 2-operator FM engine
+
+Generated public music engine:
+
+- [`direct/opl_music.js`](https://github.com/pavy23/web-doom/blob/main/direct/opl_music.js)
 
 ## Browser platform source
 
@@ -105,12 +155,14 @@ Key files:
 
 - [`direct-port/i_video_web.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_video_web.c) — video and browser input boundary
 - [`direct-port/i_system_web.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_system_web.c) — timing/system boundary
-- [`direct-port/i_sound_web.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_sound_web.c) — DMX SFX + direct MUS/WebAudio music backend
+- [`direct-port/i_sound_web.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_sound_web.c) — DMX SFX and DOOM-facing sound API
+- [`direct-port/i_music_opl_bridge.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_music_opl_bridge.c) — C/WebAudio OPL music bridge
+- [`direct-port/opl_music.js`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/opl_music.js) — GENMIDI-driven FM synthesizer
 - [`direct-port/i_net_web.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_net_web.c) — network/platform boundary
 - [`direct-port/shell.html`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/shell.html) — custom DOOM browser UI and click-to-start audio unlock
 - [`direct-port/Makefile.web`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/Makefile.web) — Emscripten browser build
-- [`direct-port/apply_compat.py`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/apply_compat.py) — narrow compatibility fixes for building 1997-era C with a modern toolchain
-- [`.github/workflows/direct-port.yml`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/.github/workflows/direct-port.yml) — reproducible CI build and `/direct/` publishing
+- [`direct-port/apply_compat.py`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/apply_compat.py) — narrow compatibility/platform edits for building 1997-era C with a modern toolchain
+- [`.github/workflows/direct-port.yml`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/.github/workflows/direct-port.yml) — reproducible CI build, GENMIDI validation and `/direct/` publishing
 
 ## Source baseline
 
@@ -130,6 +182,7 @@ The public demo uses the redistributable DOOM shareware IWAD obtained during CI 
 - [Shareware `doom1.wad.zip`](https://www.libsdl.org/projects/doom/data/doom1.wad.zip)
 - Build-verified IWAD size: `4,196,020` bytes
 - MD5: `5f4eb849b1af12887dec04a2a12e5e62`
+- CI additionally verifies that the IWAD includes a valid `#OPL_II#` `GENMIDI` instrument table before building
 
 This contains **Episode 1: Knee-Deep in the Dead**, including `E1M1` through secret map `E1M9`.
 
@@ -144,20 +197,24 @@ GitHub Actions
    ↓
 fetch pinned id Software LinuxDOOM source
    ↓
-fetch + verify shareware IWAD
+fetch + verify shareware IWAD + GENMIDI
    ↓
-install our i_video / i_system / i_sound / i_net implementations
+install our i_video / i_system / i_sound / OPL bridge / i_net implementations
    ↓
-apply narrow modern-toolchain compatibility fixes
+apply narrow modern-toolchain compatibility/platform edits
    ↓
-Emscripten 6.0.5 + SDL2 + SDL2_mixer + direct WebAudio music synth
+Emscripten 6.0.5 + SDL2 + SDL2_mixer
    ↓
-webdoom.js + webdoom.wasm + webdoom.data + custom HTML shell
+MUS + GENMIDI → our 2-op FM WebAudio engine
+   ↓
+webdoom.js + webdoom.wasm + webdoom.data + opl_music.js + custom HTML shell
    ↓
 GitHub Pages /direct/
 ```
 
 Generated public artifacts can be inspected in [`direct/`](https://github.com/pavy23/web-doom/tree/main/direct).
+
+Published provenance details are also available in [`direct/SOURCE.txt`](https://github.com/pavy23/web-doom/blob/main/direct/SOURCE.txt).
 
 ## Controls
 
@@ -167,6 +224,7 @@ Generated public artifacts can be inspected in [`direct/`](https://github.com/pa
 - `Shift`: run
 - `1`–`7`: weapon selection
 - `Esc`: DOOM menu
+- touch/browser pointer events are supported by the current browser platform layer
 - **FULLSCREEN**: browser fullscreen mode
 - **RESTART**: reload the game runtime
 
@@ -174,12 +232,12 @@ Generated public artifacts can be inspected in [`direct/`](https://github.com/pa
 
 Owning the platform layer makes it possible to evolve the browser port directly rather than waiting for an upstream source port to expose a feature. Candidate directions include:
 
-- richer GM/OPL-style instrument synthesis for closer original music timbre
+- cycle/sample-accurate YM3812 / OPL2 emulation, potentially via AudioWorklet/WASM
 - HiDPI / widescreen / higher-resolution rendering
 - pointer-lock mouse controls
-- gamepad and mobile input
+- richer gamepad and mobile controls
 - IndexedDB / browser-native save persistence
-- spatial audio / HRTF
+- spatial audio / HRTF for SFX
 - WAD and PWAD drag-and-drop
 - WebSocket or WebRTC multiplayer
 - renderer and gameplay experiments in the original DOOM code itself
