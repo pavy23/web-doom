@@ -20,6 +20,7 @@
 #define DOOMCTL_PLAYTEST_BUFSIZE 8192
 
 extern int leveltime;
+extern void doomctl_agent_after_world_tic(void);
 
 static char doomctl_playtest_buffer[DOOMCTL_PLAYTEST_BUFSIZE];
 static int doomctl_step_budget = 0;
@@ -173,6 +174,10 @@ void doomctl_playtest_after_world_tic(void)
     doomctl_prev_y = player->mo->y;
     doomctl_prev_state = player->playerstate;
     doomctl_mark_sector(player);
+
+    // Agent input lifetime is tied to actual world simulation, not to browser
+    // frames or G_Ticker calls that are stopped by the pause gate.
+    doomctl_agent_after_world_tic();
 }
 
 EMSCRIPTEN_KEEPALIVE
