@@ -28,6 +28,7 @@ out.mkdir(parents=True, exist_ok=True)
 
 # Small, self-contained subset required by i_oplmusic + SDL/Nuked OPL.
 sources = {
+    choco / "src" / "i_swap.h": out / "i_swap.h",
     choco / "src" / "memio.c": out / "memio.c",
     choco / "src" / "memio.h": out / "memio.h",
     choco / "src" / "mus2mid.c": out / "mus2mid.c",
@@ -130,9 +131,9 @@ static char *WebOPLTempFile(const char *leaf)
 '''
 s = s.replace(anchor, anchor + compat, 1)
 
-# The bottom of i_oplmusic.c declares Chocolate Doom's module object and debug
-# interface. The direct port calls the static implementation through wrappers
-# matching LinuxDOOM's 1997 i_sound.h instead.
+# The bottom of i_oplmusic.c declares Chocolate Doom's generic module object and
+# debug interface. The direct port calls the static implementation through
+# wrappers matching LinuxDOOM's 1997 i_sound.h instead.
 cut = 'const static snddevice_t music_opl_devices[]'
 pos = s.find(cut)
 if pos < 0:
