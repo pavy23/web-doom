@@ -1,31 +1,29 @@
-# Web DOOM MCP — Authoring + AI Playtest
+# Web DOOM MCP — Authoring + Autonomous AI Playtest
 
 This directory contains the local MCP layer for the direct LinuxDOOM WebAssembly port.
 
-Current MCP version: **0.7.0**.
+Current MCP version: **0.8.0**.
 
-v0.6 completed the bounded authoring surface over existing geometry. v0.7 changes the direction of the project: AI can now **observe and measure the result it authored**, not only mutate it.
+v0.6 completed bounded authoring over existing geometry. v0.7 added frame capture, exact world-tic stepping and telemetry. v0.8 closes the next gap: AI can now **drive the original DOOM player through the real `ticcmd_t` gameplay input path** and observe the result.
 
 ```text
 AI goal
   ↓
-inspect live DOOM
+inspect / author map
   ↓
-edit actors / lighting / doors / materials
+reset metrics
   ↓
-playtest
+short autonomous input action
   ↓
-pause world
+exact P_Ticker world tics
   ↓
 PNG frame + telemetry
   ↓
-exact world-tic stepping when needed
+evaluate navigation / combat / readability
   ↓
-evaluate / revise
+next action or authoring revision
   ↓
 PWAD export + reload
-  ↓
-next iteration
 ```
 
 ## Setup
@@ -41,15 +39,12 @@ npm install
 npm start
 ```
 
-Open:
+Open `http://127.0.0.1:3777/` and click **CLICK TO START**.
 
-```text
-http://127.0.0.1:3777/
-```
+- authoring bridge: `127.0.0.1:3777/control`
+- playtest / vision / agent bridge: `127.0.0.1:3778/playtest`
 
-Click **CLICK TO START**. The normal authoring bridge uses `127.0.0.1:3777/control`; v0.7 also opens a dedicated local playtest/vision bridge at `127.0.0.1:3778/playtest`.
-
-For an MCP host, configure the v0.7 entry point:
+For an MCP host:
 
 ```json
 {
@@ -58,87 +53,108 @@ For an MCP host, configure the v0.7 entry point:
 }
 ```
 
-`npm start` already launches this entry point. Do not separately launch `server.js` on the same authoring port.
+`npm start` already launches the v0.8 entry point.
 
-# v0.7 playtest / vision tools
+# v0.8 autonomous input
 
-## `doom_playtest_status`
+## `doom_run_input`
 
-Reports whether the dedicated playtest/vision browser bridge is attached.
+Runs one deterministic action for exactly N real world tics. The tool pauses the world if needed, queues a bounded console-player command, advances the exact step budget and leaves the world paused for inspection.
 
-## `doom_pause_playtest`
-
-Pauses **world simulation** while the browser render/event loop and MCP connections remain alive.
-
-LinuxDOOM already gates world updates inside `P_Ticker()` when `paused` is true. The browser build adds a narrow step hook to that existing gate rather than replacing the game loop.
-
-## `doom_resume_playtest`
-
-Resumes normal real-time world simulation and clears any unused step budget.
-
-## `doom_step_tics`
-
-While paused, advances exactly the requested number of `P_Ticker()` world tics.
+Inputs:
 
 ```text
-35 world tics ≈ 1 second of normal DOOM simulation
+forward  -1.0 .. +1.0   backward .. forward
+strafe   -1.0 .. +1.0   left .. right
+turn     -1.0 .. +1.0   left .. right
+attack   false / true
+use      false / true
+tics     1 .. 350
 ```
-
-The MCP tool waits until the exact step budget has been consumed before returning telemetry.
 
 Example:
 
 ```text
-Pause the playtest.
-Advance exactly 35 tics.
-Capture the frame and tell me what changed.
+Move forward at full speed while turning slightly right for 35 tics.
+Capture the resulting frame.
 ```
 
-## `doom_get_playtest_telemetry`
+Equivalent conceptual action:
 
-Returns a resettable measurement window containing:
+```json
+{
+  "forward": 1,
+  "turn": 0.25,
+  "attack": false,
+  "use": false,
+  "tics": 35,
+  "captureAfter": true
+}
+```
 
-- world tics and elapsed level time
-- current / visited sector count
-- approximate movement distance
-- current and minimum health
-- accumulated damage and healing
-- deaths
-- kills / items / secrets and deltas
-- armor
-- current ammunition
-- pause / pending-step state
+The command is injected after LinuxDOOM selects the console player's real net/demo command inside `G_Ticker()`, immediately before gameplay consumes it. It does not fake keyboard DOM events and does not rewrite arbitrary WASM memory.
 
-Telemetry is sampled after **actual P_Ticker world updates**, including exact MCP steps.
+Movement stays inside the original DOOM command envelope: fast forward maps to 50 ticcmd units, fast strafe to 40 and full turn to the original fast keyboard turn magnitude.
 
-## `doom_reset_playtest_metrics`
+## `doom_run_input_sequence`
 
-Starts a new measurement baseline without changing level content.
+Runs up to 16 short actions sequentially, capped at 700 requested world tics total. The sequence stops early if the player dies.
 
-Use this before a controlled playtest pass:
+This is intended for short tactical plans, not blind full-level scripting.
+
+Example:
 
 ```text
-Reset playtest metrics.
-Resume and let me play the opening encounter.
+1. move forward for 30 tics
+2. turn right for 18 tics
+3. move forward + attack for 45 tics
+4. use for 2 tics
+5. capture the final frame and telemetry
 ```
 
-## `doom_capture_frame`
+## `doom_agent_input_status`
 
-Captures the final SDL/Emscripten browser canvas as PNG and returns it as MCP **image content**, together with matching telemetry.
+Reports the currently queued autonomous input and its remaining world-tic lifetime.
 
-The captured image is the composed frame the human player sees, including the 3D view and normal DOOM overlays/status presentation.
+## `doom_cancel_agent_input`
 
-For deterministic observation, pause first:
+Clears queued autonomous input immediately.
+
+# Why the input lifetime is deterministic
+
+The AI command lifetime is **not** decremented by browser frames or by prebuilt networking commands.
 
 ```text
-Pause the world.
-Capture the current frame.
-Evaluate visibility, visual hierarchy and enemy pressure using the image plus telemetry.
+G_Ticker selects players[consoleplayer].cmd
+  ↓
+v0.8 bounded ticcmd override
+  ↓
+P_Ticker world simulation
+  ↓
+v0.7 telemetry hook
+  ↓
+v0.8 input lifetime -1 tic
 ```
 
-# Existing authoring tools
+When the world is paused, ordinary browser/render frames consume no autonomous-input lifetime. Exact v0.7 step requests are therefore directly composable with v0.8 input.
 
-v0.7 retains all previous authoring functionality.
+Holding `attack` behaves like holding DOOM's fire control. Holding `use` follows normal DOOM debounce behavior, so a short 1–2 tic use action is usually appropriate for a door or switch.
+
+# v0.7 playtest / vision tools retained
+
+- `doom_playtest_status`
+- `doom_pause_playtest`
+- `doom_resume_playtest`
+- `doom_step_tics`
+- `doom_get_playtest_telemetry`
+- `doom_reset_playtest_metrics`
+- `doom_capture_frame`
+
+`doom_capture_frame` returns the final SDL/Emscripten browser canvas as MCP image content plus matching telemetry.
+
+Telemetry includes world time, visited sectors, approximate movement distance, health/damage/healing, deaths, kills/items/secrets and ammunition.
+
+# Existing authoring tools retained
 
 Inspection:
 
@@ -150,7 +166,7 @@ Inspection:
 - `doom_list_visual_assets`
 - `doom_get_changeset`
 
-Persistent mutations:
+Persistent mutation:
 
 - `doom_set_sector_light` → `SECTORS`
 - `doom_spawn_enemy` / `doom_remove_nearest_enemy` → `THINGS`
@@ -158,19 +174,29 @@ Persistent mutations:
 - `doom_set_wall_texture` → `SIDEDEFS`
 - `doom_set_sector_flat` → `SECTORS`
 
-Persistence / iteration:
+Iteration:
 
 - `doom_export_pwad`
 - `doom_list_exports`
 - `doom_load_pwad`
 - `doom_reload_current_map`
 
-Playtest-only helpers:
+# Recommended v0.8 AI loop
 
-- `doom_activate_linedef`
-- `doom_heal`
-- `doom_give_ammo`
-- `doom_teleport`
+```text
+1. Inspect current world + frame.
+2. Reset playtest metrics.
+3. Choose a short action (roughly 5–70 tics).
+4. Run it with doom_run_input.
+5. Read resulting frame + telemetry.
+6. Detect progress, collision/stall, damage or enemy pressure.
+7. Choose another short action.
+8. If the design itself is the problem, edit actors/light/doors/materials.
+9. Reload or continue playtest.
+10. Export the accepted result as PWAD.
+```
+
+A useful stuck heuristic is: substantial forward input + near-zero `distanceUnits` growth. The AI can then turn, inspect the frame or try `use` instead of continuing to push blindly.
 
 # Architecture
 
@@ -178,71 +204,32 @@ Playtest-only helpers:
 MCP client
    │ stdio
    ▼
-playtest_server.js  (v0.7 entry)
-   ├── imports all authoring tools from server.js
-   ├── pause / resume / exact step
-   ├── telemetry
-   └── MCP image frame capture
+playtest_server.js (v0.8)
+   ├── v0.6 authoring tools
+   ├── v0.7 frame / telemetry / exact-step tools
+   └── v0.8 deterministic input / sequence tools
        │
-       ├──────── authoring WebSocket :3777/control
-       │
-       └──────── playtest WebSocket  :3778/playtest
+       ├──── :3777/control   authoring
+       └──── :3778/playtest  vision + autonomous input
                          │
                          ▼
-                  Browser / DoomControl
+                 Browser / DoomControl
                          │
-                Emscripten ccall + canvas
        ┌─────────────────┼──────────────────┐
        ▼                 ▼                  ▼
- doom_control.c    authoring modules   doom_playtest.c
- actors/sector     linedef/visual      pause/step/metrics
- PWAD/ChangeSet                           │
-       └─────────────────┬────────────────┘
+ authoring modules  doom_playtest.c   doom_agent_input.c
+ PWAD/ChangeSet     pause/metrics     bounded ticcmd override
+       └─────────────────┬──────────────────┘
                          ▼
                     LinuxDOOM
-                         │
-                         ▼
-               original P_Ticker()
-```
-
-The public GitHub Pages build does not connect to localhost when opened normally. Local bridges activate only when the game is loaded through the local MCP proxy.
-
-# Recommended AI evaluation loop
-
-A useful v0.7 session is:
-
-```text
-1. Inspect current room, enemies, doors and materials.
-2. Apply a bounded design change.
-3. Reset playtest metrics.
-4. Play normally or use controlled tic stepping.
-5. Pause.
-6. Capture frame + telemetry.
-7. Evaluate readability / pressure / damage / traversal.
-8. Revise authoring changes.
-9. Repeat observation.
-10. Export the accepted result as PWAD.
-11. Reload it as the next baseline.
-```
-
-Example:
-
-```text
-Make the opening room darker and more threatening without changing geometry.
-Use only assets that actually exist in the IWAD.
-Add two imps deeper in the room and keep the first encounter survivable.
-
-Reset the playtest metrics and let me test it.
-
-[after test]
-Pause the world, capture the frame and inspect the telemetry.
-If visibility is too poor or the encounter is too punishing, revise it.
-Then export the accepted version as horror_e1m1_v5.wad.
+                 G_Ticker → P_Ticker
 ```
 
 # Persistence boundary
 
-The playable artifact remains a normal PWAD. Current persistent map edits rewrite only safe existing-geometry records:
+Autonomous input is **playtest-only**. It never becomes part of the PWAD.
+
+Persistent content remains:
 
 ```text
 THINGS    actor placement
@@ -253,8 +240,6 @@ SECTORS   light + floor/ceiling flats
 
 `VERTEXES`, `SEGS`, `SSECTORS`, `NODES`, `REJECT` and `BLOCKMAP` remain unchanged.
 
-The project still deliberately avoids arbitrary geometry generation until a real node/blockmap rebuild pipeline is introduced.
+# Next milestone
 
-# What v0.7 does not yet do
-
-The AI can **observe** a frame and telemetry, but it does not yet autonomously drive a complete level from start to exit. The next milestone is a higher-level playtest agent/input layer that can perform controlled movement/actions, evaluate design goals, and decide when to revise or accept the authored PWAD.
+v0.8 gives an AI agency, but it still chooses actions turn by turn through the MCP host. The next useful milestone is **v0.9 design-goal evaluation / automated playtest policy**: structured goals such as survivability, visibility, traversal progress and encounter pressure, with repeatable acceptance criteria before a PWAD is accepted.
