@@ -3,7 +3,9 @@
 
 CC := emcc
 
-CFLAGS := -O2 -std=gnu89 -DNORMALUNIX -D__EMSCRIPTEN__ \
+PORT_FLAGS := -sUSE_SDL=2 -sUSE_SDL_MIXER=2 -sSDL2_MIXER_FORMATS='["mid"]'
+
+CFLAGS := -O2 -std=gnu89 -DNORMALUNIX -D__EMSCRIPTEN__ $(PORT_FLAGS) \
   -Wno-implicit-int \
   -Wno-implicit-function-declaration \
   -Wno-int-conversion \
@@ -25,11 +27,10 @@ SOURCES := \
   w_wad.c wi_stuff.c v_video.c st_lib.c st_stuff.c hu_stuff.c hu_lib.c \
   s_sound.c z_zone.c info.c sounds.c i_main.c
 
-EMFLAGS := \
-  -sUSE_SDL=2 \
+EMFLAGS := $(PORT_FLAGS) \
   -sASYNCIFY=1 \
   -sALLOW_MEMORY_GROWTH=1 \
-  -sINITIAL_MEMORY=33554432 \
+  -sINITIAL_MEMORY=67108864 \
   -sSTACK_SIZE=1048576 \
   -sFORCE_FILESYSTEM=1 \
   -sASSERTIONS=1 \
