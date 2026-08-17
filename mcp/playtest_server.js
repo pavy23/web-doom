@@ -5,16 +5,20 @@ import { WebSocket, WebSocketServer } from 'ws';
 import * as z from 'zod/v4';
 
 import { createMcpServer as createAuthoringServer, startBridge as startAuthoringBridge } from './server.js';
+import { evaluateTrial, normalizeGoal, summarizeTrial } from './evaluator.js';
 
 const HOST = '127.0.0.1';
 const PLAYTEST_PORT = 3778;
-const VERSION = '0.8.0';
+const VERSION = '0.9.0';
+const MAX_TRIAL_HISTORY = 20;
 
 let playtestHttpServer = null;
 let playtestWss = null;
 let browserSocket = null;
 let nextRequestId = 1;
+let nextTrialId = 1;
 const pending = new Map();
+const trialHistory = [];
 
 function jsonResult(value) {
   return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
@@ -88,7 +92,12 @@ export function startPlaytestBridge() {
 
   playtestHttpServer = http.createServer((req, res) => {
     if (req.url === '/health') {
-      const body = JSON.stringify({ ok: true, version: VERSION, browserConnected: Boolean(connected()) });
+      const body = JSON.stringify({
+        ok: true,
+        version: VERSION,
+        browserConnected: Boolean(connected()),
+        trials: trialHistory.length
+      });
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       res.end(body);
       return;
@@ -111,7 +120,7 @@ export function startPlaytestBridge() {
       try { browserSocket.close(1012, 'Replaced by newer playtest browser'); } catch {}
     }
     browserSocket = ws;
-    console.error('DOOM MCP: playtest/vision/agent bridge connected');
+    console.error('DOOM MCP: playtest/vision/agent/evaluation bridge connected');
 
     ws.on('message', raw => {
       try {
@@ -126,12 +135,12 @@ export function startPlaytestBridge() {
     ws.on('close', () => {
       if (browserSocket === ws) browserSocket = null;
       rejectAll('DOOM playtest browser disconnected');
-      console.error('DOOM MCP: playtest/vision/agent bridge disconnected');
+      console.error('DOOM MCP: playtest/vision/agent/evaluation bridge disconnected');
     });
   });
 
   playtestHttpServer.listen(PLAYTEST_PORT, HOST, () => {
-    console.error(`DOOM MCP: playtest/vision/agent bridge at ws://${HOST}:${PLAYTEST_PORT}/playtest`);
+    console.error(`DOOM MCP: playtest/vision/agent/evaluation bridge at ws://${HOST}:${PLAYTEST_PORT}/playtest`);
   });
   return playtestHttpServer;
 }
@@ -163,6 +172,50 @@ const actionShape = z.object({
   use: z.boolean().optional(),
   tics: z.number().int().min(1).max(350)
 });
+
+const goalShape = z.object({
+  name: z.string().max(96).optional(),
+  description: z.string().max(1000).optional(),
+  hard: z.object({
+    maxDeaths: z.number().min(0).optional(),
+    minFinalHealth: z.number().min(0).optional(),
+    maxElapsedSeconds: z.number().min(0).optional(),
+    minVisitedSectors: z.number().min(0).optional()
+  }).optional(),
+  targets: z.object({
+    maxDamageTaken: z.number().min(0).optional(),
+    minVisitedSectors: z.number().min(0).optional(),
+    minDistanceUnits: z.number().min(0).optional(),
+    maxStuckActions: z.number().min(0).optional(),
+    stuckDistanceThreshold: z.number().min(0).optional(),
+    movementIntentThreshold: z.number().min(0).max(2).optional(),
+    minKills: z.number().min(0).optional(),
+    maxElapsedSeconds: z.number().min(0).optional(),
+    minElapsedSeconds: z.number().min(0).optional(),
+    minScore: z.number().min(0).max(1).optional()
+  }).optional(),
+  weights: z.object({
+    survivability: z.number().min(0).optional(),
+    traversal: z.number().min(0).optional(),
+    combat: z.number().min(0).optional(),
+    pacing: z.number().min(0).optional(),
+    visual: z.number().min(0).optional()
+  }).optional(),
+  visualRubric: z.array(z.object({
+    id: z.string().min(1).max(48),
+    label: z.string().max(120).optional(),
+    minScore: z.number().min(0).max(1).optional(),
+    weight: z.number().min(0).optional()
+  })).max(8).optional()
+});
+
+const visualAssessmentShape = z.record(
+  z.string(),
+  z.union([
+    z.number().min(0).max(1),
+    z.object({ score: z.number().min(0).max(1), reason: z.string().max(300).optional() })
+  ])
+);
 
 function normalizedAction(action) {
   return {
@@ -202,15 +255,88 @@ async function runDeterministicAction(action) {
   return { command, before, after, agent };
 }
 
+function telemetrySummary(telemetry) {
+  return {
+    elapsedSeconds: Number(telemetry?.elapsedSeconds || 0),
+    worldTics: Number(telemetry?.worldTics || 0),
+    distanceUnits: Number(telemetry?.distanceUnits || 0),
+    damageTaken: Number(telemetry?.damageTaken || 0),
+    deaths: Number(telemetry?.deaths || 0),
+    killDelta: Number(telemetry?.killDelta || 0),
+    itemDelta: Number(telemetry?.itemDelta || 0),
+    secretDelta: Number(telemetry?.secretDelta || 0),
+    visitedSectors: Number(telemetry?.visitedSectors || 0),
+    finalHealth: Number(telemetry?.health || 0),
+    minHealth: Number(telemetry?.minHealth || 0),
+    actions: []
+  };
+}
+
+function rememberTrial(trial) {
+  trialHistory.push(trial);
+  while (trialHistory.length > MAX_TRIAL_HISTORY) trialHistory.shift();
+  return trial;
+}
+
+function findTrial(id) {
+  const trial = trialHistory.find(entry => entry.id === id);
+  if (!trial) throw new Error(`Unknown design trial: ${id}`);
+  return trial;
+}
+
+async function runDesignTrial(actions, inputGoal = {}) {
+  const totalTics = actions.reduce((sum, action) => sum + Math.trunc(action.tics), 0);
+  if (totalTics > 700) throw new Error(`Design trial is ${totalTics} tics; maximum is 700`);
+
+  await ensurePaused();
+  await playtestCall('cancel_agent_input');
+  await playtestCall('reset_playtest_metrics');
+  const baseline = await playtestCall('get_playtest_telemetry');
+  const results = [];
+
+  for (let index = 0; index < actions.length; index++) {
+    const result = await runDeterministicAction(actions[index]);
+    results.push({ index, ...result });
+    if (Number(result.after?.deaths || 0) > Number(result.before?.deaths || 0)
+        || Number(result.after?.health || 0) <= 0) {
+      break;
+    }
+  }
+
+  const final = await playtestCall('get_playtest_telemetry');
+  const rawTrial = { baseline, final, actions: results };
+  const summary = summarizeTrial(rawTrial);
+  const goal = normalizeGoal(inputGoal);
+  const evaluation = evaluateTrial({ goal, trial: rawTrial });
+  const id = `trial-${String(nextTrialId++).padStart(4, '0')}`;
+  return rememberTrial({
+    id,
+    createdAt: new Date().toISOString(),
+    goal,
+    requestedActions: actions.length,
+    executedActions: results.length,
+    totalRequestedTics: totalTics,
+    raw: rawTrial,
+    summary,
+    evaluation,
+    visualAssessment: {}
+  });
+}
+
 export function createMcpServer() {
   const server = createAuthoringServer();
 
   server.registerTool('doom_playtest_status', {
     title: 'DOOM AI playtest status',
-    description: 'Check the v0.8 playtest/vision/agent bridge used for screenshots, telemetry, exact world-tic stepping and autonomous input.',
+    description: 'Check the v0.9 playtest/vision/agent/evaluation bridge and stored design-trial count.',
     inputSchema: z.object({}),
     annotations: { readOnlyHint: true }
-  }, async () => jsonResult({ version: VERSION, connected: Boolean(connected()), playtestPort: PLAYTEST_PORT }));
+  }, async () => jsonResult({
+    version: VERSION,
+    connected: Boolean(connected()),
+    playtestPort: PLAYTEST_PORT,
+    trialCount: trialHistory.length
+  }));
 
   server.registerTool('doom_pause_playtest', {
     title: 'Pause DOOM world simulation',
@@ -324,7 +450,7 @@ export function createMcpServer() {
 
   server.registerTool('doom_run_input_sequence', {
     title: 'Run a bounded deterministic DOOM input sequence',
-    description: 'Execute up to 16 autonomous ticcmd actions sequentially while paused. Total sequence length is capped at 700 world tics. Useful for short navigation/combat plans followed by visual evaluation.',
+    description: 'Execute up to 16 autonomous ticcmd actions sequentially while paused. Total sequence length is capped at 700 world tics.',
     inputSchema: z.object({ actions: z.array(actionShape).min(1).max(16), captureAfter: z.boolean().optional() }),
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false }
   }, async ({ actions, captureAfter = true }) => {
@@ -351,6 +477,103 @@ export function createMcpServer() {
     }
   });
 
+  server.registerTool('doom_evaluate_playtest', {
+    title: 'Evaluate a DOOM playtest against a design goal',
+    description: 'Score either the current telemetry window or a stored design trial against hard constraints, weighted targets and optional AI-vision rubric scores.',
+    inputSchema: z.object({
+      goal: goalShape.optional(),
+      trialId: z.string().optional(),
+      visualAssessment: visualAssessmentShape.optional()
+    }),
+    annotations: { readOnlyHint: true }
+  }, async ({ goal = {}, trialId, visualAssessment = {} }) => {
+    try {
+      if (trialId) {
+        const trial = findTrial(trialId);
+        const effectiveGoal = Object.keys(goal).length ? normalizeGoal(goal) : trial.goal;
+        const evaluation = evaluateTrial({ goal: effectiveGoal, trial: trial.raw, visualAssessment });
+        trial.goal = effectiveGoal;
+        trial.visualAssessment = visualAssessment;
+        trial.evaluation = evaluation;
+        return jsonResult({ trialId, evaluation });
+      }
+      const telemetry = await playtestCall('get_playtest_telemetry');
+      return jsonResult({
+        live: true,
+        evaluation: evaluateTrial({ goal, trial: telemetrySummary(telemetry), visualAssessment })
+      });
+    } catch (error) { return toolError(error); }
+  });
+
+  server.registerTool('doom_run_design_trial', {
+    title: 'Run and score a bounded DOOM design trial',
+    description: 'Reset telemetry, execute a bounded autonomous action plan, store all action telemetry, score it against the supplied design goal, and return a final PNG for optional vision scoring.',
+    inputSchema: z.object({
+      goal: goalShape.optional(),
+      actions: z.array(actionShape).min(1).max(16)
+    }),
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false }
+  }, async ({ goal = {}, actions }) => {
+    try {
+      const trial = await runDesignTrial(actions, goal);
+      const frame = await playtestCall('capture_frame', {}, 10000);
+      return imageResult(frame, {
+        designTrial: {
+          id: trial.id,
+          goal: trial.goal,
+          requestedActions: trial.requestedActions,
+          executedActions: trial.executedActions,
+          totalRequestedTics: trial.totalRequestedTics,
+          summary: trial.summary,
+          evaluation: trial.evaluation
+        }
+      });
+    } catch (error) {
+      try { await playtestCall('cancel_agent_input'); } catch {}
+      return toolError(error);
+    }
+  });
+
+  server.registerTool('doom_get_trial_history', {
+    title: 'Read recent DOOM design trials',
+    description: 'Return recent stored trial goals, scores, pass/fail status and summary metrics without image payloads.',
+    inputSchema: z.object({ limit: z.number().int().min(1).max(20).optional() }),
+    annotations: { readOnlyHint: true }
+  }, async ({ limit = 10 }) => {
+    const items = trialHistory.slice(-limit).reverse().map(trial => ({
+      id: trial.id,
+      createdAt: trial.createdAt,
+      goal: trial.goal,
+      score: trial.evaluation?.score,
+      passed: trial.evaluation?.passed,
+      hardFailures: trial.evaluation?.hardFailures || [],
+      targetFailures: trial.evaluation?.targetFailures || [],
+      summary: trial.summary
+    }));
+    return jsonResult({ version: VERSION, trials: items });
+  });
+
+  server.registerTool('doom_compare_trials', {
+    title: 'Compare DOOM design trials',
+    description: 'Compare two to six stored design trials by score and key telemetry to identify the strongest authored iteration.',
+    inputSchema: z.object({ trialIds: z.array(z.string()).min(2).max(6) }),
+    annotations: { readOnlyHint: true }
+  }, async ({ trialIds }) => {
+    try {
+      const trials = trialIds.map(findTrial).map(trial => ({
+        id: trial.id,
+        score: Number(trial.evaluation?.score || 0),
+        passed: Boolean(trial.evaluation?.passed),
+        dimensions: trial.evaluation?.dimensions || {},
+        hardFailures: trial.evaluation?.hardFailures || [],
+        targetFailures: trial.evaluation?.targetFailures || [],
+        summary: trial.summary
+      }));
+      trials.sort((a, b) => b.score - a.score);
+      return jsonResult({ winner: trials[0]?.id || null, ranking: trials });
+    } catch (error) { return toolError(error); }
+  });
+
   return server;
 }
 
@@ -363,5 +586,5 @@ if (isDirectExecution()) {
   startAuthoringBridge();
   startPlaytestBridge();
   void serveStdio(createMcpServer);
-  console.error(`DOOM MCP ${VERSION}: authoring + autonomous playtest/vision stdio server ready`);
+  console.error(`DOOM MCP ${VERSION}: authoring + autonomous playtest + design evaluation stdio server ready`);
 }
