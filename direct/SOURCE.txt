@@ -18,31 +18,29 @@ Audio:
   commit 410d96855b5df5410ff591a90efeafa889119224.
 - Nuked OPL3 v1.8 in OPL2-compatible nine-voice mode by default.
 
-MCP / AI authoring + playtest (v0.7):
-- Persistent content authoring covers THINGS, LINEDEFS, SIDEDEFS and
-  SECTORS without mutating map topology/BSP-derived lumps.
-- doom_control.c handles state, actors, sector light, ChangeSet and PWAD.
-- doom_linedefs.c handles existing door/trigger special+tag authoring.
-- doom_visuals.c handles asset-validated wall textures and sector flats.
-- doom_reload.c validates/loads exported PWADs through W_AddFile() and
-  rebuilds the current map via G_InitNew(), resetting authoring baselines.
-- doom_playtest.c adds a bounded execution controller and telemetry.
-- Vanilla P_Ticker() remains the world simulation; when paused, a build
-  patch permits only explicitly budgeted MCP world tics through its pause
-  gate, enabling exact deterministic step observation.
-- Telemetry tracks elapsed world tics/time, sectors visited, approximate
-  travel distance, health/damage/healing, deaths, kills/items/secrets and
-  current ammunition from a resettable measurement baseline.
-- playtest_bridge.js captures the final SDL/Emscripten canvas as PNG and
-  keeps a dedicated localhost playtest WebSocket on 127.0.0.1:3778.
-- mcp/playtest_server.js extends the existing authoring server with pause,
-  resume, exact tic step, telemetry and MCP image-content frame capture.
-- The existing authoring bridge remains on 127.0.0.1:3777; public Pages
-  never connects to localhost unless loaded through the local MCP proxy.
+MCP / AI authoring + autonomous playtest (v0.8):
+- Persistent authoring still rewrites only THINGS, LINEDEFS, SIDEDEFS
+  and SECTORS while topology/BSP-derived map lumps stay unchanged.
+- v0.7 pause, exact P_Ticker stepping, telemetry and PNG frame capture
+  remain the observation layer.
+- doom_agent_input.c adds a bounded console-player ticcmd override for
+  forward/back, strafe, turn, attack and use. It is playtest-only.
+- patch_agent_input.py inserts the override after LinuxDOOM G_Ticker()
+  selects the actual local net/demo command and before gameplay consumes it.
+- Autonomous input lifetime is decremented only after an actual P_Ticker
+  world update, so paused browser frames cannot consume planned input.
+- doom_run_input combines one bounded input with an exact world-tic budget,
+  leaving the world paused for deterministic frame/telemetry evaluation.
+- doom_run_input_sequence executes up to 16 short actions with a bounded
+  total simulation budget and stops early on player death.
+- AI actions never synthesize BT_SPECIAL/save/pause/weapon-change commands
+  and never persist into exported PWADs.
+- Authoring remains on 127.0.0.1:3777/control; playtest/vision/agent traffic
+  uses 127.0.0.1:3778/playtest only when loaded through the local MCP proxy.
 
 Loop:
-AI inspect -> edit -> playtest -> pause/capture/telemetry -> evaluate
--> revise -> ChangeSet -> PWAD export/reload -> next iteration.
+AI inspect -> edit -> short input -> exact tics -> frame + telemetry
+-> evaluate -> next action or revise -> PWAD export/reload.
 
 Shareware game data:
 - Redistributable DOOM shareware IWAD fetched from SDL archive during CI.
