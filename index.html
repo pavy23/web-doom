@@ -4,30 +4,40 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <meta name="theme-color" content="#050505">
-<title>DOOM — WebAssembly</title>
+<title>DOOM — WebAssembly + Sound</title>
 <style>
-*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:#050505;color:#eee;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}body{display:flex;flex-direction:column;min-height:100vh;background:radial-gradient(circle at 50% -10%,#3a100b,#100706 38%,#030303 72%)}header{height:54px;display:flex;align-items:center;justify-content:space-between;padding:0 14px;border-bottom:1px solid #43261d;background:#080605}.brand{font:900 31px/.8 Impact,Haettenschweiler,"Arial Narrow Bold",sans-serif;color:#e33f2f;text-shadow:0 3px #58100b;letter-spacing:.045em}.tag{font-size:10px;color:#96776a;letter-spacing:.12em;margin-left:12px}.actions{display:flex;gap:7px}button{border:1px solid #76503d;background:#24140e;color:#eee;padding:8px 10px;font:700 11px monospace;cursor:pointer}main{flex:1;display:grid;place-items:center;padding:12px}#game{position:relative;width:min(100%,960px);background:#000;border:1px solid #493126;box-shadow:0 20px 80px #000}canvas{display:block;width:100%;height:auto;aspect-ratio:8/5;image-rendering:pixelated;outline:none;background:#000}.hint{padding:9px 11px;color:#c6b5aa;background:#0b0908;border-top:1px solid #2f241f;font-size:10px;text-align:center}.mobile{display:none;grid-template-columns:repeat(4,1fr);gap:6px;padding:8px;background:#090706}.mobile button{min-height:42px;font-size:13px;touch-action:none}.hidden{display:none!important}#boot{position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.9);z-index:2;text-align:center;padding:20px}.panel{border:1px solid #62352a;background:#110b09;padding:24px;max-width:520px;width:100%}.doomlogo{font:900 clamp(60px,14vw,110px)/.74 Impact,Haettenschweiler,"Arial Narrow Bold",sans-serif;color:#d83a2b;text-shadow:0 5px #5b0f09;margin-bottom:20px}.status{font-size:11px;color:#c6945f;line-height:1.6}.error{color:#ff9d91;margin-top:10px;white-space:pre-wrap;text-align:left;font-size:10px}footer{text-align:center;color:#6e625c;font-size:9px;padding:8px}.stats,#output{display:none}@media(max-width:760px){.tag{display:none}.mobile{display:grid}main{padding:0}#game{width:100%;border-left:0;border-right:0}.hint{font-size:9px}}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:#050505;color:#eee;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}body{display:flex;flex-direction:column;min-height:100vh;background:radial-gradient(circle at 50% -10%,#40120c,#100706 38%,#030303 72%)}header{min-height:54px;display:flex;align-items:center;justify-content:space-between;padding:8px 14px;border-bottom:1px solid #43261d;background:#080605;gap:12px}.brand{font:900 31px/.8 Impact,Haettenschweiler,"Arial Narrow Bold",sans-serif;color:#e33f2f;text-shadow:0 3px #58100b;letter-spacing:.045em}.tag{font-size:10px;color:#96776a;letter-spacing:.12em;margin-left:12px}.actions{display:flex;gap:7px}button,.filebtn{border:1px solid #76503d;background:#24140e;color:#eee;padding:9px 12px;font:700 11px monospace;cursor:pointer}.filebtn{display:inline-block}.filebtn input{display:none}button:hover,.filebtn:hover{background:#382017}button:disabled{opacity:.35;cursor:not-allowed}main{flex:1;display:grid;place-items:center;padding:12px}#game{position:relative;width:min(100%,960px);background:#000;border:1px solid #493126;box-shadow:0 20px 80px #000}canvas{display:block;width:100%;height:auto;aspect-ratio:8/5;image-rendering:pixelated;outline:none;background:#000}.hint{padding:9px 11px;color:#c6b5aa;background:#0b0908;border-top:1px solid #2f241f;font-size:10px;text-align:center}.hidden{display:none!important}#launcher{position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.93);z-index:3;text-align:center;padding:18px}.panel{border:1px solid #62352a;background:linear-gradient(#160d0a,#0b0807);padding:25px;max-width:590px;width:100%;box-shadow:0 20px 80px #000}.doomlogo{font:900 clamp(62px,14vw,112px)/.74 Impact,Haettenschweiler,"Arial Narrow Bold",sans-serif;color:#d83a2b;text-shadow:0 5px #5b0f09;margin-bottom:20px}.status{font-size:11px;color:#c6945f;line-height:1.6;min-height:18px}.error{color:#ff9d91;margin-top:10px;white-space:pre-wrap;text-align:left;font-size:10px}.choices{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:18px 0 12px}.primary{background:#7e1d14;border-color:#bd5b35;font-size:13px}.wadrow{display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap}.selected{font-size:10px;color:#9b8d84;word-break:break-all;margin-top:8px}.badges{display:flex;justify-content:center;gap:7px;flex-wrap:wrap;margin:12px 0}.badge{font-size:9px;border:1px solid #554036;color:#baaa9f;padding:4px 7px;background:#0b0908}footer{text-align:center;color:#6e625c;font-size:9px;padding:8px}@media(max-width:760px){.tag{display:none}main{padding:0}#game{width:100%;border-left:0;border-right:0}.choices{grid-template-columns:1fr}.panel{padding:19px 13px}.hint{font-size:9px}}
 </style>
 </head>
 <body>
-<header><div><span class="brand">DOOM</span><span class="tag">ORIGINAL LINUX DOOM · WEBASSEMBLY</span></div><div class="actions"><button id="restart">RESTART</button><button id="fullscreen">FULLSCREEN</button></div></header>
+<header>
+  <div><span class="brand">DOOM</span><span class="tag">DOOMGENERIC · WASM · SDL2 AUDIO</span></div>
+  <div class="actions"><button id="restart">RESTART</button><button id="fullscreen">FULLSCREEN</button></div>
+</header>
 <main>
   <section id="game">
-    <canvas id="screen" width="640" height="400" tabindex="0"></canvas>
-    <div id="boot"><div class="panel"><div class="doomlogo">DOOM</div><div id="bootStatus" class="status">LOADING DOOM.WASM…</div><div id="bootError" class="error"></div></div></div>
-    <div id="focushint" class="hint">Click the DOOM canvas to capture keyboard input.</div>
-    <div class="mobile">
-      <button id="leftButton">◀</button><button id="upButton">▲</button><button id="downButton">▼</button><button id="rightButton">▶</button>
-      <button id="ctrlButton">FIRE</button><button id="spaceButton">USE</button><button id="altButton">ALT</button><button id="enterButton">ENTER</button>
+    <canvas id="canvas" width="640" height="400" tabindex="0"></canvas>
+    <div id="launcher">
+      <div class="panel">
+        <div class="doomlogo">DOOM</div>
+        <div class="badges"><span class="badge">SFX ✓</span><span class="badge">MUSIC ✓</span><span class="badge">SHAREWARE E1</span><span class="badge">LOCAL WAD</span></div>
+        <div class="choices">
+          <button id="playShareware" class="primary" disabled>▶ PLAY EPISODE 1</button>
+          <div class="wadrow">
+            <label class="filebtn">SELECT WAD<input id="wadFile" type="file" accept=".wad,application/octet-stream"></label>
+            <button id="playWad" disabled>PLAY WAD</button>
+          </div>
+        </div>
+        <div id="selected" class="selected">Commercial WADs stay on your device and are loaded only into browser memory.</div>
+        <div id="bootStatus" class="status">LOADING SOUND ENGINE…</div>
+        <div id="bootError" class="error"></div>
+      </div>
     </div>
+    <div id="focushint" class="hint">WASD / Arrow keys move & turn · Ctrl/J fire · Space/E use · Shift run · Esc menu</div>
   </section>
 </main>
-<footer>Arrow keys move/turn · Ctrl fire · Space use · Shift run · 1–7 weapons · Esc menu</footer>
-<div class="stats"><span id="getmsps_stats"></span><span id="getms_stats"></span><span id="fps_stats"></span><span id="drawframes_stats"></span><span id="animationfps_stats"></span></div><div id="output"></div>
+<footer>Sound-enabled doomgeneric · Emscripten + SDL2/SDL2_mixer · Shareware Episode 1 or your own local IWAD</footer>
+<script src="engine.js"></script>
 <script src="main.js"></script>
-<script>
-document.getElementById('restart').onclick=()=>location.reload();
-document.getElementById('fullscreen').onclick=async()=>{const g=document.getElementById('game');try{if(!document.fullscreenElement)await g.requestFullscreen();else await document.exitFullscreen();document.getElementById('screen').focus()}catch(e){console.warn(e)}};
-</script>
 </body>
 </html>
