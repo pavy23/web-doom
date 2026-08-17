@@ -10,6 +10,9 @@ CHOCO_COMMIT := 410d96855b5df5410ff591a90efeafa889119224
 CHOCO_DIR := /tmp/chocolate-doom-opl
 IMPORT_SCRIPT := $(GITHUB_WORKSPACE)/direct-port/import_vanilla_opl.py
 CONTROL_SOURCE := $(GITHUB_WORKSPACE)/direct-port/doom_control.c
+RELOAD_SOURCE := $(GITHUB_WORKSPACE)/direct-port/doom_reload.c
+RELOAD_PATCH := $(GITHUB_WORKSPACE)/direct-port/patch_control_reload.py
+RELOAD_PRE_JS := $(GITHUB_WORKSPACE)/direct-port/authoring_reload_bridge.js
 MCP_DIR := $(GITHUB_WORKSPACE)/mcp
 MCP_SERVER := $(MCP_DIR)/server.js
 MCP_PACKAGE := $(MCP_DIR)/package.json
@@ -20,7 +23,7 @@ CFLAGS := -O2 -w -std=gnu89 -DNORMALUNIX -D__EMSCRIPTEN__ $(PORT_FLAGS) -I. -Ich
 
 SOURCES := \
   doomdef.c doomstat.c dstrings.c \
-  i_system.c i_sound.c i_video.c i_net.c doom_control.c \
+  i_system.c i_sound.c i_video.c i_net.c doom_control.c doom_reload.c \
   choco_opl/i_oplmusic.c choco_opl/memio.c choco_opl/mus2mid.c \
   choco_opl/midifile.c choco_opl/opl.c choco_opl/opl_queue.c \
   choco_opl/opl_sdl.c choco_opl/opl3.c \
@@ -44,6 +47,7 @@ EMFLAGS := $(PORT_FLAGS) \
   -sINVOKE_RUN=0 \
   -sEXIT_RUNTIME=0 \
   -sEXPORTED_RUNTIME_METHODS=callMain,ccall,FS \
+  --pre-js $(RELOAD_PRE_JS) \
   --preload-file doom1.wad@doom1.wad \
   --shell-file shell.html
 
@@ -64,7 +68,12 @@ prepare-opl:
 prepare-control:
 	@test -n "$(GITHUB_WORKSPACE)" || (echo "GITHUB_WORKSPACE is required" && false)
 	test -f $(CONTROL_SOURCE)
+	test -f $(RELOAD_SOURCE)
+	test -f $(RELOAD_PATCH)
+	test -f $(RELOAD_PRE_JS)
 	cp $(CONTROL_SOURCE) doom_control.c
+	cp $(RELOAD_SOURCE) doom_reload.c
+	python3 $(RELOAD_PATCH) doom_control.c
 	grep -q "doomctl_get_state_json" doom_control.c
 	grep -q "doomctl_spawn_enemy" doom_control.c
 	grep -q "doomctl_remove_nearest_enemy_json" doom_control.c
@@ -72,6 +81,11 @@ prepare-control:
 	grep -q "doomctl_set_sector_light" doom_control.c
 	grep -q "doomctl_get_changeset_json" doom_control.c
 	grep -q "doomctl_export_pwad" doom_control.c
+	grep -q "doomctl_reset_changeset" doom_control.c
+	grep -q "doomctl_load_pwad_json" doom_reload.c
+	grep -q "doomctl_reload_current_map_json" doom_reload.c
+	grep -q "W_AddFile" doom_reload.c
+	grep -q "G_InitNew" doom_reload.c
 	grep -q "P_CheckSight" doom_control.c
 	grep -q "P_CheckPosition" doom_control.c
 	grep -q 'memcpy(header, "PWAD"' doom_control.c
@@ -94,6 +108,9 @@ validate-mcp:
 	grep -q "doom_remove_nearest_enemy" $(MCP_SERVER)
 	grep -q "doom_get_changeset" $(MCP_SERVER)
 	grep -q "doom_export_pwad" $(MCP_SERVER)
+	grep -q "doom_list_exports" $(MCP_SERVER)
+	grep -q "doom_load_pwad" $(MCP_SERVER)
+	grep -q "doom_reload_current_map" $(MCP_SERVER)
 	grep -q "serveStdio" $(MCP_SERVER)
 
 webdoom.html: $(SOURCES) doom1.wad shell.html
@@ -107,5 +124,5 @@ webdoom.html: $(SOURCES) doom1.wad shell.html
 
 clean:
 	rm -rf choco_opl
-	rm -f doom_control.c
+	rm -f doom_control.c doom_reload.c
 	rm -f webdoom.html webdoom.js webdoom.wasm webdoom.data emcc-build.log
