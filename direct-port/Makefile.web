@@ -10,15 +10,9 @@ CHOCO_COMMIT := 410d96855b5df5410ff591a90efeafa889119224
 CHOCO_DIR := /tmp/chocolate-doom-opl
 IMPORT_SCRIPT := $(GITHUB_WORKSPACE)/direct-port/import_vanilla_opl.py
 
-CFLAGS := -O2 -std=gnu89 -DNORMALUNIX -D__EMSCRIPTEN__ $(PORT_FLAGS) -I. -Ichoco_opl \
-  -Wno-implicit-int \
-  -Wno-implicit-function-declaration \
-  -Wno-int-conversion \
-  -Wno-incompatible-pointer-types \
-  -Wno-deprecated-non-prototype \
-  -Wno-parentheses \
-  -Wno-unused-value \
-  -Wno-format
+# LinuxDOOM 1.10 predates modern compiler diagnostics by decades. Suppress
+# legacy warnings so CI logs surface real adapter/link errors clearly.
+CFLAGS := -O2 -w -std=gnu89 -DNORMALUNIX -D__EMSCRIPTEN__ $(PORT_FLAGS) -I. -Ichoco_opl
 
 SOURCES := \
   doomdef.c doomstat.c dstrings.c \
