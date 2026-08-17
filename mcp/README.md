@@ -2,39 +2,31 @@
 
 This directory contains the local MCP authoring/control layer for the direct LinuxDOOM WebAssembly port.
 
-It connects an MCP client such as Claude Code, Cursor, Codex or the MCP Inspector to a **live running DOOM simulation**, records selected world edits, exports them as a real PWAD, and can now load that PWAD back into the same running browser session as the next authoring baseline.
+It connects an MCP client such as Claude Code, Cursor, Codex or the MCP Inspector to a **live running DOOM simulation**, records selected world edits, exports them as a real PWAD, reloads that PWAD as the next baseline, and now also edits safe existing `LINEDEFS` door/trigger behavior.
 
-Current MCP version: **0.4.0**
+Current MCP version: **0.5.0**
 
-## What v0.4 proves
+## What v0.5 adds
 
 ```text
-AI instruction
+AI inspection
    ↓
-MCP live inspection
+nearby LINEDEFS / doors
    ↓
-actor / sector edits
+existing special + tag semantics
    ↓
-LinuxDOOM playtest
+optional live activation through P_UseSpecialLine()
    ↓
-ChangeSet journal
+safe preset edit of special/tag
+   ↓
+LINEDEFS ChangeSet
    ↓
 PWAD export
    ↓
-local .wad file
-   ↓
-PWAD validation + reload
-   ↓
-LinuxDOOM native WAD override
-   ↓
-current map rebuilt
-   ↓
-ChangeSet reset
-   ↓
-next AI iteration
+reload as next baseline
 ```
 
-This closes the first **author → persist → reload → verify → iterate** loop. The MCP layer is therefore no longer only a live cheat/debug surface; it is becoming a small AI-native level-authoring pipeline.
+The important boundary is that v0.5 does **not** move vertices or rebuild geometry. It changes only existing linedef semantic fields (`special` and `tag`), which can be persisted directly in the historical 14-byte `maplinedef_t` record without regenerating BSP-derived lumps.
 
 ## Architecture
 
@@ -43,8 +35,8 @@ MCP client
    │ stdio
    ▼
 mcp/server.js
-   ├── semantic MCP tools
-   ├── localhost HTTP proxy  http://127.0.0.1:3777/
+   ├── perception / authoring tools
+   ├── localhost HTTP proxy
    ├── WebSocket /control
    └── local PWAD store -> mcp/exports/
                          │
@@ -53,29 +45,22 @@ mcp/server.js
                          │
                   window.DoomControl
                          │
-            Emscripten ccall + FS
-                  │               │
-                  ▼               ▼
-          doom_control.c      doom_reload.c
-          ├── live state      ├── PWAD validation
-          ├── actor edits     ├── lumpcache growth
-          ├── sector edits    ├── W_AddFile()
-          ├── ChangeSet       └── G_InitNew()
-          └── PWAD writer
-                  │
-                  ▼
-           LinuxDOOM runtime
+                 Emscripten ccall
+          ┌──────────────┼──────────────┐
+          ▼              ▼              ▼
+ doom_control.c    doom_linedefs.c  doom_reload.c
+ actor/sector      line semantics    PWAD baseline
+ ChangeSet/PWAD    LINEDEFS patch    reload
+          └──────────────┼──────────────┘
+                         ▼
+                  LinuxDOOM runtime
 ```
 
-The normal public GitHub Pages game does **not** connect to localhost. MCP authoring mode is used through the local proxy so the game and control WebSocket share `127.0.0.1`.
+The public GitHub Pages build never opens a localhost connection by itself. MCP mode is used through the local proxy at `127.0.0.1`.
 
-## Requirements
+## Setup
 
-- Node.js 20 or newer
-- npm
-- a local MCP client, or the MCP Inspector
-
-## Install
+Requirements: Node.js 20+, npm and an MCP client (or MCP Inspector).
 
 ```bash
 git clone https://github.com/pavy23/web-doom.git
@@ -83,147 +68,143 @@ cd web-doom
 git checkout direct-linuxdoom
 cd mcp
 npm install
-```
-
-## Quick manual test
-
-Start the local bridge:
-
-```bash
 npm start
 ```
 
-Open:
+Then open:
 
 ```text
 http://127.0.0.1:3777/
 ```
 
-Click **CLICK TO START**. When attached, the DOOM top bar shows **MCP CONNECTED**.
+Click **CLICK TO START**. The top bar shows **MCP CONNECTED** when the browser bridge is attached.
 
-Health/debug endpoint:
-
-```text
-http://127.0.0.1:3777/health
-```
-
-## MCP Inspector
+For MCP Inspector:
 
 ```bash
 npx @modelcontextprotocol/inspector node server.js
 ```
 
-Then start DOOM through `http://127.0.0.1:3777/` before calling live tools.
+For an MCP host, configure `server.js` as a local stdio server using an absolute path. Do not also run a second `npm start` on the same port.
 
-## MCP client configuration
+# MCP tools
 
-Configure `server.js` as a local **stdio** MCP server:
+## Inspection
 
-```json
-{
-  "command": "node",
-  "args": ["C:/absolute/path/to/web-doom/mcp/server.js"]
-}
-```
+- `doom_bridge_status` — server/browser status and export directory
+- `doom_get_state` — map, player, current sector, enemies and stats
+- `doom_get_enemies` — nearest/visible enemy query
+- `doom_get_sectors` — floor/ceiling/light/special/tag metadata
+- `doom_get_linedefs` — nearby linedef/door semantics and geometry references
+- `doom_get_changeset` — combined sector/actor/linedef persistent edits
 
-When an MCP host launches the server, do not also run `npm start` on the same port.
+### `doom_get_linedefs`
 
-# Tools
+Returns linedefs with:
 
-## Read / perception
+- `index`
+- `special`
+- decoded `action`
+- `doorLike`
+- `tag`
+- flags / two-sided state
+- front/back sector indices
+- x1/y1/x2/y2
+- approximate player distance
 
-### `doom_bridge_status`
+Useful filters:
 
-Reports MCP version, live browser connection, localhost play URL and PWAD export directory.
-
-### `doom_get_state`
-
-Reads episode/map/skill/tic, current sector, player state, ammunition/statistics and live enemies.
-
-Each enemy includes:
-
-- canonical name and numeric type
-- health and x/y/z
-- distance from player
-- relative view angle
-- LinuxDOOM `P_CheckSight()` result
-- forward-90-degree `visible` flag
-
-### `doom_get_enemies`
-
-Nearest-first enemy query with optional:
-
-- `visibleOnly`
 - `maxDistance`
+- `doorsOnly`
+- `specialsOnly`
 - `limit`
 
-### `doom_get_sectors`
-
-Reads runtime sectors with:
-
-- index / current-sector flag
-- floor / ceiling height
-- light level
-- special
-- tag
-- approximate sound-origin coordinates
-- player distance
-
-### `doom_get_changeset`
-
-Shows persistent authoring edits made **since the current IWAD/PWAD baseline was loaded**.
-
-Current persistent operations:
+Example:
 
 ```text
-sector light edit  -> SECTORS patch
-spawn enemy        -> THINGS append
-remove map enemy   -> THINGS removal
-remove new spawn   -> cancel pending append
+Show me the nearby door-related linedefs within 600 map units.
 ```
 
-## Live authoring mutations
+## Persistent authoring
 
 ### `doom_set_sector_light`
 
-Sets sector light `0..255` immediately and records the edit for PWAD export.
+Changes light `0..255` and persists it as a `SECTORS` patch.
 
-### `doom_spawn_enemy`
+### `doom_spawn_enemy` / `doom_remove_nearest_enemy`
 
-Spawns one to eight shareware-safe enemies and records successful spawns as persistent `THINGS` entries.
+Persist actor additions/removals by rebuilding `THINGS`.
 
-Supported public-demo types:
+### `doom_set_linedef_action`
 
-- `zombieman`
-- `shotgun_guy`
-- `imp`
-- `demon`
-- `spectre`
-- `baron_of_hell`
+Changes only an existing linedef's Vanilla `special` and optional `tag`, and journals that change for `LINEDEFS` export.
 
-Spawns go through `P_SpawnMobj()` and `P_CheckPosition()`.
+Supported bounded presets:
 
-### `doom_remove_nearest_enemy`
+```text
+none
+manual_raise
+manual_open
+switch_raise_once
+switch_open_once
+switch_close_once
+button_raise
+button_open
+button_close
+manual_blazing_raise
+manual_blazing_open
+switch_blazing_raise_once
+switch_blazing_open_once
+switch_blazing_close_once
+button_blazing_raise
+button_blazing_open
+button_blazing_close
+```
 
-Removes the nearest enemy through `P_RemoveMobj()`.
+Remote switch/button presets normally need a meaningful sector `tag`; inspect the target map's existing tags before changing them. Manual door specials act on the adjacent back sector and usually do not depend on a remote tag.
 
-An original map actor becomes a persistent `THINGS` removal. Removing an actor created during the current authoring pass cancels its pending spawn instead.
+Example:
 
-## Play/debug-only mutations
+```text
+Inspect linedef 124. Change it into a reusable door-open button targeting tag 7.
+```
 
-These are intentionally **not** serialized into level content:
+### `doom_activate_linedef`
+
+Calls LinuxDOOM's original `P_UseSpecialLine(player, line, 0)` immediately so a selected door/trigger can be playtested.
+
+This activation is **playtest-only**. One-shot specials may consume themselves or animate switch textures at runtime, but that temporary activation is not automatically serialized. Use `doom_set_linedef_action` for the persistent behavior definition.
+
+Example:
+
+```text
+Activate linedef 124 now so I can test what it does.
+```
+
+## Debug-only tools
+
+These do not become level content:
 
 - `doom_heal`
 - `doom_give_ammo`
 - `doom_teleport`
 
-# PWAD persistence
+# Combined ChangeSet
 
-## `doom_export_pwad`
+`doom_get_changeset` now combines:
 
-Exports the current `ExMy` map as a standard PWAD.
+```text
+sector light      -> SECTORS
+spawn/remove      -> THINGS
+linedef special   -> LINEDEFS
+linedef tag       -> LINEDEFS
+```
 
-The complete map lump set is retained:
+PWAD load/reload protection treats any of these as unsaved authoring work.
+
+# PWAD export / reload
+
+`doom_export_pwad` keeps the complete current map lump set:
 
 ```text
 ExMy
@@ -239,156 +220,72 @@ REJECT
 BLOCKMAP
 ```
 
-During export:
+v0.5 export behavior:
 
-- `THINGS` is rebuilt from the current baseline plus actor ChangeSet.
-- `SECTORS` is copied and patched with light edits.
-- remaining map lumps are copied unchanged.
-- the C engine writes a standard `PWAD` header/directory into Emscripten FS.
-- browser sends the binary through the local WebSocket.
-- `mcp/server.js` validates it and writes it under `mcp/exports/`.
+- `THINGS`: rebuild actor additions/removals
+- `LINEDEFS`: patch journaled `special` and `tag`
+- `SECTORS`: patch journaled light levels
+- all other current-map lumps: copy unchanged
 
-Example:
+This is safe for the supported linedef edits because `maplinedef_t` stores `special/tag` independently from BSP topology. Vertices, sidedefs, segs, subsectors and nodes are not rewritten.
 
-```text
-Export these changes as horror_e1m1_v1.wad.
-```
+`doom_list_exports`, `doom_load_pwad` and `doom_reload_current_map` remain the iterative baseline tools. PWAD import is validated in Node and again in C; LinuxDOOM's lump cache is expanded before runtime `W_AddFile()`, then `G_InitNew()` rebuilds the current level. A successful reload resets actor/sector **and linedef** ChangeSets so the imported file becomes the new baseline.
 
-Set `DOOM_MCP_EXPORT_DIR` to use another output folder.
-
-## `doom_list_exports`
-
-Lists `.wad` iterations available in the local export directory, newest first.
-
-Example:
+# Recommended v0.5 workflow
 
 ```text
-Show me the PWAD versions we have exported so far.
+1. doom_get_state
+2. doom_get_sectors
+3. doom_get_linedefs doorsOnly=true
+4. identify an existing door / switch / target tag
+5. doom_activate_linedef for a temporary behavior test
+6. doom_set_linedef_action for the persistent rule
+7. adjust lighting / actors as needed
+8. doom_get_changeset
+9. playtest
+10. doom_export_pwad filename=v1.wad
+11. doom_load_pwad filename=v1.wad discardChanges=true
+12. inspect again and continue to v2
 ```
 
-## `doom_load_pwad`
-
-Loads an exported PWAD into the **currently running browser DOOM** and makes it the new authoring baseline.
-
-Example:
+Example natural-language session:
 
 ```text
-Load horror_e1m1_v1.wad and make it our new baseline.
+Find the nearest door-related lines.
+Tell me which one controls the next room and which sector tag it targets.
+Make that door open from a reusable button instead of its current behavior.
+Darken the room behind it and add two imps.
+Let me test the door now.
+Export everything as horror_e1m1_v2.wad and reload it as our baseline.
 ```
 
-The load path is deliberately defensive:
+# Integrity boundary
 
-1. Node reads only a filename from the configured export directory; paths/traversal are rejected.
-2. Node validates `PWAD` magic, directory bounds and every lump's byte range.
-3. Node confirms the file contains the currently running `E#M#` marker.
-4. Browser writes the validated bytes into Emscripten FS.
-5. `doom_reload.c` independently validates the PWAD and canonical map lump order.
-6. Before runtime `W_AddFile()`, the adapter grows LinuxDOOM's startup-sized `lumpcache` and zeroes the new slots.
-7. `W_AddFile()` appends the PWAD after the IWAD/older iterations.
-8. LinuxDOOM's normal backwards lump lookup makes the newest PWAD override earlier map lumps.
-9. `G_InitNew()` rebuilds the current level through the original `P_SetupLevel()` path.
-10. the authoring ChangeSet is reset, so the imported PWAD becomes the new baseline.
+The MCP bridge never exposes arbitrary WASM memory. Relevant original engine paths include:
 
-The browser session and audio backend remain alive; only the DOOM level is rebuilt.
+- `P_CheckSight()` — enemy sight
+- `P_SpawnMobj()` / `P_CheckPosition()` — actor creation
+- `P_RemoveMobj()` — actor removal
+- `P_TeleportMove()` — debug player movement
+- `P_UseSpecialLine()` — linedef activation playtest
+- `W_AddFile()` — runtime PWAD override
+- `G_InitNew()` → `P_SetupLevel()` — map rebuild
 
-### Protecting unsaved work
-
-If the current ChangeSet contains edits, `doom_load_pwad` refuses by default:
-
-```text
-Unexported authoring changes are pending.
-```
-
-Export first, or explicitly pass:
-
-```json
-{
-  "filename": "horror_e1m1_v1.wad",
-  "discardChanges": true
-}
-```
-
-This explicit flag is intended for the common workflow where the current ChangeSet has just been exported and the new file is being loaded as its replacement baseline.
-
-## `doom_reload_current_map`
-
-Rebuilds the map from the latest IWAD/PWAD baseline already loaded in this browser session.
-
-This is useful when a live authoring experiment should be discarded without importing another file. Pending changes receive the same `discardChanges` protection.
-
-# Recommended AI authoring workflow
-
-A complete iteration now looks like:
-
-```text
-1. doom_get_state / doom_get_sectors / doom_get_enemies
-2. AI proposes edits
-3. doom_set_sector_light / spawn / remove
-4. human plays immediately
-5. doom_get_changeset
-6. adjust until acceptable
-7. doom_export_pwad filename=v1.wad
-8. doom_load_pwad filename=v1.wad discardChanges=true
-9. verify state/sector/enemies after map restart
-10. continue editing
-11. export v2.wad
-```
-
-A natural-language example:
-
-```text
-Inspect E1M1 and make the opening area darker.
-Reduce the nearby enemies, then add three imps deeper in the room.
-Let me play it.
-
-[after playtest]
-Export this as horror_e1m1_v1.wad.
-Load that file back as our new baseline.
-Now inspect it again and make the next room slightly brighter.
-```
-
-# Why runtime PWAD append needs special handling
-
-Vanilla LinuxDOOM's `W_AddFile()` can append new lump directory entries, and `W_CheckNumForName()` searches from the end so later files override earlier ones. However `W_InitMultipleFiles()` allocates `lumpcache` only once during startup.
-
-A naive runtime `W_AddFile()` therefore leaves the cache array too small for new lump indices. `doom_reload.c` validates the incoming lump count and grows `lumpcache` **before** appending the PWAD. This preserves the original lookup semantics without allowing new map lumps to index past the cache allocation.
-
-Runtime imports are currently capped at **32 per browser session**, because LinuxDOOM's original WAD architecture keeps appended file handles/directories around rather than providing a modern unload operation.
-
-# Security / integrity boundary
-
-The MCP bridge does not expose arbitrary WASM memory.
-
-The authoring path uses explicit operations and original engine systems:
-
-- sight: `P_CheckSight()`
-- spawn: `P_SpawnMobj()`
-- placement: `P_CheckPosition()`
-- removal: `P_RemoveMobj()`
-- player teleport: `P_TeleportMove()`
-- runtime WAD override: `W_AddFile()`
-- map rebuild: `G_InitNew()` → `P_SetupLevel()`
-
-Both export and import use historical DOOM on-disk WAD/map layouts rather than a private replacement level format.
+Persistent linedef editing is intentionally allow-listed through named presets rather than exposing arbitrary special numbers.
 
 # Current limitations
 
-v0.4 persists only edits that can be safely represented without rebuilding BSP/topology data:
+v0.5 intentionally supports semantic edits that do not require rebuilding map topology:
 
-- sector light changes ✅
+- sector light ✅
 - actor spawn/remove ✅
-- PWAD export ✅
-- PWAD reload as next baseline ✅
-- floor/ceiling geometry changes ❌
-- linedef/door persistence ❌
-- vertex/sector topology changes ❌
-- texture changes ❌
-- multiple map ChangeSets in one authoring session ❌
+- existing linedef special/tag ✅
+- door/switch activation playtest ✅
+- PWAD export/reload ✅
+- direct floor/ceiling geometry editing ❌
+- vertex / sector topology editing ❌
+- sidedef texture authoring ❌
+- BSP regeneration ❌
+- full new-map generation ❌
 
-Geometry/topology edits can require regenerating `SEGS`, `SSECTORS`, `NODES`, `REJECT` and `BLOCKMAP`; they should not be treated as simple runtime memory patches.
-
-# Next milestone
-
-With persistence/reload closed, the next useful step is **safe linedef/door authoring**: identify existing doors/triggers, edit only fields that do not require BSP regeneration, persist those `LINEDEFS`/`SIDEDEFS` changes, then use the v0.4 export/reload loop to playtest them.
-
-After that, the project can move toward automated AI playtesting, screenshots/vision, exact-tic stepping and snapshot/rewind.
+The next valuable milestone is **texture/safe sector metadata authoring plus AI playtest scoring / visual inspection**. Geometry creation should come later with an explicit node-builder pipeline rather than pretending runtime topology edits are enough.
