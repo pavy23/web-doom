@@ -1,9 +1,9 @@
 {
   "name": "web-doom-mcp",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
-  "description": "Local MCP authoring, PWAD export/reload, and control plane for the direct LinuxDOOM WebAssembly port",
+  "description": "Local MCP authoring, PWAD export/reload, linedef/door editing, and control plane for the direct LinuxDOOM WebAssembly port",
   "engines": {
     "node": ">=20"
   },
