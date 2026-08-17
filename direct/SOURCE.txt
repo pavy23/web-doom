@@ -5,49 +5,44 @@ Engine/game source baseline:
 https://github.com/id-Software/DOOM
 pinned commit: a77dfb96cb91780ca334d0d4cfd86957558007e0
 
-Browser platform and MCP authoring source:
+Browser platform and MCP source:
 https://github.com/pavy23/web-doom/tree/direct-linuxdoom/direct-port
 https://github.com/pavy23/web-doom/tree/direct-linuxdoom/mcp
 
-Build system: Emscripten 6.0.5 + SDL2 + SDL2_mixer.
-Gameplay/rendering/game-state remain id Software LinuxDOOM; browser
-platform boundaries and explicit authoring adapters live in this repo.
+Build: Emscripten 6.0.5 + SDL2 + SDL2_mixer.
+Gameplay/rendering/game-state remain id Software LinuxDOOM.
 
-Sound effects:
-- DOOM DMX type-3 DS* lumps are parsed directly into SDL2_mixer.
-- Original PCM, pitch variation, volume and stereo separation are used.
-
-Music:
-- Vanilla/DMX-compatible OPL behavior is imported from pinned Chocolate Doom
+Audio:
+- Direct DMX type-3 SFX playback through SDL2_mixer.
+- Vanilla/DMX-compatible OPL behavior from pinned Chocolate Doom
   commit 410d96855b5df5410ff591a90efeafa889119224.
-- Nuked OPL3 v1.8 renders in OPL2-compatible nine-voice mode by default.
-- The earlier WebAudio oscillator approximation is retired.
+- Nuked OPL3 v1.8 in OPL2-compatible nine-voice mode by default.
 
-MCP / AI level authoring (v0.6):
-- doom_control.c: player/enemy/sector state, actor edits, sector-light edits,
-  ChangeSet core and PWAD writer.
-- doom_linedefs.c: existing LINEDEFS inspection, allow-listed Vanilla door
-  actions, special/tag journal and P_UseSpecialLine() playtest.
-- doom_visuals.c: nearby sector/sidedef material inspection, valid IWAD wall
-  texture/flat enumeration, live wall texture + floor/ceiling flat edits,
-  and SIDEDEFS/SECTORS persistence.
-- Visual edits are asset-validated: wall names use R_CheckTextureNumForName()
-  and flats must resolve inside the loaded F_START..F_END range.
-- Persistent export rewrites THINGS, LINEDEFS, SIDEDEFS and SECTORS while
-  VERTEXES/SEGS/SSECTORS/NODES/REJECT/BLOCKMAP remain unchanged.
-- No v0.6 authoring operation moves vertices or changes topology.
-- doom_export_pwad writes a real current-map PWAD; mcp/server.js stores it
-  under mcp/exports/ (or DOOM_MCP_EXPORT_DIR).
-- doom_load_pwad validates in Node and C, grows LinuxDOOM's lumpcache,
-  appends through W_AddFile(), and rebuilds via G_InitNew().
-- Imported PWAD becomes the fresh baseline; actor/sector/linedef/visual
-  ChangeSets reset together after successful reload.
-- Loading/reloading protects all unexported authoring edits by default.
-- Heal/ammo/player teleport and linedef activation are playtest-only.
+MCP / AI authoring + playtest (v0.7):
+- Persistent content authoring covers THINGS, LINEDEFS, SIDEDEFS and
+  SECTORS without mutating map topology/BSP-derived lumps.
+- doom_control.c handles state, actors, sector light, ChangeSet and PWAD.
+- doom_linedefs.c handles existing door/trigger special+tag authoring.
+- doom_visuals.c handles asset-validated wall textures and sector flats.
+- doom_reload.c validates/loads exported PWADs through W_AddFile() and
+  rebuilds the current map via G_InitNew(), resetting authoring baselines.
+- doom_playtest.c adds a bounded execution controller and telemetry.
+- Vanilla P_Ticker() remains the world simulation; when paused, a build
+  patch permits only explicitly budgeted MCP world tics through its pause
+  gate, enabling exact deterministic step observation.
+- Telemetry tracks elapsed world tics/time, sectors visited, approximate
+  travel distance, health/damage/healing, deaths, kills/items/secrets and
+  current ammunition from a resettable measurement baseline.
+- playtest_bridge.js captures the final SDL/Emscripten canvas as PNG and
+  keeps a dedicated localhost playtest WebSocket on 127.0.0.1:3778.
+- mcp/playtest_server.js extends the existing authoring server with pause,
+  resume, exact tic step, telemetry and MCP image-content frame capture.
+- The existing authoring bridge remains on 127.0.0.1:3777; public Pages
+  never connects to localhost unless loaded through the local MCP proxy.
 
-Authoring loop:
-AI inspect -> actor/logic/lighting/material edit -> playtest -> ChangeSet
--> PWAD export -> PWAD reload -> LinuxDOOM map rebuild -> next iteration.
+Loop:
+AI inspect -> edit -> playtest -> pause/capture/telemetry -> evaluate
+-> revise -> ChangeSet -> PWAD export/reload -> next iteration.
 
 Shareware game data:
 - Redistributable DOOM shareware IWAD fetched from SDL archive during CI.
