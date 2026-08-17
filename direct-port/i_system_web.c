@@ -54,14 +54,25 @@ int I_GetTime(void)
 
 void I_Init(void)
 {
+    // LinuxDOOM 1.10's original Linux platform layer only initializes SFX
+    // here because music was disabled on that target. The direct browser port
+    // has a real OPL music backend, so initialize it explicitly after opening
+    // SDL_mixer. This lets the OPL SDL driver attach its post-mix callback to
+    // the already-open signed-16-bit stereo mixer used by the DMX SFX path.
     I_InitSound();
+    I_InitMusic();
 }
 
 void I_Quit(void)
 {
     D_QuitNetGame();
-    I_ShutdownSound();
+
+    // Music owns an SDL_mixer post-effect but not the mixer device itself when
+    // I_InitSound() opened it first. Unregister the OPL callback before closing
+    // the shared mixer so shutdown order mirrors ownership correctly.
     I_ShutdownMusic();
+    I_ShutdownSound();
+
     M_SaveDefaults();
     I_ShutdownGraphics();
     emscripten_cancel_main_loop();
@@ -101,6 +112,8 @@ void I_Error(char *error, ...)
         G_CheckDemoStatus();
 
     D_QuitNetGame();
+    I_ShutdownMusic();
+    I_ShutdownSound();
     I_ShutdownGraphics();
     emscripten_cancel_main_loop();
     abort();
