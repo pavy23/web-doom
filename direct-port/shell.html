@@ -39,7 +39,7 @@
       <canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
       <div id="hud">
         <div id="topbar">
-          <div class="badge">LINUXDOOM 1.10 · DIRECT WASM · GENMIDI FM</div>
+          <div class="badge">LINUXDOOM 1.10 · DIRECT WASM · VANILLA DMX / NUKED OPL2</div>
           <div id="controls">
             <button id="restart" type="button">RESTART</button>
             <button id="fullscreen" type="button">FULLSCREEN</button>
@@ -88,10 +88,6 @@
           const result = SDL2.audioContext.resume();
           if (result && typeof result.catch === 'function') result.catch(console.error);
         }
-        if (globalThis.__doomMusicContext && globalThis.__doomMusicContext.state !== 'running') {
-          const result = globalThis.__doomMusicContext.resume();
-          if (result && typeof result.catch === 'function') result.catch(console.error);
-        }
       } catch (err) {
         console.error('Audio resume failed:', err);
       }
@@ -138,8 +134,10 @@
       if (!runtimeReady || gameStarted) return;
       gameStarted = true;
       startButton.disabled = true;
-      statusEl.textContent = 'Starting DOOM + audio…';
+      statusEl.textContent = 'Starting DOOM + hardware-style OPL audio…';
 
+      // LinuxDOOM initializes SDL_mixer and the OPL post-mix path while this
+      // user gesture is active, satisfying browser autoplay policy.
       try {
         const result = Module.callMain([]);
         resumeAudioContext();
@@ -176,7 +174,6 @@
     document.getElementById('restart').addEventListener('click', () => location.reload());
   </script>
 
-  <script src="opl_music.js"></script>
   {{{ SCRIPT }}}
 </body>
 </html>
