@@ -8,7 +8,7 @@ pinned commit: a77dfb96cb91780ca334d0d4cfd86957558007e0
 Browser platform replacement source and explicit compatibility edits:
 https://github.com/pavy23/web-doom/tree/direct-linuxdoom/direct-port
 
-Build system: Emscripten 6.0.5 + SDL2 + SDL2_mixer/WebAudio.
+Build system: Emscripten 6.0.5 + SDL2 + SDL2_mixer + WebAudio.
 The original gameplay/rendering/game-state code remains id's LinuxDOOM;
 platform i_video/i_system/i_sound/i_net are replaced for the browser,
 plus narrowly scoped modern-toolchain compatibility edits documented in
@@ -17,13 +17,16 @@ direct-port/apply_compat.py.
 Audio is implemented in this repository's direct-port/i_sound_web.c:
 - DOOM DMX type-3 SFX lumps are parsed directly and converted to PCM/WAV.
 - Original pitch variation is encoded into sample-rate conversion.
-- DOOM stereo separation and volume are mapped to browser mixer channels.
-- DOOM MUS music is converted by our code to Standard MIDI, then rendered
-  by SDL2_mixer through the browser audio backend.
+- DOOM stereo separation and volume are mapped to SDL2_mixer channels.
+- DOOM MUS music is parsed directly at its native 140 Hz timing.
+- Program, note, velocity, volume, expression, pan, pitch and percussion
+  events are synthesized by our browser WebAudio oscillator/noise engine.
+- Music does not require Timidity, browser MIDI, or an external SoundFont.
 
 The browser UI is also repository-owned: direct-port/shell.html replaces
 Emscripten's generated demo shell while Emscripten remains the C-to-WASM
-build toolchain underneath.
+build toolchain underneath. A user click starts the game and unlocks
+browser audio according to autoplay policy.
 
 The included IWAD is the redistributable DOOM shareware data fetched
 from SDL's long-standing DOOM project archive during CI.
