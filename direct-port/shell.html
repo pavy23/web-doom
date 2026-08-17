@@ -42,7 +42,7 @@
       <canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
       <div id="hud">
         <div id="topbar">
-          <div class="badge">LINUXDOOM 1.10 · DIRECT WASM · VANILLA DMX / NUKED OPL2</div>
+          <div class="badge">LINUXDOOM 1.10 · DIRECT WASM · MCP AUTHORING · NUKED OPL2</div>
           <div id="controls">
             <span id="mcpBadge" class="badge">MCP CONNECTED</span>
             <button id="restart" type="button">RESTART</button>
@@ -106,6 +106,21 @@
       }
     }
 
+    function bytesToBase64(bytes) {
+      let binary = '';
+      const chunkSize = 0x8000;
+      for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+      }
+      return btoa(binary);
+    }
+
+    function safeVirtualFilename(filename) {
+      const raw = String(filename || 'ai_map.wad');
+      const safe = raw.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^\.+/, '');
+      return safe.toLowerCase().endsWith('.wad') ? safe : `${safe || 'ai_map'}.wad`;
+    }
+
     // Public, intentionally narrow engine-control API. MCP talks to this
     // surface rather than reading or writing arbitrary WASM memory.
     window.DoomControl = {
@@ -113,6 +128,16 @@
         requireRuntime();
         const json = Module.ccall('doomctl_get_state_json', 'string', [], []);
         return JSON.parse(json);
+      },
+      getSectors(limit = 256) {
+        requireRuntime();
+        const json = Module.ccall('doomctl_get_sectors_json', 'string', ['number'], [Math.trunc(limit)]);
+        return JSON.parse(json);
+      },
+      setSectorLight(sector, light) {
+        requireRuntime();
+        return Module.ccall('doomctl_set_sector_light', 'number', ['number', 'number'],
+          [Math.trunc(sector), Math.trunc(light)]);
       },
       heal(amount) {
         requireRuntime();
@@ -138,6 +163,36 @@
         const json = Module.ccall('doomctl_remove_nearest_enemy_json', 'string',
           ['number', 'number'], [visibleOnly ? 1 : 0, Math.trunc(maxDistance)]);
         return JSON.parse(json);
+      },
+      getChangeSet() {
+        requireRuntime();
+        const json = Module.ccall('doomctl_get_changeset_json', 'string', [], []);
+        return JSON.parse(json);
+      },
+      exportPwad(filename) {
+        requireRuntime();
+        if (!Module.FS || typeof Module.FS.readFile !== 'function') {
+          throw new Error('Emscripten filesystem export is unavailable');
+        }
+
+        const safeName = safeVirtualFilename(filename);
+        const virtualPath = `/${safeName}`;
+        try {
+          try { Module.FS.unlink(virtualPath); } catch {}
+          const size = Module.ccall('doomctl_export_pwad', 'number', ['string'], [virtualPath]);
+          if (size <= 0) throw new Error(`PWAD export failed with engine code ${size}`);
+          const bytes = Module.FS.readFile(virtualPath);
+          if (bytes.length !== size) {
+            throw new Error(`PWAD export size mismatch: engine=${size}, fs=${bytes.length}`);
+          }
+          return {
+            filename: safeName,
+            size,
+            base64: bytesToBase64(bytes)
+          };
+        } finally {
+          try { Module.FS.unlink(virtualPath); } catch {}
+        }
       }
     };
 
@@ -168,6 +223,12 @@
           case 'get_state':
             result = window.DoomControl.getState();
             break;
+          case 'get_sectors':
+            result = window.DoomControl.getSectors(params.limit);
+            break;
+          case 'set_sector_light':
+            result = { light: window.DoomControl.setSectorLight(params.sector, params.light) };
+            break;
           case 'heal':
             result = { health: window.DoomControl.heal(params.amount) };
             break;
@@ -186,6 +247,12 @@
             result = window.DoomControl.removeNearestEnemy(
               Boolean(params.visibleOnly), params.maxDistance
             );
+            break;
+          case 'get_changeset':
+            result = window.DoomControl.getChangeSet();
+            break;
+          case 'export_pwad':
+            result = window.DoomControl.exportPwad(params.filename);
             break;
           default:
             throw new Error(`Unknown DOOM control method: ${method}`);
