@@ -10,62 +10,43 @@ https://github.com/pavy23/web-doom/tree/direct-linuxdoom/direct-port
 https://github.com/pavy23/web-doom/tree/direct-linuxdoom/mcp
 
 Build system: Emscripten 6.0.5 + SDL2 + SDL2_mixer.
-The gameplay/rendering/game-state code remains id Software LinuxDOOM;
-browser-specific platform boundaries and the explicit authoring surface
-are maintained in this repository.
+Gameplay/rendering/game-state remain id Software LinuxDOOM; browser
+platform boundaries and explicit authoring adapters live in this repo.
 
 Sound effects:
-- DOOM DMX type-3 DS* lumps are parsed directly into the browser mixer.
+- DOOM DMX type-3 DS* lumps are parsed directly into SDL2_mixer.
 - Original PCM, pitch variation, volume and stereo separation are used.
 
 Music:
-- The former WebAudio GENMIDI approximation is retired and not loaded.
-- A pinned OPL/MIDI subset is imported at build time from Chocolate Doom:
-  commit 410d96855b5df5410ff591a90efeafa889119224
-- MUS timing and Vanilla/DMX-compatible behavior program IWAD GENMIDI
-  instruments into OPL registers.
-- Nuked OPL3 v1.8 renders those registers in OPL2-compatible nine-voice
-  mode by default and mixes signed 16-bit PCM through SDL2_mixer.
-- I_InitSound() opens the shared mixer before I_InitMusic() attaches the
-  OPL post-mix path.
-- LinuxDOOM's commented DOS-style 0..15 * 8 volume handoff is restored.
+- Vanilla/DMX-compatible OPL behavior is imported from pinned Chocolate Doom
+  commit 410d96855b5df5410ff591a90efeafa889119224.
+- Nuked OPL3 v1.8 renders in OPL2-compatible nine-voice mode by default.
+- The earlier WebAudio oscillator approximation is retired.
 
-MCP / AI level authoring (v0.4):
-- doom_control.c exposes bounded live state, actor and sector editing.
-- Enemy spawn/remove edits persist as THINGS changes; sector light edits
-  persist as SECTORS changes in an in-engine ChangeSet.
-- doomctl_export_pwad() writes the current ExMy map as a real PWAD using
-  the original map lump set with THINGS/SECTORS rewritten from ChangeSet.
-- mcp/server.js saves exports under mcp/exports/ (or DOOM_MCP_EXPORT_DIR).
-- doom_list_exports enumerates local PWAD iterations.
-- doom_load_pwad validates the local PWAD twice (Node and C), writes it to
-  Emscripten FS, grows LinuxDOOM's startup-sized lumpcache, appends it with
-  W_AddFile(), then restarts the current map through G_InitNew().
-- LinuxDOOM's backward lump lookup makes the newest imported PWAD override
-  the IWAD/older iterations using the engine's native WAD semantics.
-- After a successful load, the ChangeSet is reset: the imported PWAD is the
-  new authoring baseline, so subsequent edits/export do not double-apply.
-- doom_reload_current_map can discard current live edits and reconstruct
-  from the latest already-loaded IWAD/PWAD baseline.
-- Loading/reloading protects unexported ChangeSet edits by default; the MCP
-  caller must explicitly opt into discarding them.
-- Heal/ammo/player teleport remain play/debug-only and are not serialized.
-- Runtime PWAD imports are capped per browser session to bound retained WAD
-  file handles/lump directories inherited from LinuxDOOM's architecture.
-- CI installs the official MCP server dependency and constructs the server
-  as a self-test before compiling the complete browser runtime.
+MCP / AI level authoring (v0.5):
+- doom_control.c: player/enemy/sector state, actor edits, sector-light edits,
+  ChangeSet core and PWAD writer.
+- doom_linedefs.c: existing LINEDEFS inspection, safe allow-listed Vanilla
+  door-action presets, special/tag journal, P_UseSpecialLine() playtest,
+  and LINEDEFS binary patching for export.
+- Persistent export now rewrites THINGS, LINEDEFS and SECTORS while copying
+  topology/BSP-derived map lumps unchanged.
+- Linedef authoring changes only special/tag; it does not move vertices or
+  pretend that topology can be changed without rebuilding BSP data.
+- doom_export_pwad writes a real current-map PWAD; mcp/server.js stores it
+  under mcp/exports/ (or DOOM_MCP_EXPORT_DIR).
+- doom_load_pwad validates in Node and C, grows LinuxDOOM's lumpcache,
+  appends through W_AddFile(), and rebuilds via G_InitNew().
+- Imported PWAD becomes the fresh baseline; actor/sector/linedef ChangeSets
+  reset together after successful reload.
+- Loading/reloading protects all unexported authoring edits by default.
+- Heal/ammo/player teleport and linedef activation are playtest-only.
 
 Authoring loop:
-AI instruction -> MCP live edit -> playtest -> ChangeSet -> PWAD export
--> PWAD load -> LinuxDOOM map rebuild -> fresh ChangeSet -> next iteration.
-
-Browser UI:
-- direct-port/shell.html replaces Emscripten's demo shell.
-- User gesture starts the game/unlocks browser audio.
-- Localhost MCP mode displays MCP CONNECTED after the WebSocket attaches.
+AI inspect -> actor/sector/linedef edit -> playtest -> ChangeSet -> PWAD
+export -> PWAD reload -> LinuxDOOM map rebuild -> next AI iteration.
 
 Shareware game data:
-- The included IWAD is the redistributable DOOM shareware data fetched
-  from SDL's long-standing DOOM project archive during CI.
+- Redistributable DOOM shareware IWAD fetched from SDL archive during CI.
 - size: 4,196,020 bytes
 - MD5: 5f4eb849b1af12887dec04a2a12e5e62
