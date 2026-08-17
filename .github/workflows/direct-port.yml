@@ -67,6 +67,7 @@ jobs:
           cp direct-port/i_sound_web.c  "$SRC/i_sound.c"
           cp direct-port/i_net_web.c    "$SRC/i_net.c"
           cp direct-port/Makefile.web   "$SRC/Makefile.web"
+          python3 direct-port/apply_compat.py "$SRC"
 
       - name: Compile original LinuxDOOM with our web layer
         shell: bash
@@ -101,14 +102,19 @@ jobs:
           Direct browser port of id Software LinuxDOOM 1.10
           =================================================
 
-          Engine/game source is cloned unmodified from:
+          Engine/game source baseline:
           https://github.com/id-Software/DOOM
           pinned commit: a77dfb96cb91780ca334d0d4cfd86957558007e0
 
-          Browser platform replacement source is maintained here:
+          Browser platform replacement source and explicit compatibility edits:
           https://github.com/pavy23/web-doom/tree/direct-linuxdoom/direct-port
 
           Build system: Emscripten 6.0.5 + SDL2.
+          The original gameplay/rendering/game-state code remains id's LinuxDOOM;
+          platform i_video/i_system/i_sound/i_net are replaced for the browser,
+          plus narrowly scoped modern-toolchain compatibility edits documented in
+          direct-port/apply_compat.py.
+
           This preview intentionally uses a no-audio backend for milestone 1.
           The included IWAD is the redistributable DOOM shareware data fetched
           from SDL's long-standing DOOM project archive during CI.
