@@ -38,38 +38,22 @@
     return JSON.parse(json);
   };
 
-  if (typeof handlePlaytestRequest !== 'function' || typeof replyPlaytest !== 'function') {
+  if (typeof window.DoomPlaytestDispatch !== 'function') {
     console.error('DOOM MCP agent bridge could not find playtest dispatcher');
     return;
   }
 
-  const previousHandlePlaytestRequest = handlePlaytestRequest;
-  handlePlaytestRequest = function agentHandlePlaytestRequest(message) {
-    const { id, method, params = {} } = message || {};
-    if (!id || !method) return previousHandlePlaytestRequest(message);
-
-    if (!['queue_agent_input', 'cancel_agent_input', 'get_agent_input_status'].includes(method)) {
-      return previousHandlePlaytestRequest(message);
-    }
-
-    try {
-      let result;
-      switch (method) {
-        case 'queue_agent_input':
-          result = window.DoomControl.queueAgentInput(params);
-          break;
-        case 'cancel_agent_input':
-          result = window.DoomControl.cancelAgentInput();
-          break;
-        case 'get_agent_input_status':
-          result = window.DoomControl.getAgentInputStatus();
-          break;
-        default:
-          throw new Error(`Unknown agent-input method: ${method}`);
-      }
-      replyPlaytest(id, true, result);
-    } catch (error) {
-      replyPlaytest(id, false, error);
+  const previousDispatch = window.DoomPlaytestDispatch;
+  window.DoomPlaytestDispatch = function agentPlaytestDispatch(method, params = {}) {
+    switch (method) {
+      case 'queue_agent_input':
+        return window.DoomControl.queueAgentInput(params);
+      case 'cancel_agent_input':
+        return window.DoomControl.cancelAgentInput();
+      case 'get_agent_input_status':
+        return window.DoomControl.getAgentInputStatus();
+      default:
+        return previousDispatch(method, params);
     }
   };
 })();
