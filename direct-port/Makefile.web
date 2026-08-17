@@ -10,7 +10,7 @@ CHOCO_COMMIT := 410d96855b5df5410ff591a90efeafa889119224
 CHOCO_DIR := /tmp/chocolate-doom-opl
 IMPORT_SCRIPT := $(GITHUB_WORKSPACE)/direct-port/import_vanilla_opl.py
 
-CFLAGS := -O2 -std=gnu89 -DNORMALUNIX -D__EMSCRIPTEN__ $(PORT_FLAGS) -Ichoco_opl \
+CFLAGS := -O2 -std=gnu89 -DNORMALUNIX -D__EMSCRIPTEN__ $(PORT_FLAGS) -I. -Ichoco_opl \
   -Wno-implicit-int \
   -Wno-implicit-function-declaration \
   -Wno-int-conversion \
