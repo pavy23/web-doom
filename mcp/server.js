@@ -104,7 +104,7 @@ async function proxyPublishedGame(req, res) {
     const upstreamResponse = await fetch(upstreamUrl, {
       redirect: 'follow',
       cache: 'no-store',
-      headers: { 'user-agent': 'web-doom-mcp/0.1' }
+      headers: { 'user-agent': 'web-doom-mcp/0.2' }
     });
 
     res.statusCode = upstreamResponse.status;
@@ -191,12 +191,31 @@ const ammoTypes = {
   rockets: 3
 };
 
+const spawnableEnemyTypes = [
+  'zombieman',
+  'shotgun_guy',
+  'imp',
+  'demon',
+  'spectre',
+  'baron_of_hell'
+];
+
+function filteredEnemies(state, { visibleOnly = false, maxDistance, limit = 32 } = {}) {
+  if (!state?.ready || !Array.isArray(state.enemies)) return [];
+
+  return state.enemies
+    .filter(enemy => !visibleOnly || enemy.visible)
+    .filter(enemy => maxDistance == null || enemy.distance <= maxDistance)
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, limit);
+}
+
 export function createMcpServer() {
   const server = new McpServer(
-    { name: 'web-doom-control', version: '0.1.0' },
+    { name: 'web-doom-control', version: '0.2.0' },
     {
       instructions:
-        'Use doom_get_state before mutating the game. The browser must be open through the local bridge URL and the game must be started.'
+        'Use doom_get_state or doom_get_enemies before mutating the game. The browser must be open through the local bridge URL and the game must be started.'
     }
   );
 
@@ -226,6 +245,36 @@ export function createMcpServer() {
     async () => {
       try {
         return jsonResult(await bridgeCall('get_state'));
+      } catch (error) {
+        return toolError(error);
+      }
+    }
+  );
+
+  server.registerTool(
+    'doom_get_enemies',
+    {
+      title: 'Query nearby DOOM enemies',
+      description: 'Return live enemies sorted nearest-first. visibleOnly requires both Doom line-of-sight and the enemy to be within the forward 90-degree view cone.',
+      inputSchema: z.object({
+        visibleOnly: z.boolean().optional(),
+        maxDistance: z.number().min(0).max(8192).optional(),
+        limit: z.number().int().min(1).max(96).optional()
+      }),
+      annotations: { readOnlyHint: true }
+    },
+    async ({ visibleOnly = false, maxDistance, limit = 32 }) => {
+      try {
+        const state = await bridgeCall('get_state');
+        const enemies = filteredEnemies(state, { visibleOnly, maxDistance, limit });
+        return jsonResult({
+          ready: Boolean(state?.ready),
+          episode: state?.episode,
+          map: state?.map,
+          filters: { visibleOnly, maxDistance: maxDistance ?? null, limit },
+          count: enemies.length,
+          enemies
+        });
       } catch (error) {
         return toolError(error);
       }
@@ -292,6 +341,66 @@ export function createMcpServer() {
         if (result.moved < 0) throw new Error(`Engine rejected teleport with code ${result.moved}`);
         if (result.moved === 0) throw new Error('Teleport destination was blocked by the Doom simulation');
         return jsonResult({ x, y, moved: true });
+      } catch (error) {
+        return toolError(error);
+      }
+    }
+  );
+
+  server.registerTool(
+    'doom_spawn_enemy',
+    {
+      title: 'Spawn enemies in front of the DOOM player',
+      description: 'Spawn one to eight Episode-1-safe monsters in a fan in front of the player. Doom collision checks reject blocked spawn positions.',
+      inputSchema: z.object({
+        type: z.enum(spawnableEnemyTypes),
+        count: z.number().int().min(1).max(8).optional(),
+        distance: z.number().int().min(64).max(1024).optional()
+      }),
+      annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false }
+    },
+    async ({ type, count = 1, distance = 160 }) => {
+      try {
+        const result = await bridgeCall('spawn_enemy', {
+          name: type,
+          count,
+          distance
+        });
+        if (result.spawned < 0) {
+          throw new Error(`Engine rejected spawn with code ${result.spawned}`);
+        }
+        return jsonResult({
+          type,
+          requested: count,
+          spawned: result.spawned,
+          rejectedByCollision: count - result.spawned,
+          distance
+        });
+      } catch (error) {
+        return toolError(error);
+      }
+    }
+  );
+
+  server.registerTool(
+    'doom_remove_nearest_enemy',
+    {
+      title: 'Remove nearest DOOM enemy',
+      description: 'Remove the nearest matching live enemy using Doom actor removal. Optionally limit the operation to enemies currently visible in the forward view.',
+      inputSchema: z.object({
+        visibleOnly: z.boolean().optional(),
+        maxDistance: z.number().int().min(0).max(8192).optional()
+      }),
+      annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false }
+    },
+    async ({ visibleOnly = false, maxDistance = 2048 }) => {
+      try {
+        const result = await bridgeCall('remove_nearest_enemy', {
+          visibleOnly,
+          maxDistance
+        });
+        if (result.error) throw new Error(result.error);
+        return jsonResult(result);
       } catch (error) {
         return toolError(error);
       }
