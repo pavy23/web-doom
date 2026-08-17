@@ -1,4 +1,4 @@
-// Browser-side AI playtest bridge for MCP v0.7.
+// Browser-side AI playtest bridge for MCP v0.7+.
 //
 // Frame capture uses the final SDL/Emscripten canvas, so the image returned to
 // the MCP client is the same composed frame a human sees. Pause/tic control
@@ -63,7 +63,7 @@
     };
   };
 
-  function dispatchPlaytest(method, params) {
+  function basePlaytestDispatch(method, params) {
     switch (method) {
       case 'set_playtest_paused':
         return window.DoomControl.setPlaytestPaused(Boolean(params.paused));
@@ -80,6 +80,10 @@
     }
   }
 
+  // Explicit extension seam for later playtest capabilities such as v0.8
+  // autonomous ticcmd input. The socket remains owned by this module.
+  window.DoomPlaytestDispatch = basePlaytestDispatch;
+
   // Extend the original authoring dispatcher too, for compatibility/debugging.
   if (typeof handleMcpRequest === 'function' && typeof replyMcp === 'function') {
     const previousHandleMcpRequest = handleMcpRequest;
@@ -90,7 +94,7 @@
             'reset_playtest_metrics', 'capture_frame'].includes(method)) {
         return previousHandleMcpRequest(message);
       }
-      try { replyMcp(id, true, dispatchPlaytest(method, params)); }
+      try { replyMcp(id, true, window.DoomPlaytestDispatch(method, params)); }
       catch (error) { replyMcp(id, false, error); }
     };
   }
@@ -126,7 +130,7 @@
       try { message = JSON.parse(event.data); }
       catch { return; }
       if (!message?.id || !message?.method) return;
-      try { reply(socket, message.id, true, dispatchPlaytest(message.method, message.params || {})); }
+      try { reply(socket, message.id, true, window.DoomPlaytestDispatch(message.method, message.params || {})); }
       catch (error) { reply(socket, message.id, false, error); }
     });
 
