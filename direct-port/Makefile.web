@@ -66,6 +66,10 @@ prepare-control:
 	test -f $(CONTROL_SOURCE)
 	cp $(CONTROL_SOURCE) doom_control.c
 	grep -q "doomctl_get_state_json" doom_control.c
+	grep -q "doomctl_spawn_enemy" doom_control.c
+	grep -q "doomctl_remove_nearest_enemy_json" doom_control.c
+	grep -q "P_CheckSight" doom_control.c
+	grep -q "P_CheckPosition" doom_control.c
 
 validate-mcp:
 	@test -n "$(GITHUB_WORKSPACE)" || (echo "GITHUB_WORKSPACE is required" && false)
@@ -78,6 +82,9 @@ validate-mcp:
 	npm install --prefix $(MCP_DIR) --ignore-scripts --no-audit --no-fund
 	"$$EMSDK_NODE" --input-type=module -e "import { pathToFileURL } from 'node:url'; const m = await import(pathToFileURL('$(MCP_SERVER)').href); const s = m.createMcpServer(); if (!s) process.exit(1); console.error('MCP SDK import/self-test passed')"
 	grep -q "doom_get_state" $(MCP_SERVER)
+	grep -q "doom_get_enemies" $(MCP_SERVER)
+	grep -q "doom_spawn_enemy" $(MCP_SERVER)
+	grep -q "doom_remove_nearest_enemy" $(MCP_SERVER)
 	grep -q "serveStdio" $(MCP_SERVER)
 
 webdoom.html: $(SOURCES) doom1.wad shell.html
