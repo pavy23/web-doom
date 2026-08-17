@@ -50,7 +50,7 @@ EMFLAGS := $(PORT_FLAGS) \
   --shell-file shell.html
 
 all: prepare-opl
-	$(MAKE) webdoom.html
+	$(MAKE) -f Makefile.web webdoom.html
 
 prepare-opl:
 	@test -n "$(GITHUB_WORKSPACE)" || (echo "GITHUB_WORKSPACE is required" && false)
