@@ -1,6 +1,6 @@
-# Web DOOM — Direct LinuxDOOM + AI Authoring / Playtest MCP
+# Web DOOM — Direct LinuxDOOM + AI Level Authoring MCP v1
 
-A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, extended with a local MCP control plane for bounded AI level authoring, autonomous playtesting, visual observation, repeatable design-goal evaluation, PWAD export and iterative reload.
+A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, extended with a local MCP system for bounded AI level authoring, autonomous deterministic playtesting, visual observation, explicit design-goal evaluation, candidate checkpointing and final PWAD delivery.
 
 The `/direct/` runtime starts from the original LinuxDOOM source. It does **not** use doomgeneric or Chocolate Doom as the game runtime.
 
@@ -11,46 +11,154 @@ The `/direct/` runtime starts from the original LinuxDOOM source. It does **not*
 
 Development branch: [`direct-linuxdoom`](https://github.com/pavy23/web-doom/tree/direct-linuxdoom)
 
-Current MCP version: **0.9.0**
+Current MCP version: **1.0.0**
 
 ## What this project became
 
-The project started as a browser-port experiment. It is now a small **AI-native game-content authoring and evaluation sandbox**.
+The project started as a browser-port experiment. v1.0 is now a small **AI-native game-content authoring, playtest and evaluation pipeline**.
 
 ```text
 AI design goal
       ↓
 semantic inspection
       ↓
-level authoring
+bounded authoring plan
 actors / light / doors / materials
       ↓
-LinuxDOOM live runtime
+candidate PWAD checkpoint
+      ↓
+reload candidate as fresh baseline
       ↓
 autonomous ticcmd playtest
       ↓
-exact world tics
+exact P_Ticker world tics
       ↓
 telemetry + PNG frame
       ↓
 deterministic evaluator
 + optional AI vision rubric
       ↓
-revise or accept
+PASS / FAIL + revision hints
       ↓
-ChangeSet → PWAD
+next bounded revision
+or restore previous candidate
       ↓
-reload as next baseline
+passing candidate
+      ↓
+final ordinary PWAD
 ```
 
 The roles are intentionally separate:
 
-- **MCP** — AI-facing semantic authoring, execution and observation interface
+- **MCP-host AI** — interprets the design goal and chooses bounded edits
+- **MCP v1 orchestrator** — enforces iteration limits, checkpoints candidates, runs trials and finalizes artifacts
 - **LinuxDOOM** — real gameplay simulation and validator
 - **Evaluator** — explicit repeatable acceptance criteria
 - **PWAD** — persistent playable artifact
 
-# Current capabilities
+The server does not embed a hidden second LLM. The connected AI remains responsible for design reasoning; the orchestration layer provides a deterministic, bounded execution loop.
+
+# v1.0 — Closed-loop authoring sessions
+
+The main v1 tools are:
+
+- `doom_orchestrator_status`
+- `doom_begin_design_session`
+- `doom_run_authoring_iteration`
+- `doom_review_design_iteration`
+- `doom_get_design_session`
+- `doom_restore_design_candidate`
+- `doom_finalize_design_session`
+
+A session starts by freezing the current map as a baseline PWAD. Every authoring iteration then:
+
+```text
+<= 12 semantic edits
+      ↓
+session-0001-iter-01.wad
+      ↓
+validate + reload
+      ↓
+ChangeSet reset
+      ↓
+restart from candidate baseline
+      ↓
+<= 16 autonomous actions
+<= 700 actual world tics
+      ↓
+telemetry evaluation
+      ↓
+final PNG
+```
+
+If a visual rubric is part of the goal, the MCP-host AI inspects that frame and attaches `0..1` scores with reasons using `doom_review_design_iteration`.
+
+The session is capped at **8 iterations**. A worse iteration can be abandoned by restoring the baseline or any previous candidate PWAD. Finalization normally accepts only a passing candidate; selecting a failing candidate requires an explicit `force=true`.
+
+Candidate checkpoints and the final artifact are real `.wad` files stored under the MCP export directory.
+
+Example artifact chain:
+
+```text
+session-0001-baseline.wad
+session-0001-iter-01.wad   score 64
+session-0001-iter-02.wad   score 78
+session-0001-iter-03.wad   score 86 ✓
+horror_e1m1_final.wad
+```
+
+# Design-goal evaluation
+
+The deterministic evaluator does not call an LLM.
+
+```text
+engine telemetry
+      +
+optional AI vision scores
+      ↓
+fixed goal + weights
+      ↓
+0..100 score
+pass/fail
+failure reasons
+revision hints
+```
+
+Example goal:
+
+```json
+{
+  "name": "opening_horror_encounter",
+  "hard": {
+    "maxDeaths": 0,
+    "minFinalHealth": 20
+  },
+  "targets": {
+    "maxDamageTaken": 45,
+    "minVisitedSectors": 3,
+    "minDistanceUnits": 180,
+    "maxStuckActions": 1,
+    "minKills": 2,
+    "minScore": 0.75
+  },
+  "visualRubric": [
+    { "id": "atmosphere", "minScore": 0.75 },
+    { "id": "enemy_readability", "minScore": 0.65 },
+    { "id": "navigation_clarity", "minScore": 0.65 }
+  ]
+}
+```
+
+The evaluator measures deaths, final/minimum health, damage, traversal distance, sectors visited, stuck actions, kills and pacing. Visual criteria remain explicit and are not silently assumed to pass when a goal requires them.
+
+Retained evaluation tools:
+
+- `doom_run_design_trial`
+- `doom_evaluate_playtest`
+- `doom_get_trial_history`
+- `doom_compare_trials`
+
+# Current authoring surface
 
 ## Semantic inspection
 
@@ -86,9 +194,9 @@ Key tools:
 - `doom_load_pwad`
 - `doom_reload_current_map`
 
-An exported candidate can be loaded back through LinuxDOOM's WAD system and becomes the next editing baseline.
+# Playtest observation and agency
 
-## Playtest observation
+Observation:
 
 - `doom_pause_playtest`
 - `doom_resume_playtest`
@@ -97,20 +205,14 @@ An exported candidate can be loaded back through LinuxDOOM's WAD system and beco
 - `doom_reset_playtest_metrics`
 - `doom_capture_frame`
 
-The frame tool returns the final SDL/Emscripten canvas as MCP image content plus matching telemetry.
-
-Telemetry includes actual world tics, time, visited sectors, approximate movement distance, health, damage/healing, deaths, kills/items/secrets and ammunition.
-
-## Autonomous player agency
+Autonomous input:
 
 - `doom_agent_input_status`
 - `doom_cancel_agent_input`
 - `doom_run_input`
 - `doom_run_input_sequence`
 
-AI movement is not implemented with browser keyboard simulation. A bounded override is applied to the console player's real `ticcmd_t` after LinuxDOOM selects the command in `G_Ticker()` and before normal gameplay consumes it in `P_Ticker()`.
-
-Supported bounded controls:
+AI movement is not browser keyboard simulation. A bounded override is applied to the console player's real `ticcmd_t` after LinuxDOOM selects the command in `G_Ticker()` and before normal gameplay consumes it in `P_Ticker()`.
 
 ```text
 forward  -1.0 .. +1.0
@@ -121,89 +223,7 @@ use      false / true
 tics     1 .. 350
 ```
 
-A sequence is limited to 16 actions and 700 requested world tics. Input lifetime decreases only after actual world simulation tics, not browser render frames.
-
-# v0.9 — Design-goal evaluation
-
-v0.9 adds the missing question:
-
-> The AI can edit and play the level — but how does it decide whether the result is actually better?
-
-The evaluator is deliberately deterministic and does not call an LLM.
-
-```text
-engine telemetry
-      +
-optional AI vision scores
-      ↓
-explicit goal + weights
-      ↓
-0..100 score
-pass/fail
-failure reasons
-revision hints
-```
-
-New tools:
-
-- `doom_run_design_trial`
-- `doom_evaluate_playtest`
-- `doom_get_trial_history`
-- `doom_compare_trials`
-
-A design goal can contain hard constraints and softer weighted targets.
-
-Example:
-
-```json
-{
-  "name": "opening_horror_encounter",
-  "hard": {
-    "maxDeaths": 0,
-    "minFinalHealth": 20
-  },
-  "targets": {
-    "maxDamageTaken": 45,
-    "minVisitedSectors": 3,
-    "minDistanceUnits": 180,
-    "maxStuckActions": 1,
-    "minKills": 2,
-    "minScore": 0.75
-  },
-  "visualRubric": [
-    { "id": "atmosphere", "minScore": 0.75 },
-    { "id": "enemy_readability", "minScore": 0.65 },
-    { "id": "navigation_clarity", "minScore": 0.65 }
-  ]
-}
-```
-
-`doom_run_design_trial` resets telemetry, executes a bounded action plan, stores each action's before/after metrics, evaluates the result and returns the final PNG.
-
-The MCP-host AI can inspect that PNG and attach visual scores with reasons:
-
-```json
-{
-  "trialId": "trial-0001",
-  "visualAssessment": {
-    "atmosphere": { "score": 0.88, "reason": "Strong dark-room hierarchy." },
-    "enemy_readability": { "score": 0.58, "reason": "Imp silhouette blends into the wall." },
-    "navigation_clarity": { "score": 0.72, "reason": "Exit remains distinct." }
-  }
-}
-```
-
-The same trial is then re-evaluated with quantitative engine evidence and qualitative vision evidence in one report.
-
-Recent trials are retained in process memory and can be compared:
-
-```text
-candidate v1 → 61.4
-candidate v2 → 78.7
-candidate v3 → 84.2 ✓
-```
-
-The trial history is advisory runtime state; **PWAD remains the persistent artifact**.
+Input lifetime decreases only after actual world simulation tics, not browser render frames.
 
 # Architecture
 
@@ -224,20 +244,25 @@ id Software LinuxDOOM 1.10
                     │
                     ↓
                   Browser
-             ┌──────┴──────┐
-             │             │
-       :3777/control   :3778/playtest
-             │             │
-             └──────┬──────┘
+          ┌─────────┼─────────┐
+          │         │         │
+  :3777/control :3778/playtest :3779/orchestrate
+          │         │         │
+          └─────────┼─────────┘
                     ↓
-          mcp/playtest_server.js
-                    │
-          mcp/evaluator.js
-                    │
-              stdio MCP host
+             mcp/v1_server.js
+          ┌─────────┴──────────┐
+          │                    │
+ mcp/evaluator.js      mcp/orchestrator.js
+          │                    │
+          └─────────┬──────────┘
+                    ↓
+               stdio MCP host
 ```
 
-The public GitHub Pages game does not connect to localhost during normal play. Local MCP bridges are used only when the page is loaded through the local MCP proxy.
+`orchestration_bridge.js` reuses the same explicit `DoomControl` functions as the earlier bridges. It does not expose arbitrary WASM memory.
+
+The public GitHub Pages game does not connect to localhost during normal play. Local MCP bridges activate only when the page is loaded through the local MCP proxy.
 
 # Quick start
 
@@ -263,7 +288,7 @@ Generic MCP client configuration:
 ```json
 {
   "command": "node",
-  "args": ["C:/absolute/path/to/web-doom/mcp/playtest_server.js"]
+  "args": ["C:/absolute/path/to/web-doom/mcp/v1_server.js"]
 }
 ```
 
@@ -293,7 +318,7 @@ REJECT
 BLOCKMAP
 ```
 
-Arbitrary new-room geometry remains deferred until a real node/blockmap rebuild pipeline is introduced.
+Arbitrary new-room geometry remains outside this first v1 milestone until a real node/blockmap rebuild pipeline is introduced.
 
 # Audio
 
@@ -312,30 +337,19 @@ Public shareware IWAD:
 
 Commercial DOOM / DOOM II IWADs are not distributed by this repository.
 
-# Next milestone — v1.0
+# v1 completion boundary
 
-v0.9 can measure a candidate, explain why it failed and compare iterations.
-
-The v1.0 milestone is the **closed orchestration policy**:
+This first DOOM MCP track is considered functionally complete when the following local round trip succeeds in a real MCP-host session:
 
 ```text
-fixed design goal
-  ↓
-AI bounded edit plan
-  ↓
-PWAD candidate
-  ↓
-autonomous trial
-  ↓
-evaluation
-  ↓
-failed dimensions only
-  ↓
-next bounded revision
-  ↓
-stop when accepted / budget exhausted
-  ↓
-final PWAD
+design goal
+→ bounded edit plan
+→ candidate PWAD checkpoint/reload
+→ autonomous deterministic playtest
+→ telemetry + frame evaluation
+→ bounded revision / restore
+→ passing candidate
+→ final PWAD
 ```
 
-That is the point where this becomes a complete small-scale prototype of an AI content-authoring pipeline rather than a collection of individual MCP controls.
+The next research direction is less about adding more DOOM-specific controls and more about generalizing this pattern to richer content engines and production pipelines.
