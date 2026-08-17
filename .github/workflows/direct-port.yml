@@ -94,7 +94,21 @@ jobs:
           set -euo pipefail
           source /tmp/emsdk/emsdk_env.sh
           cd /tmp/id-doom/linuxdoom-1.10
-          emmake make -f Makefile.web
+
+          build_ok=0
+          for attempt in 1 2 3; do
+            echo "Emscripten build attempt ${attempt}/3"
+            if emmake make -f Makefile.web; then
+              build_ok=1
+              break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Build attempt failed; waiting before retry (Emscripten ports may be rate-limited)..."
+              sleep $((attempt * 12))
+            fi
+          done
+          test "$build_ok" -eq 1
+
           test -s webdoom.html
           test -s webdoom.js
           test -s webdoom.wasm
