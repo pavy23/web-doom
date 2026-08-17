@@ -1,6 +1,6 @@
 # Web DOOM — Direct LinuxDOOM Browser Port + AI Authoring MCP
 
-A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, plus a local **MCP authoring plane** that lets AI inspect the live simulation, edit selected level content, playtest it immediately, export the result as a real PWAD, reload that PWAD as the next baseline, and continue iterating.
+A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, plus a local **MCP authoring plane** that lets AI inspect the live simulation, edit selected level content, playtest immediately, export a real PWAD, reload that PWAD as the next baseline, and continue iterating.
 
 The `/direct/` build starts from the original LinuxDOOM source and replaces the browser-facing platform boundary. It does **not** use doomgeneric or Chocolate Doom as the game runtime.
 
@@ -22,10 +22,12 @@ User / AI
 MCP semantic tools
    ↓
 Live LinuxDOOM
-   ├── inspect player / enemies / sectors / linedefs
+   ├── inspect player / enemies / sectors / linedefs / materials
    ├── edit lighting
    ├── spawn / remove actors
    ├── edit existing door / trigger behavior
+   ├── edit existing wall textures
+   ├── edit sector floor / ceiling flats
    └── playtest immediately
    ↓
 Authoring ChangeSet
@@ -49,7 +51,7 @@ The roles are deliberately separate:
 - **PWAD** = persistent playable level artifact
 - **LinuxDOOM** = gameplay runtime and validator
 
-Current MCP version: **0.5.0**.
+Current MCP version: **0.6.0**.
 
 ## Architecture
 
@@ -69,6 +71,11 @@ id Software LinuxDOOM 1.10
           │      ├── safe special/tag presets
           │      ├── P_UseSpecialLine() playtest
           │      └── LINEDEFS patching
+          ├── doom_visuals.c
+          │      ├── sector / sidedef material inspection
+          │      ├── valid texture / flat discovery
+          │      ├── live visual mutation
+          │      └── SIDEDEFS / SECTORS patching
           └── doom_reload.c
                  ├── PWAD validation
                  ├── lumpcache growth
@@ -131,9 +138,9 @@ Detailed guide:
 - `doom_get_enemies`
 - `doom_get_sectors`
 - `doom_get_linedefs`
+- `doom_get_visuals`
+- `doom_list_visual_assets`
 - `doom_get_changeset`
-
-`doom_get_linedefs` exposes existing line index, special/action, tag, flags, two-sided state, front/back sector, endpoints and player distance. It can filter specifically for recognized Vanilla door specials.
 
 ### Persistent authoring
 
@@ -141,6 +148,8 @@ Detailed guide:
 - `doom_spawn_enemy` → `THINGS`
 - `doom_remove_nearest_enemy` → `THINGS`
 - `doom_set_linedef_action` → `LINEDEFS`
+- `doom_set_wall_texture` → `SIDEDEFS`
+- `doom_set_sector_flat` → `SECTORS`
 - `doom_export_pwad`
 - `doom_list_exports`
 - `doom_load_pwad`
@@ -155,41 +164,68 @@ Detailed guide:
 
 These affect the current simulation but are not automatically serialized as content.
 
-## v0.5 — door / linedef authoring
+## v0.6 — visual authoring
 
-DOOM stores linedef editing data separately from BSP-derived geometry. The persistent `maplinedef_t` record contains vertices/sides plus semantic fields such as `flags`, `special` and `tag`.
+v0.6 is intended to be the last major low-level map-edit expansion before the project moves to **AI playtest / vision**.
 
-v0.5 deliberately changes only **existing linedef `special` and `tag` values**. It does not move vertices or modify topology, so `SEGS`, `SSECTORS`, `NODES` and `BLOCKMAP` do not need to be regenerated for these edits.
+The AI can now inspect nearby sector/sidedef materials and modify existing visual assignments while leaving geometry untouched.
 
-Supported allow-listed door presets include:
+### Wall textures
+
+`doom_get_visuals` reports nearby linedef front/back sides with:
 
 ```text
-none
-manual_raise
-manual_open
-switch_raise_once
-switch_open_once
-switch_close_once
-button_raise
-button_open
-button_close
-manual_blazing_raise
-manual_blazing_open
-switch_blazing_raise_once
-switch_blazing_open_once
-switch_blazing_close_once
-button_blazing_raise
-button_blazing_open
-button_blazing_close
+line
+side
+sideIndex
+sector
+top
+middle
+bottom
+distance
 ```
 
-Remote switch/button actions normally require a meaningful sector tag. Manual door actions generally operate on the adjacent back sector.
+`doom_set_wall_texture` changes one existing `top`, `middle`, or `bottom` wall texture.
 
-`doom_activate_linedef` invokes the selected line through the original LinuxDOOM `P_UseSpecialLine()` path for immediate behavior testing. The activation itself is temporary; the persistent definition is changed with `doom_set_linedef_action`.
+The requested name is validated by original LinuxDOOM `R_CheckTextureNumForName()` before runtime state changes. This prevents the authoring agent from inventing a nonexistent wall asset.
+
+### Floor / ceiling flats
+
+`doom_get_visuals` also reports sector `floorFlat` and `ceilingFlat` names.
+
+`doom_set_sector_flat` replaces an existing sector floor or ceiling flat only when that name resolves inside the currently loaded DOOM flat namespace.
+
+### Asset discovery
+
+`doom_list_visual_assets` exposes actual loaded wall/flat names, with optional `wall`, `flat`, and text filters.
+
+The intended AI behavior is:
+
+```text
+inspect current materials
+ ↓
+list valid candidate assets
+ ↓
+select from real IWAD assets
+ ↓
+apply live edit
+ ↓
+playtest
+```
+
+not to fabricate texture names from natural language.
+
+## Door / linedef authoring
+
+v0.5 added safe persistent editing of existing linedef `special` and `tag` fields without moving vertices or changing topology.
+
+Supported allow-listed door presets include normal/manual, switch/button and blazing open/close/raise variants.
+
+`doom_activate_linedef` invokes the selected line through original `P_UseSpecialLine()` for immediate behavior testing. The activation itself remains temporary; the persistent definition is changed through `doom_set_linedef_action`.
 
 ## ChangeSet → PWAD
 
-The current exporter writes the complete Vanilla current-map lump set:
+The exporter writes the complete Vanilla current-map lump set:
 
 ```text
 ExMy
@@ -214,11 +250,28 @@ actor spawn/remove
 linedef special/tag
   → LINEDEFS
 
+wall top/middle/bottom texture
+  → SIDEDEFS
+
 sector light
+  → SECTORS
+
+sector floor/ceiling flat
   → SECTORS
 ```
 
-All other current-map lumps are copied unchanged.
+The topology/BSP-derived lumps remain unchanged:
+
+```text
+VERTEXES
+SEGS
+SSECTORS
+NODES
+REJECT
+BLOCKMAP
+```
+
+That boundary is deliberate. v0.6 is **semantic/material authoring over existing geometry**, not a general geometry editor.
 
 The engine first creates the PWAD in Emscripten FS; browser JavaScript transfers it over the localhost WebSocket and the Node MCP server stores it under:
 
@@ -233,7 +286,7 @@ or `DOOM_MCP_EXPORT_DIR`.
 ```text
 inspect
  ↓
-edit actors / lighting / door rules
+edit actors / lighting / door rules / materials
  ↓
 playtest
  ↓
@@ -265,18 +318,20 @@ Runtime imports are capped per browser session because the original WAD architec
 ## Example AI authoring session
 
 ```text
-Inspect the nearby door-related linedefs.
-Find the one controlling the next room and explain its current special/tag.
-Change it into a reusable door-open button targeting the same sector.
-Darken the room behind it to light 32.
-Remove the nearest zombieman and add two imps farther inside.
-Activate the door now so I can test it.
+Inspect the current room, including nearby doors and visual materials.
+List darker wall textures and floor flats that actually exist in this IWAD.
 
-[playtest]
+Make this room feel more industrial and threatening:
+- set light around 40
+- replace two nearby wall textures with darker valid alternatives
+- use a darker floor flat
+- add two imps deeper in the room
+- make the exit door a reusable button-open door
 
-Show me the ChangeSet.
-Export everything as horror_e1m1_v2.wad.
-Reload that file as the new baseline.
+Let me play it.
+Show me the full ChangeSet.
+Export everything as horror_e1m1_v4.wad.
+Reload that file as the new baseline and verify the materials survived.
 ```
 
 ## Audio
@@ -320,10 +375,13 @@ LinuxDOOM baseline: [`a77dfb96cb91780ca334d0d4cfd86957558007e0`](https://github.
 
 - [`direct-port/doom_control.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/doom_control.c)
 - [`direct-port/doom_linedefs.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/doom_linedefs.c)
+- [`direct-port/doom_visuals.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/doom_visuals.c)
 - [`direct-port/doom_reload.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/doom_reload.c)
 - [`direct-port/authoring_linedef_bridge.js`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/authoring_linedef_bridge.js)
+- [`direct-port/authoring_visual_bridge.js`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/authoring_visual_bridge.js)
 - [`direct-port/authoring_reload_bridge.js`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/authoring_reload_bridge.js)
 - [`direct-port/patch_control_linedefs.py`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/patch_control_linedefs.py)
+- [`direct-port/patch_control_visuals.py`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/patch_control_visuals.py)
 - [`direct-port/Makefile.web`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/Makefile.web)
 - [`mcp/server.js`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/mcp/server.js)
 - [`.github/workflows/direct-port.yml`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/.github/workflows/direct-port.yml)
@@ -334,20 +392,42 @@ Published build provenance:
 
 ## Current limits
 
-The project still intentionally avoids pretending that arbitrary geometry edits are safe:
-
 - sector lighting ✅
 - actor spawn/remove ✅
 - existing linedef special/tag ✅
 - door/trigger activation playtest ✅
+- wall texture assignment ✅
+- floor/ceiling flat assignment ✅
 - PWAD export/reload ✅
-- floor/ceiling geometry editing ❌
+- floor/ceiling height geometry editing ❌
 - vertex/sector topology editing ❌
-- sidedef texture authoring ❌
+- adding new custom texture graphics ❌
 - BSP/node rebuild ❌
 - full new-map generation ❌
 
-A later geometry-authoring milestone should use an explicit node-builder/blockmap pipeline rather than mutating runtime topology and hoping the old BSP remains valid.
+A future geometry-authoring milestone should use an explicit node-builder/blockmap pipeline rather than mutating runtime topology and hoping the old BSP remains valid.
+
+## Next milestone — AI Playtest / Vision
+
+The low-level authoring surface is now intentionally broad enough. The next direction is to let the AI **observe and evaluate its own work** instead of adding more editing knobs.
+
+Planned direction:
+
+```text
+AI edit
+   ↓
+run DOOM
+   ↓
+frame capture + structured state
+   ↓
+AI evaluation
+   ↓
+revision
+   ↓
+next PWAD
+```
+
+Likely next capabilities: screenshot/frame capture, pause/resume, exact tic stepping, bounded input injection and playtest telemetry.
 
 ## Shareware data
 
