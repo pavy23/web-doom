@@ -1,175 +1,216 @@
 'use strict';
 
-var memory = new WebAssembly.Memory({ initial: 108 });
-const output = document.getElementById('output');
-const boot = document.getElementById('boot');
-const bootStatus = document.getElementById('bootStatus');
-const bootError = document.getElementById('bootError');
+(() => {
+  const canvas = document.getElementById('canvas');
+  const game = document.getElementById('game');
+  const launcher = document.getElementById('launcher');
+  const playShareware = document.getElementById('playShareware');
+  const playWad = document.getElementById('playWad');
+  const wadFile = document.getElementById('wadFile');
+  const selected = document.getElementById('selected');
+  const bootStatus = document.getElementById('bootStatus');
+  const bootError = document.getElementById('bootError');
+  const restart = document.getElementById('restart');
+  const fullscreen = document.getElementById('fullscreen');
+  const focusHint = document.getElementById('focushint');
 
-function readWasmString(offset, length) {
-  const bytes = new Uint8Array(memory.buffer, offset, length);
-  return new TextDecoder('utf8').decode(bytes);
-}
+  let Module = null;
+  let selectedWad = null;
+  let selectedWadName = null;
+  let starting = false;
+  let started = false;
 
-function appendOutput(style) {
-  return function(offset, length) {
-    const lines = readWasmString(offset, length).split('\n');
-    for (let i = 0; i < lines.length; ++i) {
-      if (!lines[i].length) continue;
-      const t = document.createElement('span');
-      t.classList.add(style);
-      t.appendChild(document.createTextNode(lines[i]));
-      output.appendChild(t);
-      output.appendChild(document.createElement('br'));
-    }
-  };
-}
-
-let getmsCallsTotal = 0;
-let getmsCalls = 0;
-setInterval(function() {
-  getmsCallsTotal += getmsCalls;
-  document.getElementById('getmsps_stats').innerText = getmsCalls / 1000 + 'k';
-  document.getElementById('getms_stats').innerText = getmsCallsTotal;
-  getmsCalls = 0;
-}, 1000);
-
-function getMilliseconds() {
-  ++getmsCalls;
-  return performance.now();
-}
-
-const canvas = document.getElementById('screen');
-const doomScreenWidth = 640;
-const doomScreenHeight = 400;
-const ctx = canvas.getContext('2d', { alpha: false });
-ctx.imageSmoothingEnabled = false;
-
-let numberOfDrawsTotal = 0;
-let numberOfDraws = 0;
-setInterval(function() {
-  numberOfDrawsTotal += numberOfDraws;
-  document.getElementById('drawframes_stats').innerText = numberOfDrawsTotal;
-  document.getElementById('fps_stats').innerText = numberOfDraws;
-  numberOfDraws = 0;
-}, 1000);
-
-function drawCanvas(ptr) {
-  const doomScreen = new Uint8ClampedArray(memory.buffer, ptr, doomScreenWidth * doomScreenHeight * 4);
-  const renderScreen = new ImageData(doomScreen, doomScreenWidth, doomScreenHeight);
-  ctx.putImageData(renderScreen, 0, 0);
-  ++numberOfDraws;
-}
-
-const importObject = {
-  js: {
-    js_console_log: appendOutput('log'),
-    js_stdout: appendOutput('stdout'),
-    js_stderr: appendOutput('stderr'),
-    js_milliseconds_since_start: getMilliseconds,
-    js_draw_screen: drawCanvas,
-  },
-  env: { memory }
-};
-
-const REMOTE_WASM = 'https://cdn.jsdelivr.net/gh/ashtonmeuser/godot-wasm-doom@3fdb0ecdb3182d799f598e2575c7243efec22622/doom.wasm';
-
-async function instantiateFromArrayBuffer(url) {
-  const response = await fetch(url, { cache: 'force-cache' });
-  if (!response.ok) throw new Error(url + ' HTTP ' + response.status);
-  const bytes = await response.arrayBuffer();
-  return await WebAssembly.instantiate(bytes, importObject);
-}
-
-async function instantiateDoom() {
-  bootStatus.textContent = 'LOADING LOCAL DOOM.WASM…';
-  try {
-    return await WebAssembly.instantiateStreaming(fetch('doom.wasm'), importObject);
-  } catch (localError) {
-    console.warn('Local doom.wasm unavailable; using pinned CDN mirror.', localError);
-    bootStatus.textContent = 'LOADING DOOM.WASM FROM CDN…';
-    return await instantiateFromArrayBuffer(REMOTE_WASM);
+  function status(text) {
+    bootStatus.textContent = text;
   }
-}
 
-instantiateDoom().then(obj => {
-  bootStatus.textContent = 'STARTING DOOM…';
-  obj.instance.exports.main();
+  function showError(err) {
+    console.error(err);
+    bootError.textContent = String(err && (err.stack || err.message) || err);
+    status('FAILED TO START');
+  }
 
-  function doomKeyCode(keyCode) {
-    switch (keyCode) {
-      case 8: return 127;
-      case 17: return 0x80 + 0x1d;
-      case 18: return 0x80 + 0x38;
-      case 37: return 0xac;
-      case 38: return 0xad;
-      case 39: return 0xae;
-      case 40: return 0xaf;
-      default:
-        if (keyCode >= 65 && keyCode <= 90) return keyCode + 32;
-        if (keyCode >= 112 && keyCode <= 123) return keyCode + 75;
-        return keyCode;
+  function humanSize(bytes) {
+    const mb = bytes / 1024 / 1024;
+    return `${mb.toFixed(mb >= 10 ? 1 : 2)} MB`;
+  }
+
+  async function resumeAudio() {
+    // Emscripten's SDL layers create the AudioContext when the game starts.
+    // Because startWithWad() is invoked directly from a click, browsers allow
+    // us to resume it here if the context was created in a suspended state.
+    const candidates = [];
+
+    if (globalThis.SDL && globalThis.SDL.audioContext) {
+      candidates.push(globalThis.SDL.audioContext);
+    }
+    if (globalThis.SDL2 && globalThis.SDL2.audioContext) {
+      candidates.push(globalThis.SDL2.audioContext);
+    }
+    if (Module && Module.SDL && Module.SDL.audioContext) {
+      candidates.push(Module.SDL.audioContext);
+    }
+
+    for (const ctx of candidates) {
+      try {
+        if (ctx && ctx.state === 'suspended') {
+          await ctx.resume();
+        }
+      } catch (err) {
+        console.warn('Could not resume an audio context:', err);
+      }
     }
   }
 
-  const keyDown = keyCode => obj.instance.exports.add_browser_event(0, keyCode);
-  const keyUp = keyCode => obj.instance.exports.add_browser_event(1, keyCode);
+  async function createEngine() {
+    if (typeof createDoomModule !== 'function') {
+      throw new Error('engine.js loaded, but createDoomModule() was not found.');
+    }
 
-  canvas.addEventListener('keydown', function(event) {
-    keyDown(doomKeyCode(event.keyCode));
-    event.preventDefault();
-  }, false);
-  canvas.addEventListener('keyup', function(event) {
-    keyUp(doomKeyCode(event.keyCode));
-    event.preventDefault();
-  }, false);
+    status('INITIALIZING SOUND ENGINE…');
 
-  [
-    ['enterButton', 13], ['leftButton', 0xac], ['rightButton', 0xae],
-    ['upButton', 0xad], ['downButton', 0xaf], ['ctrlButton', 0x80 + 0x1d],
-    ['spaceButton', 32], ['altButton', 0x80 + 0x38]
-  ].forEach(([elementID, keyCode]) => {
-    const button = document.getElementById(elementID);
-    const press = e => { e.preventDefault(); keyDown(keyCode); };
-    const release = e => { e.preventDefault(); keyUp(keyCode); };
-    button.addEventListener('touchstart', press, { passive: false });
-    button.addEventListener('touchend', release, { passive: false });
-    button.addEventListener('touchcancel', release, { passive: false });
-    button.addEventListener('mousedown', press);
-    button.addEventListener('mouseup', release);
-    button.addEventListener('mouseleave', release);
+    Module = await createDoomModule({
+      canvas,
+      noInitialRun: true,
+      locateFile(path) {
+        if (path.endsWith('.wasm')) return './engine.wasm';
+        return path;
+      },
+      print(text) {
+        console.log('[DOOM]', text);
+      },
+      printErr(text) {
+        console.error('[DOOM]', text);
+      }
+    });
+
+    status('ENGINE READY · CLICK PLAY TO ENABLE AUDIO');
+    playShareware.disabled = false;
+    playWad.disabled = !selectedWad;
+  }
+
+  async function loadBuiltInShareware() {
+    status('LOADING SHAREWARE EPISODE 1…');
+    const response = await fetch('./doom1.wad', { cache: 'force-cache' });
+    if (!response.ok) {
+      throw new Error(`doom1.wad HTTP ${response.status}`);
+    }
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
+  async function startWithWad(bytes, label) {
+    if (!Module || starting || started) return;
+
+    starting = true;
+    playShareware.disabled = true;
+    playWad.disabled = true;
+    wadFile.disabled = true;
+    bootError.textContent = '';
+
+    try {
+      status(`MOUNTING ${label.toUpperCase()}…`);
+
+      try {
+        Module.FS.unlink('/game.wad');
+      } catch (_) {
+        // First launch: file does not exist yet.
+      }
+
+      Module.FS.writeFile('/game.wad', bytes);
+
+      // callMain happens as part of the user's click gesture, which is
+      // important for browser audio autoplay policies.
+      status('STARTING DOOM + AUDIO…');
+      Module.callMain(['-iwad', '/game.wad']);
+      await resumeAudio();
+
+      started = true;
+      launcher.classList.add('hidden');
+      canvas.focus();
+      focusHint.textContent = `${label} · Sound enabled · WASD/Arrows move · Ctrl/J fire · Space/E use`;
+    } catch (err) {
+      // Some Emscripten main-loop configurations use an internal unwind
+      // sentinel. Only ignore the known non-error unwind form.
+      const text = String(err && (err.message || err) || err);
+      if (text === 'unwind' || text.includes('unwind')) {
+        started = true;
+        launcher.classList.add('hidden');
+        canvas.focus();
+        await resumeAudio();
+      } else {
+        showError(err);
+        wadFile.disabled = false;
+        playShareware.disabled = false;
+        playWad.disabled = !selectedWad;
+      }
+    } finally {
+      starting = false;
+    }
+  }
+
+  playShareware.addEventListener('click', async () => {
+    if (!Module || starting || started) return;
+    try {
+      const wad = await loadBuiltInShareware();
+      await startWithWad(wad, 'DOOM Shareware Episode 1');
+    } catch (err) {
+      showError(err);
+      playShareware.disabled = false;
+      playWad.disabled = !selectedWad;
+      wadFile.disabled = false;
+    }
   });
 
-  const focusHint = document.getElementById('focushint');
-  function focused() {
-    focusHint.innerText = 'Keyboard captured · Arrow keys move/turn · Ctrl fire · Space use · Shift run';
-    focusHint.style.fontWeight = 'normal';
-  }
-  canvas.addEventListener('focusin', focused, false);
-  canvas.addEventListener('focusout', function() {
-    focusHint.innerText = 'Click the DOOM canvas to capture keyboard input.';
-    focusHint.style.fontWeight = 'bold';
-  }, false);
-  canvas.addEventListener('click', () => canvas.focus());
+  wadFile.addEventListener('change', async () => {
+    const file = wadFile.files && wadFile.files[0];
+    if (!file) return;
 
-  canvas.focus();
-  focused();
-  boot.classList.add('hidden');
+    if (!file.name.toLowerCase().endsWith('.wad')) {
+      selectedWad = null;
+      selectedWadName = null;
+      selected.textContent = 'Please select a .wad file.';
+      playWad.disabled = true;
+      return;
+    }
 
-  let animationFrames = 0;
-  setInterval(function() {
-    document.getElementById('animationfps_stats').innerText = animationFrames;
-    animationFrames = 0;
-  }, 1000);
+    try {
+      selected.textContent = `Reading ${file.name} locally…`;
+      selectedWad = new Uint8Array(await file.arrayBuffer());
+      selectedWadName = file.name;
+      selected.textContent = `${file.name} · ${humanSize(file.size)} · stays in browser memory`;
+      playWad.disabled = !Module;
+    } catch (err) {
+      selectedWad = null;
+      selectedWadName = null;
+      playWad.disabled = true;
+      showError(err);
+    }
+  });
 
-  function step() {
-    ++animationFrames;
-    obj.instance.exports.doom_loop_step();
-    window.requestAnimationFrame(step);
-  }
-  window.requestAnimationFrame(step);
-}).catch(err => {
-  console.error(err);
-  bootStatus.textContent = 'FAILED TO START';
-  bootError.textContent = String(err && (err.stack || err.message) || err);
-});
+  playWad.addEventListener('click', async () => {
+    if (!Module || !selectedWad || starting || started) return;
+    await startWithWad(selectedWad, selectedWadName || 'Local WAD');
+  });
+
+  restart.addEventListener('click', () => location.reload());
+
+  fullscreen.addEventListener('click', async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await game.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+      canvas.focus();
+    } catch (err) {
+      console.warn('Fullscreen failed:', err);
+    }
+  });
+
+  canvas.addEventListener('click', async () => {
+    canvas.focus();
+    if (started) await resumeAudio();
+  });
+
+  createEngine().catch(showError);
+})();
