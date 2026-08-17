@@ -5,6 +5,7 @@ on:
     branches: ["direct-linuxdoom"]
     paths:
       - "direct-port/**"
+      - "mcp/**"
       - ".github/workflows/direct-port.yml"
   workflow_dispatch:
 
@@ -103,10 +104,10 @@ jobs:
           test "$(od -An -tx1 -N4 webdoom.wasm | tr -d ' \n')" = "0061736d"
           ! grep -q "Emscripten-Generated Code" webdoom.html
           grep -q "LINUXDOOM 1.10" webdoom.html
-          grep -q "GENMIDI FM" webdoom.html
-          grep -q "opl_music.js" webdoom.html
-          grep -q "GENMIDI" "$GITHUB_WORKSPACE/direct-port/opl_music.js"
-          grep -q "OPL_VOICE_LIMIT = 9" "$GITHUB_WORKSPACE/direct-port/opl_music.js"
+          grep -q "MCP CONNECTED" webdoom.html
+          grep -q "DoomControl" webdoom.html
+          grep -q "doom_get_state" "$GITHUB_WORKSPACE/mcp/server.js"
+          grep -q "doomctl_get_state_json" "$GITHUB_WORKSPACE/direct-port/doom_control.c"
 
       - name: Publish direct-port preview under /direct/
         shell: bash
@@ -134,39 +135,54 @@ jobs:
           https://github.com/id-Software/DOOM
           pinned commit: a77dfb96cb91780ca334d0d4cfd86957558007e0
 
-          Browser platform replacement source and explicit compatibility edits:
+          Browser platform and MCP control source:
           https://github.com/pavy23/web-doom/tree/direct-linuxdoom/direct-port
+          https://github.com/pavy23/web-doom/tree/direct-linuxdoom/mcp
 
-          Build system: Emscripten 6.0.5 + SDL2 + SDL2_mixer + WebAudio.
-          The original gameplay/rendering/game-state code remains id's LinuxDOOM;
-          platform i_video/i_system/i_sound/i_net are replaced for the browser,
-          plus narrowly scoped modern-toolchain/platform edits documented in
-          direct-port/apply_compat.py.
+          Build system: Emscripten 6.0.5 + SDL2 + SDL2_mixer.
+          The gameplay/rendering/game-state code remains id Software LinuxDOOM;
+          browser-specific i_video/i_system/i_sound/i_net boundaries and the
+          explicit doom_control.c state/control surface are maintained here.
 
-          Audio implementation:
-          - DOOM DMX type-3 SFX lumps are parsed directly and converted to PCM/WAV.
-          - Original SFX pitch variation, volume and stereo separation are preserved.
-          - DOOM MUS music is parsed directly at its native 140 Hz timing.
-          - The original IWAD GENMIDI lump supplies 128 melodic and 47 percussion
-            instrument definitions to our repository-owned browser FM engine.
-          - GENMIDI modulator/carrier multiplier, level, ADSR-like rates, waveform,
-            feedback/connection, fixed-note, base-note offset, fine tuning and
-            double-voice fields drive WebAudio 2-operator FM graphs.
-          - The synth models the OPL2/AdLib nine-voice constraint with voice stealing.
-          - Music does not require Timidity, browser MIDI, or an external SoundFont.
-          - This is an OPL2-style reconstruction, not a cycle-accurate YM3812 emulator.
+          Sound effects:
+          - DOOM DMX type-3 DS* lumps are parsed directly into the browser mixer.
+          - Original PCM, pitch variation, volume and stereo separation are used.
 
-          Music source:
-          direct-port/i_music_opl_bridge.c
-          direct-port/opl_music.js
+          Music:
+          - The former WebAudio GENMIDI approximation is retired and not loaded.
+          - A pinned OPL/MIDI subset is imported at build time from Chocolate Doom:
+            commit 410d96855b5df5410ff591a90efeafa889119224
+          - MUS timing and Vanilla/DMX-compatible behavior program IWAD GENMIDI
+            instruments into OPL registers.
+          - Nuked OPL3 v1.8 renders those registers in OPL2-compatible nine-voice
+            mode by default and mixes signed 16-bit PCM through SDL2_mixer.
+          - I_InitSound() opens the shared mixer before I_InitMusic() attaches the
+            OPL post-mix path.
+          - LinuxDOOM's commented DOS-style 0..15 * 8 volume handoff is restored.
 
-          The browser UI is repository-owned: direct-port/shell.html replaces
-          Emscripten's generated demo shell while Emscripten remains the C-to-WASM
-          build toolchain underneath. A user click starts the game and unlocks
-          browser audio according to autoplay policy.
+          MCP / live engine control:
+          - doom_control.c is compiled into the WASM and exposes only explicit
+            EMSCRIPTEN_KEEPALIVE functions; raw WASM memory is not exposed.
+          - Current state includes map/tic/player/ammo/stats and live kill-counting
+            actors from LinuxDOOM's thinker list.
+          - Current mutations include heal, max-ammo-bounded give-ammo and a
+            collision-aware teleport using LinuxDOOM P_TeleportMove().
+          - mcp/server.js provides a localhost stdio MCP server plus HTTP/WebSocket
+            bridge. The public GitHub Pages game does not connect to localhost;
+            MCP mode is used through the local proxy.
+          - CI installs the official MCP server dependency and imports/constructs
+            createMcpServer() as a self-test before compiling the game.
 
-          The included IWAD is the redistributable DOOM shareware data fetched
-          from SDL's long-standing DOOM project archive during CI.
+          Browser UI:
+          - direct-port/shell.html replaces Emscripten's demo shell.
+          - User gesture starts the game/unlocks browser audio.
+          - Localhost MCP mode displays MCP CONNECTED after the WebSocket attaches.
+
+          Shareware game data:
+          - The included IWAD is the redistributable DOOM shareware data fetched
+            from SDL's long-standing DOOM project archive during CI.
+          - size: 4,196,020 bytes
+          - MD5: 5f4eb849b1af12887dec04a2a12e5e62
           EOF
 
           touch /tmp/publish-main/.nojekyll
