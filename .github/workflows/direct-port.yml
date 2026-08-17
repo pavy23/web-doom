@@ -67,6 +67,7 @@ jobs:
           cp direct-port/i_sound_web.c  "$SRC/i_sound.c"
           cp direct-port/i_net_web.c    "$SRC/i_net.c"
           cp direct-port/Makefile.web   "$SRC/Makefile.web"
+          cp direct-port/shell.html     "$SRC/shell.html"
           python3 direct-port/apply_compat.py "$SRC"
 
       - name: Compile original LinuxDOOM with our web layer
@@ -76,10 +77,13 @@ jobs:
           source /tmp/emsdk/emsdk_env.sh
           cd /tmp/id-doom/linuxdoom-1.10
           emmake make -f Makefile.web
+          test -s webdoom.html
           test -s webdoom.js
           test -s webdoom.wasm
           test -s webdoom.data
           test "$(od -An -tx1 -N4 webdoom.wasm | tr -d ' \n')" = "0061736d"
+          ! grep -q "Emscripten-Generated Code" webdoom.html
+          grep -q "LINUXDOOM 1.10" webdoom.html
 
       - name: Publish direct-port preview under /direct/
         shell: bash
@@ -121,6 +125,10 @@ jobs:
           - DOOM stereo separation and volume are mapped to browser mixer channels.
           - DOOM MUS music is converted by our code to Standard MIDI, then rendered
             by SDL2_mixer through the browser audio backend.
+
+          The browser UI is also repository-owned: direct-port/shell.html replaces
+          Emscripten's generated demo shell while Emscripten remains the C-to-WASM
+          build toolchain underneath.
 
           The included IWAD is the redistributable DOOM shareware data fetched
           from SDL's long-standing DOOM project archive during CI.
