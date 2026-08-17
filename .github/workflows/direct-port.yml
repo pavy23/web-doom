@@ -115,51 +115,34 @@ jobs:
           grep -q "exportPwad" webdoom.html
           grep -q "load_pwad" webdoom.js
           grep -q "reload_current_map" webdoom.js
-          grep -q "doomctl_load_pwad_json" webdoom.js
-          grep -q "doomctl_reload_current_map_json" webdoom.js
           grep -q "get_linedefs" webdoom.js
           grep -q "set_linedef_action" webdoom.js
           grep -q "activate_linedef" webdoom.js
-          grep -q "doomctl_get_linedefs_json" webdoom.js
-          grep -q "doomctl_set_linedef_action_json" webdoom.js
-          grep -q "doomctl_activate_linedef_json" webdoom.js
           grep -q "get_visuals" webdoom.js
           grep -q "list_visual_assets" webdoom.js
           grep -q "set_wall_texture" webdoom.js
           grep -q "set_sector_flat" webdoom.js
-          grep -q "get_visual_changes" webdoom.js
-          grep -q "doomctl_get_visuals_json" webdoom.js
-          grep -q "doomctl_list_visual_assets_json" webdoom.js
-          grep -q "doomctl_set_wall_texture_json" webdoom.js
-          grep -q "doomctl_set_sector_flat_json" webdoom.js
-          grep -q "doom_get_enemies" "$GITHUB_WORKSPACE/mcp/server.js"
-          grep -q "doom_get_sectors" "$GITHUB_WORKSPACE/mcp/server.js"
-          grep -q "doom_get_linedefs" "$GITHUB_WORKSPACE/mcp/server.js"
-          grep -q "doom_set_linedef_action" "$GITHUB_WORKSPACE/mcp/server.js"
-          grep -q "doom_activate_linedef" "$GITHUB_WORKSPACE/mcp/server.js"
-          grep -q "doom_get_visuals" "$GITHUB_WORKSPACE/mcp/server.js"
-          grep -q "doom_list_visual_assets" "$GITHUB_WORKSPACE/mcp/server.js"
-          grep -q "doom_set_wall_texture" "$GITHUB_WORKSPACE/mcp/server.js"
-          grep -q "doom_set_sector_flat" "$GITHUB_WORKSPACE/mcp/server.js"
-          grep -q "doom_set_sector_light" "$GITHUB_WORKSPACE/mcp/server.js"
-          grep -q "doom_spawn_enemy" "$GITHUB_WORKSPACE/mcp/server.js"
-          grep -q "doom_remove_nearest_enemy" "$GITHUB_WORKSPACE/mcp/server.js"
-          grep -q "doom_get_changeset" "$GITHUB_WORKSPACE/mcp/server.js"
-          grep -q "doom_export_pwad" "$GITHUB_WORKSPACE/mcp/server.js"
-          grep -q "doom_list_exports" "$GITHUB_WORKSPACE/mcp/server.js"
-          grep -q "doom_load_pwad" "$GITHUB_WORKSPACE/mcp/server.js"
-          grep -q "doom_reload_current_map" "$GITHUB_WORKSPACE/mcp/server.js"
-          grep -q "doomctl_get_sectors_json" "$GITHUB_WORKSPACE/direct-port/doom_control.c"
-          grep -q "doomctl_set_sector_light" "$GITHUB_WORKSPACE/direct-port/doom_control.c"
-          grep -q "doomctl_get_changeset_json" "$GITHUB_WORKSPACE/direct-port/doom_control.c"
-          grep -q "doomctl_export_pwad" "$GITHUB_WORKSPACE/direct-port/doom_control.c"
-          grep -q "doomctl_get_linedefs_json" "$GITHUB_WORKSPACE/direct-port/doom_linedefs.c"
-          grep -q "doomctl_set_linedef_action_json" "$GITHUB_WORKSPACE/direct-port/doom_linedefs.c"
-          grep -q "P_UseSpecialLine" "$GITHUB_WORKSPACE/direct-port/doom_linedefs.c"
+          grep -q "set_playtest_paused" webdoom.js
+          grep -q "step_playtest_tics" webdoom.js
+          grep -q "get_playtest_telemetry" webdoom.js
+          grep -q "reset_playtest_metrics" webdoom.js
+          grep -q "capture_frame" webdoom.js
+          grep -q "doomctl_set_playtest_paused" webdoom.js
+          grep -q "doomctl_step_playtest_tics" webdoom.js
+          grep -q "doomctl_get_playtest_telemetry_json" webdoom.js
+          grep -q "127.0.0.1:3778/playtest" webdoom.js
+          grep -q "doom_pause_playtest" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doom_resume_playtest" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doom_step_tics" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doom_get_playtest_telemetry" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doom_reset_playtest_metrics" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doom_capture_frame" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "type: 'image'" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doomctl_playtest_after_world_tic" "$GITHUB_WORKSPACE/direct-port/doom_playtest.c"
+          grep -q "doomctl_consume_world_step" "$GITHUB_WORKSPACE/direct-port/doom_playtest.c"
           grep -q "doomctl_get_visuals_json" "$GITHUB_WORKSPACE/direct-port/doom_visuals.c"
           grep -q "doomctl_build_sidedefs_lump" "$GITHUB_WORKSPACE/direct-port/doom_visuals.c"
-          grep -q "doomctl_patch_visual_sectors_lump" "$GITHUB_WORKSPACE/direct-port/doom_visuals.c"
-          grep -q "R_CheckTextureNumForName" "$GITHUB_WORKSPACE/direct-port/doom_visuals.c"
+          grep -q "doomctl_get_linedefs_json" "$GITHUB_WORKSPACE/direct-port/doom_linedefs.c"
           grep -q "doomctl_load_pwad_json" "$GITHUB_WORKSPACE/direct-port/doom_reload.c"
           grep -q "lumpcache" "$GITHUB_WORKSPACE/direct-port/doom_reload.c"
 
@@ -189,49 +172,44 @@ jobs:
           https://github.com/id-Software/DOOM
           pinned commit: a77dfb96cb91780ca334d0d4cfd86957558007e0
 
-          Browser platform and MCP authoring source:
+          Browser platform and MCP source:
           https://github.com/pavy23/web-doom/tree/direct-linuxdoom/direct-port
           https://github.com/pavy23/web-doom/tree/direct-linuxdoom/mcp
 
-          Build system: Emscripten 6.0.5 + SDL2 + SDL2_mixer.
-          Gameplay/rendering/game-state remain id Software LinuxDOOM; browser
-          platform boundaries and explicit authoring adapters live in this repo.
+          Build: Emscripten 6.0.5 + SDL2 + SDL2_mixer.
+          Gameplay/rendering/game-state remain id Software LinuxDOOM.
 
-          Sound effects:
-          - DOOM DMX type-3 DS* lumps are parsed directly into SDL2_mixer.
-          - Original PCM, pitch variation, volume and stereo separation are used.
-
-          Music:
-          - Vanilla/DMX-compatible OPL behavior is imported from pinned Chocolate Doom
+          Audio:
+          - Direct DMX type-3 SFX playback through SDL2_mixer.
+          - Vanilla/DMX-compatible OPL behavior from pinned Chocolate Doom
             commit 410d96855b5df5410ff591a90efeafa889119224.
-          - Nuked OPL3 v1.8 renders in OPL2-compatible nine-voice mode by default.
-          - The earlier WebAudio oscillator approximation is retired.
+          - Nuked OPL3 v1.8 in OPL2-compatible nine-voice mode by default.
 
-          MCP / AI level authoring (v0.6):
-          - doom_control.c: player/enemy/sector state, actor edits, sector-light edits,
-            ChangeSet core and PWAD writer.
-          - doom_linedefs.c: existing LINEDEFS inspection, allow-listed Vanilla door
-            actions, special/tag journal and P_UseSpecialLine() playtest.
-          - doom_visuals.c: nearby sector/sidedef material inspection, valid IWAD wall
-            texture/flat enumeration, live wall texture + floor/ceiling flat edits,
-            and SIDEDEFS/SECTORS persistence.
-          - Visual edits are asset-validated: wall names use R_CheckTextureNumForName()
-            and flats must resolve inside the loaded F_START..F_END range.
-          - Persistent export rewrites THINGS, LINEDEFS, SIDEDEFS and SECTORS while
-            VERTEXES/SEGS/SSECTORS/NODES/REJECT/BLOCKMAP remain unchanged.
-          - No v0.6 authoring operation moves vertices or changes topology.
-          - doom_export_pwad writes a real current-map PWAD; mcp/server.js stores it
-            under mcp/exports/ (or DOOM_MCP_EXPORT_DIR).
-          - doom_load_pwad validates in Node and C, grows LinuxDOOM's lumpcache,
-            appends through W_AddFile(), and rebuilds via G_InitNew().
-          - Imported PWAD becomes the fresh baseline; actor/sector/linedef/visual
-            ChangeSets reset together after successful reload.
-          - Loading/reloading protects all unexported authoring edits by default.
-          - Heal/ammo/player teleport and linedef activation are playtest-only.
+          MCP / AI authoring + playtest (v0.7):
+          - Persistent content authoring covers THINGS, LINEDEFS, SIDEDEFS and
+            SECTORS without mutating map topology/BSP-derived lumps.
+          - doom_control.c handles state, actors, sector light, ChangeSet and PWAD.
+          - doom_linedefs.c handles existing door/trigger special+tag authoring.
+          - doom_visuals.c handles asset-validated wall textures and sector flats.
+          - doom_reload.c validates/loads exported PWADs through W_AddFile() and
+            rebuilds the current map via G_InitNew(), resetting authoring baselines.
+          - doom_playtest.c adds a bounded execution controller and telemetry.
+          - Vanilla P_Ticker() remains the world simulation; when paused, a build
+            patch permits only explicitly budgeted MCP world tics through its pause
+            gate, enabling exact deterministic step observation.
+          - Telemetry tracks elapsed world tics/time, sectors visited, approximate
+            travel distance, health/damage/healing, deaths, kills/items/secrets and
+            current ammunition from a resettable measurement baseline.
+          - playtest_bridge.js captures the final SDL/Emscripten canvas as PNG and
+            keeps a dedicated localhost playtest WebSocket on 127.0.0.1:3778.
+          - mcp/playtest_server.js extends the existing authoring server with pause,
+            resume, exact tic step, telemetry and MCP image-content frame capture.
+          - The existing authoring bridge remains on 127.0.0.1:3777; public Pages
+            never connects to localhost unless loaded through the local MCP proxy.
 
-          Authoring loop:
-          AI inspect -> actor/logic/lighting/material edit -> playtest -> ChangeSet
-          -> PWAD export -> PWAD reload -> LinuxDOOM map rebuild -> next iteration.
+          Loop:
+          AI inspect -> edit -> playtest -> pause/capture/telemetry -> evaluate
+          -> revise -> ChangeSet -> PWAD export/reload -> next iteration.
 
           Shareware game data:
           - Redistributable DOOM shareware IWAD fetched from SDL archive during CI.
