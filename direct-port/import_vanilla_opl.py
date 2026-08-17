@@ -86,6 +86,19 @@ if needle not in s:
 s = s.replace(needle, needle + packed, 1)
 p.write_text(s)
 
+# The native OPL driver probes a physical ISA card with chip timers. In the web
+# build the SDL driver is itself the known software device, and blocking on that
+# hardware probe can deadlock a browser audio callback. Skip only the physical
+# presence test; all later register timing and callbacks remain unchanged.
+p = out / "opl.c"
+s = p.read_text()
+old = """    result1 = OPL_Detect();\n    result2 = OPL_Detect();\n"""
+new = """#ifdef __EMSCRIPTEN__\n    // SDL/Nuked is the known device in-browser; there is no ISA port to probe.\n    result1 = OPL_INIT_OPL3;\n    result2 = OPL_INIT_OPL3;\n#else\n    result1 = OPL_Detect();\n    result2 = OPL_Detect();\n#endif\n"""
+if old not in s:
+    raise SystemExit("opl.c detection anchor changed upstream")
+s = s.replace(old, new, 1)
+p.write_text(s)
+
 # Adapt Chocolate Doom's OPL music module to LinuxDOOM 1.10's original I_* API.
 p = out / "i_oplmusic.c"
 s = p.read_text()
