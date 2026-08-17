@@ -1,11 +1,11 @@
 // Browser system layer for the original id Software LinuxDOOM 1.10.
 
-#include <emscripten/emscripten.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+// Include DOOM first: doomtype.h intentionally defines enum {false, true}.
 #include "doomdef.h"
 #include "m_misc.h"
 #include "i_video.h"
@@ -13,6 +13,10 @@
 #include "d_net.h"
 #include "g_game.h"
 #include "i_system.h"
+
+// Modern Emscripten defines true/false macros, so it must come after Doom's
+// historical boolean enum has already been parsed.
+#include <emscripten/emscripten.h>
 
 int mb_used = 16;
 static double web_basetime_ms = -1.0;
