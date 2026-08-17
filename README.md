@@ -1,39 +1,38 @@
 # Web DOOM — Direct LinuxDOOM Browser Port + AI Authoring MCP
 
-A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, plus a local **MCP authoring plane** that lets AI inspect a live DOOM simulation, edit selected level content, playtest immediately, persist those edits as a PWAD, and load the PWAD back as the next authoring baseline.
+A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, plus a local **MCP authoring plane** that lets AI inspect the live simulation, edit selected level content, playtest it immediately, export the result as a real PWAD, reload that PWAD as the next baseline, and continue iterating.
 
-The `/direct/` build starts from the original LinuxDOOM source and replaces browser-facing platform boundaries. It does **not** use doomgeneric or Chocolate Doom as the game runtime.
+The `/direct/` build starts from the original LinuxDOOM source and replaces the browser-facing platform boundary. It does **not** use doomgeneric or Chocolate Doom as the game runtime.
 
 ## Play
 
-[▶ **Play the direct WebAssembly port**](https://pavy23.github.io/web-doom/direct/)
+[▶ **Direct LinuxDOOM WebAssembly build**](https://pavy23.github.io/web-doom/direct/)
 
 Legacy comparison build:
 
 [▶ Earlier doomgeneric-based build](https://pavy23.github.io/web-doom/)
 
-**Current direct-build status:** gameplay, keyboard/mouse/touch input, DMX SFX, Vanilla-style OPL music, live MCP state/actor/sector control, ChangeSet journaling, PWAD export, and runtime PWAD reload are implemented.
+## Current direction
 
-# What this project is now
-
-The project began as a direct LinuxDOOM browser port. The current direction is an **AI-native DOOM level-authoring experiment**.
+This project began as a browser-port experiment. It is now an **AI-native DOOM level-authoring sandbox**.
 
 ```text
 User / AI
    ↓
 MCP semantic tools
    ↓
-Live LinuxDOOM simulation
-   ├── inspect player / enemies / sectors
-   ├── edit sector lighting
+Live LinuxDOOM
+   ├── inspect player / enemies / sectors / linedefs
+   ├── edit lighting
    ├── spawn / remove actors
+   ├── edit existing door / trigger behavior
    └── playtest immediately
    ↓
 Authoring ChangeSet
    ↓
 PWAD export
    ↓
-local .wad
+local .wad artifact
    ↓
 PWAD reload
    ↓
@@ -44,35 +43,37 @@ fresh ChangeSet
 next AI iteration
 ```
 
-The important distinction is:
+The roles are deliberately separate:
 
-- **MCP** is the AI-facing authoring/control interface.
-- **PWAD** is the persistent level-content artifact.
-- **LinuxDOOM** remains the runtime and validator for the actual gameplay world.
+- **MCP** = AI-facing authoring/control interface
+- **PWAD** = persistent playable level artifact
+- **LinuxDOOM** = gameplay runtime and validator
 
-Version **0.4** closes the first full `inspect → edit → playtest → export → reload → edit again` loop.
+Current MCP version: **0.5.0**.
 
-# Architecture
+## Architecture
 
 ```text
 id Software LinuxDOOM 1.10
           │
-          ├── gameplay / renderer / WAD / game state → original DOOM code
-          ├── i_video.c  → browser video/input backend
-          ├── i_system.c → browser timing/system + audio startup
-          ├── i_sound.c  → direct DMX SFX backend
-          ├── OPL music  → Vanilla-DMX-compatible path + Nuked OPL
+          ├── original gameplay / renderer / WAD / game state
+          ├── browser i_video / i_system / i_sound / i_net
+          ├── Vanilla-DMX-compatible OPL music + Nuked OPL
           ├── doom_control.c
-          │      ├── explicit live state API
-          │      ├── actor / sector authoring API
-          │      ├── ChangeSet journal
+          │      ├── live state
+          │      ├── actor / sector authoring
+          │      ├── ChangeSet core
           │      └── PWAD writer
-          ├── doom_reload.c
-          │      ├── PWAD validation
-          │      ├── runtime lumpcache growth
-          │      ├── W_AddFile() override append
-          │      └── G_InitNew() map rebuild
-          └── i_net.c    → browser/network boundary
+          ├── doom_linedefs.c
+          │      ├── linedef / door inspection
+          │      ├── safe special/tag presets
+          │      ├── P_UseSpecialLine() playtest
+          │      └── LINEDEFS patching
+          └── doom_reload.c
+                 ├── PWAD validation
+                 ├── lumpcache growth
+                 ├── W_AddFile()
+                 └── G_InitNew() map rebuild
                     │
                     ↓
            Emscripten + SDL2 + SDL2_mixer
@@ -88,33 +89,15 @@ id Software LinuxDOOM 1.10
                     ↓
               mcp/server.js
                     │
-       local exports/ + stdio MCP
+          local exports/ + stdio MCP
                     │
                     ↓
        Claude / Cursor / Codex / Inspector
 ```
 
-The gameplay and renderer remain LinuxDOOM. Emscripten is the C-to-WebAssembly toolchain; SDL2 supplies the low-level browser platform bridge.
+## MCP quick start
 
-# MCP authoring plane — v0.4
-
-The public GitHub Pages game behaves normally and does **not** connect to localhost. MCP mode runs through a local proxy at `127.0.0.1`.
-
-Detailed setup:
-
-[**MCP setup and authoring guide**](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/mcp/README.md)
-
-Key source:
-
-- [`mcp/server.js`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/mcp/server.js)
-- [`mcp/package.json`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/mcp/package.json)
-- [`direct-port/doom_control.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/doom_control.c)
-- [`direct-port/doom_reload.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/doom_reload.c)
-- [`direct-port/authoring_reload_bridge.js`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/authoring_reload_bridge.js)
-- [`direct-port/patch_control_reload.py`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/patch_control_reload.py)
-- [`direct-port/shell.html`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/shell.html)
-
-## Quick start
+The authoring source lives on the [`direct-linuxdoom`](https://github.com/pavy23/web-doom/tree/direct-linuxdoom) branch.
 
 ```bash
 git clone https://github.com/pavy23/web-doom.git
@@ -131,73 +114,82 @@ Open:
 http://127.0.0.1:3777/
 ```
 
-Click **CLICK TO START**. The top bar shows **MCP CONNECTED** when attached.
+Click **CLICK TO START**. When the local bridge attaches, the top bar shows **MCP CONNECTED**.
 
 For an MCP host, configure `mcp/server.js` as a local stdio MCP server instead of launching a second server on the same port.
 
-# Current MCP tools
+Detailed guide:
 
-## Perception / inspection
+[**MCP authoring guide**](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/mcp/README.md)
 
-- `doom_bridge_status` — bridge, MCP version, play URL and export directory
-- `doom_get_state` — map/player/current-sector/stats/enemy state
-- `doom_get_enemies` — nearest/visible enemy queries
-- `doom_get_sectors` — floor, ceiling, light, special, tag and approximate sector distance
-- `doom_get_changeset` — persistent edits made since the current baseline was loaded
+## Current MCP tools
 
-Enemy perception includes canonical name, health, coordinates, player distance, relative angle, LinuxDOOM `P_CheckSight()` and a forward-view `visible` flag.
+### Inspection
 
-## Persistent authoring
+- `doom_bridge_status`
+- `doom_get_state`
+- `doom_get_enemies`
+- `doom_get_sectors`
+- `doom_get_linedefs`
+- `doom_get_changeset`
 
-- `doom_set_sector_light` — journal a `SECTORS` light edit
-- `doom_spawn_enemy` — journal `THINGS` additions
-- `doom_remove_nearest_enemy` — journal/cancel `THINGS` entries
-- `doom_export_pwad` — save the ChangeSet as a real `.wad`
-- `doom_list_exports` — list locally exported iterations
-- `doom_load_pwad` — load an exported PWAD as the new runtime/authoring baseline
-- `doom_reload_current_map` — discard live edits and reconstruct from the latest already-loaded baseline
+`doom_get_linedefs` exposes existing line index, special/action, tag, flags, two-sided state, front/back sector, endpoints and player distance. It can filter specifically for recognized Vanilla door specials.
 
-Shareware-safe spawn types currently include:
+### Persistent authoring
 
-```text
-zombieman
-shotgun_guy
-imp
-demon
-spectre
-baron_of_hell
-```
+- `doom_set_sector_light` → `SECTORS`
+- `doom_spawn_enemy` → `THINGS`
+- `doom_remove_nearest_enemy` → `THINGS`
+- `doom_set_linedef_action` → `LINEDEFS`
+- `doom_export_pwad`
+- `doom_list_exports`
+- `doom_load_pwad`
+- `doom_reload_current_map`
 
-## Play/debug-only
+### Playtest/debug only
 
+- `doom_activate_linedef`
 - `doom_heal`
 - `doom_give_ammo`
 - `doom_teleport`
 
-These deliberately affect only the playtest session and are **not** serialized into level content.
+These affect the current simulation but are not automatically serialized as content.
 
-# ChangeSet → PWAD
+## v0.5 — door / linedef authoring
 
-Current persistence works like this:
+DOOM stores linedef editing data separately from BSP-derived geometry. The persistent `maplinedef_t` record contains vertices/sides plus semantic fields such as `flags`, `special` and `tag`.
+
+v0.5 deliberately changes only **existing linedef `special` and `tag` values**. It does not move vertices or modify topology, so `SEGS`, `SSECTORS`, `NODES` and `BLOCKMAP` do not need to be regenerated for these edits.
+
+Supported allow-listed door presets include:
 
 ```text
-sector light edit
-  → ChangeSet
-  → patch SECTORS record
-
-spawn enemy
-  → ChangeSet
-  → append THINGS record
-
-remove original enemy
-  → ChangeSet
-  → remove matching THINGS record
-
-remove AI-spawned enemy
-  → cancel pending THINGS append
+none
+manual_raise
+manual_open
+switch_raise_once
+switch_open_once
+switch_close_once
+button_raise
+button_open
+button_close
+manual_blazing_raise
+manual_blazing_open
+switch_blazing_raise_once
+switch_blazing_open_once
+switch_blazing_close_once
+button_blazing_raise
+button_blazing_open
+button_blazing_close
 ```
 
-The exporter writes a standard PWAD containing the complete current map lump set:
+Remote switch/button actions normally require a meaningful sector tag. Manual door actions generally operate on the adjacent back sector.
+
+`doom_activate_linedef` invokes the selected line through the original LinuxDOOM `P_UseSpecialLine()` path for immediate behavior testing. The activation itself is temporary; the persistent definition is changed with `doom_set_linedef_action`.
+
+## ChangeSet → PWAD
+
+The current exporter writes the complete Vanilla current-map lump set:
 
 ```text
 ExMy
@@ -213,229 +205,164 @@ REJECT
 BLOCKMAP
 ```
 
-`THINGS` and `SECTORS` are rebuilt/patched; the remaining map lumps are copied unchanged.
+Current persistent patches:
 
-The C engine first writes the PWAD inside Emscripten FS. Browser JavaScript transfers the binary over the localhost bridge, and the Node MCP server stores it under:
+```text
+actor spawn/remove
+  → THINGS
+
+linedef special/tag
+  → LINEDEFS
+
+sector light
+  → SECTORS
+```
+
+All other current-map lumps are copied unchanged.
+
+The engine first creates the PWAD in Emscripten FS; browser JavaScript transfers it over the localhost WebSocket and the Node MCP server stores it under:
 
 ```text
 mcp/exports/
 ```
 
-or a folder selected through `DOOM_MCP_EXPORT_DIR`.
+or `DOOM_MCP_EXPORT_DIR`.
 
-# PWAD reload — the closed loop
-
-Version 0.4 adds the missing half of persistence: **the generated WAD can become the next live baseline without restarting the browser page.**
+## Closed authoring loop
 
 ```text
-v1 ChangeSet
-   ↓
-doom_export_pwad
-   ↓
-horror_e1m1_v1.wad
-   ↓
-doom_load_pwad
-   ↓
+inspect
+ ↓
+edit actors / lighting / door rules
+ ↓
+playtest
+ ↓
+doom_get_changeset
+ ↓
+doom_export_pwad v1.wad
+ ↓
+doom_load_pwad v1.wad
+ ↓
 Node + C validation
-   ↓
-Emscripten FS
-   ↓
+ ↓
 W_AddFile()
-   ↓
-new PWAD overrides IWAD / older PWAD lumps
-   ↓
-G_InitNew()
-   ↓
-P_SetupLevel()
-   ↓
-map starts again using v1 content
-   ↓
-ChangeSet = empty
-   ↓
-start v2 edits
+ ↓
+G_InitNew() → P_SetupLevel()
+ ↓
+v1 becomes baseline
+ ↓
+all ChangeSets reset
+ ↓
+continue to v2
 ```
 
-This uses LinuxDOOM's original WAD rule: duplicate lump names are legal and lookup scans backward, so **later-loaded files override earlier data**.
+LinuxDOOM allows duplicate lump names and searches backward, so a later-loaded PWAD naturally overrides earlier IWAD/PWAD data.
 
-There is one historical runtime issue to solve. LinuxDOOM's `W_InitMultipleFiles()` allocates `lumpcache` only once at startup, while `W_AddFile()` can enlarge `lumpinfo`. A naive runtime append would therefore allow new lump indices to run beyond the cache allocation.
+A historical runtime detail required an adapter: LinuxDOOM allocates `lumpcache` at startup, while runtime `W_AddFile()` can enlarge the lump directory. `doom_reload.c` therefore validates the new lump count and grows `lumpcache` before appending the PWAD.
 
-`doom_reload.c` handles this by validating the incoming PWAD/lump count, growing `lumpcache` before `W_AddFile()`, zeroing the new slots, and only then restarting the map.
+Runtime imports are capped per browser session because the original WAD architecture retains appended file handles/directories rather than providing a modern unload operation.
 
-PWAD imports are capped at **32 per browser session**, because the original WAD architecture retains appended file handles/directories and does not provide a modern unload mechanism.
-
-## Protecting unexported changes
-
-`doom_load_pwad` and `doom_reload_current_map` inspect the current ChangeSet first. If edits are pending they refuse by default.
-
-After exporting, the author/AI can explicitly accept replacement of the current live ChangeSet:
-
-```json
-{
-  "filename": "horror_e1m1_v1.wad",
-  "discardChanges": true
-}
-```
-
-After a successful import, the ChangeSet is reset because the imported PWAD itself now contains those edits.
-
-# Example end-to-end authoring conversation
+## Example AI authoring session
 
 ```text
-Inspect the room I am standing in.
-Make the current sector light 32.
-Remove the nearest visible zombieman.
-Spawn three imps deeper into the room.
+Inspect the nearby door-related linedefs.
+Find the one controlling the next room and explain its current special/tag.
+Change it into a reusable door-open button targeting the same sector.
+Darken the room behind it to light 32.
+Remove the nearest zombieman and add two imps farther inside.
+Activate the door now so I can test it.
 
-Let me play it.
+[playtest]
 
 Show me the ChangeSet.
-Export it as horror_e1m1_v1.wad.
-List our exported PWADs.
-Load horror_e1m1_v1.wad as the new baseline and discard the just-exported live changes.
-
-Now inspect the level again.
-Make the next room slightly brighter and export v2.
+Export everything as horror_e1m1_v2.wad.
+Reload that file as the new baseline.
 ```
 
-That is the first usable miniature version of an **AI content-authoring pipeline** rather than an AI-controlled game demo.
+## Audio
 
-# Current persistence limits
-
-v0.4 intentionally persists only edits that do not require rebuilding BSP/topology structures:
-
-- sector light changes ✅
-- actor spawn/remove ✅
-- PWAD export ✅
-- PWAD reload / iterative baseline ✅
-- player cheats/debug state ❌ by design
-- floor/ceiling geometry changes ❌
-- persistent linedef/door edits ❌
-- vertex/sector topology changes ❌
-- texture edits ❌
-- multi-map ChangeSets ❌
-
-Topology edits can require regeneration of `SEGS`, `SSECTORS`, `NODES`, `REJECT` and `BLOCKMAP`, so they should not be treated as simple runtime memory changes.
-
-# Audio implementation
-
-## Sound effects
+### Sound effects
 
 ```text
-DOOM IWAD DS* lump
-        ↓
-DMX type-3 parser
-        ↓
-original 8-bit PCM
-        ↓
-pitch / volume / stereo separation
-        ↓
+DOOM DS* DMX type-3 lump
+   ↓
+direct parser
+   ↓
+original 8-bit PCM + pitch/volume/stereo
+   ↓
 SDL2_mixer
-        ↓
+   ↓
 browser audio
 ```
 
-Source: [`direct-port/i_sound_web.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_sound_web.c)
-
-## Music
-
-The current music path no longer uses the earlier WebAudio oscillator approximation.
+### Music
 
 ```text
 DOOM MUS + IWAD GENMIDI
-        ↓
-MUS event conversion
-        ↓
-Vanilla / DMX-compatible OPL logic
-        ↓
+   ↓
+Vanilla / DMX-compatible OPL behavior
+   ↓
 OPL register writes
-        ↓
+   ↓
 Nuked OPL3 v1.8
 (OPL2-compatible 9-voice mode)
-        ↓
+   ↓
 SDL2_mixer post-mix
-        ↓
+   ↓
 browser audio
 ```
 
-At build time only the required OPL/MIDI subsystem is imported from pinned Chocolate Doom revision [`410d96855b5df5410ff591a90efeafa889119224`](https://github.com/chocolate-doom/chocolate-doom/commit/410d96855b5df5410ff591a90efeafa889119224). Chocolate Doom is **not** the game runtime.
+The project imports only the needed OPL/MIDI subsystem from pinned Chocolate Doom revision [`410d96855b5df5410ff591a90efeafa889119224`](https://github.com/chocolate-doom/chocolate-doom/commit/410d96855b5df5410ff591a90efeafa889119224). Chocolate Doom is **not** the game runtime.
 
 LinuxDOOM baseline: [`a77dfb96cb91780ca334d0d4cfd86957558007e0`](https://github.com/id-Software/DOOM/commit/a77dfb96cb91780ca334d0d4cfd86957558007e0)
 
-# Browser / build source
+## Key source files
 
-Development branch:
-
-[`direct-linuxdoom`](https://github.com/pavy23/web-doom/tree/direct-linuxdoom)
-
-Key files:
-
-- [`direct-port/i_video_web.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_video_web.c)
-- [`direct-port/i_system_web.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_system_web.c)
-- [`direct-port/i_sound_web.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_sound_web.c)
 - [`direct-port/doom_control.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/doom_control.c)
+- [`direct-port/doom_linedefs.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/doom_linedefs.c)
 - [`direct-port/doom_reload.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/doom_reload.c)
+- [`direct-port/authoring_linedef_bridge.js`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/authoring_linedef_bridge.js)
 - [`direct-port/authoring_reload_bridge.js`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/authoring_reload_bridge.js)
-- [`direct-port/patch_control_reload.py`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/patch_control_reload.py)
-- [`direct-port/shell.html`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/shell.html)
+- [`direct-port/patch_control_linedefs.py`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/patch_control_linedefs.py)
 - [`direct-port/Makefile.web`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/Makefile.web)
-- [`direct-port/import_vanilla_opl.py`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/import_vanilla_opl.py)
+- [`mcp/server.js`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/mcp/server.js)
 - [`.github/workflows/direct-port.yml`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/.github/workflows/direct-port.yml)
 
-Published provenance:
+Published build provenance:
 
 [`direct/SOURCE.txt`](https://github.com/pavy23/web-doom/blob/main/direct/SOURCE.txt)
 
-# Shareware game data
+## Current limits
 
-The public demo uses the redistributable DOOM shareware IWAD fetched during CI from SDL's long-standing DOOM archive.
+The project still intentionally avoids pretending that arbitrary geometry edits are safe:
 
-Build verification:
+- sector lighting ✅
+- actor spawn/remove ✅
+- existing linedef special/tag ✅
+- door/trigger activation playtest ✅
+- PWAD export/reload ✅
+- floor/ceiling geometry editing ❌
+- vertex/sector topology editing ❌
+- sidedef texture authoring ❌
+- BSP/node rebuild ❌
+- full new-map generation ❌
+
+A later geometry-authoring milestone should use an explicit node-builder/blockmap pipeline rather than mutating runtime topology and hoping the old BSP remains valid.
+
+## Shareware data
+
+The public demo uses the redistributable DOOM shareware IWAD fetched during CI from SDL's long-standing archive.
+
+Verification:
 
 - size: `4,196,020` bytes
 - MD5: `5f4eb849b1af12887dec04a2a12e5e62`
-- `GENMIDI` header: `#OPL_II#`
+- `GENMIDI`: `#OPL_II#`
 
 Commercial DOOM / DOOM II IWADs are not distributed by this repository.
 
-# Build pipeline
+## License / attribution
 
-```text
-GitHub Actions
-   ↓
-fetch pinned LinuxDOOM source
-   ↓
-fetch + verify shareware IWAD / GENMIDI
-   ↓
-install browser platform + authoring + reload layer
-   ↓
-install/self-test MCP SDK server
-   ↓
-fetch pinned Vanilla-compatible OPL subsystem
-   ↓
-compile LinuxDOOM + OPL + authoring/reload API with Emscripten
-   ↓
-webdoom.js + webdoom.wasm + webdoom.data + custom shell
-   ↓
-GitHub Pages /direct/
-```
+The game engine is based on the [id Software DOOM source release](https://github.com/id-Software/DOOM). The OPL/MIDI compatibility subsystem imported at build time is derived from the pinned [Chocolate Doom](https://github.com/chocolate-doom/chocolate-doom) revision, including Nuked OPL integration. SDL2, SDL2_mixer and the official Model Context Protocol TypeScript SDK retain their respective licenses/notices.
 
-# Next authoring milestones
-
-With export/reload closed, the next step is no longer “make persistence work.” It is to expand what the AI can author safely:
-
-1. **existing door / linedef inspection and persistent control**
-2. safe `LINEDEFS` / `SIDEDEFS` metadata edits that do not require BSP rebuild
-3. AI playtest evaluation and revision suggestions
-4. frame capture / multimodal inspection
-5. exact-tic stepping and deterministic snapshots
-6. eventually geometry generation plus node/blockmap rebuild tooling
-
-# License and attribution
-
-The game engine is based on the [id Software DOOM source release](https://github.com/id-Software/DOOM). The OPL/MIDI compatibility subsystem imported at build time is derived from the pinned [Chocolate Doom](https://github.com/chocolate-doom/chocolate-doom) revision, including Nuked OPL integration. Refer to upstream repositories and notices for applicable terms.
-
-The MCP server uses the official [Model Context Protocol TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk).
-
-SDL2 and SDL2_mixer retain their respective licenses and notices.
-
-The DOOM engine/source license is separate from commercial game data. This repository does not distribute commercial DOOM or DOOM II IWADs.
+The DOOM engine/source license is separate from commercial game data; this repository does not distribute commercial IWADs.
