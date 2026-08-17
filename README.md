@@ -1,6 +1,6 @@
 # Web DOOM — Direct LinuxDOOM Browser Port
 
-A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly.
+A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, now with an experimental **MCP control plane** for reading and modifying a live DOOM simulation from AI clients.
 
 The `/direct/` build starts from the original LinuxDOOM source and replaces the platform-specific `i_*` boundaries for the browser. It does not use doomgeneric or Chocolate Doom as the game runtime.
 
@@ -10,7 +10,7 @@ The `/direct/` build starts from the original LinuxDOOM source and replaces the 
 
 [▶ **Play the direct WebAssembly port**](https://pavy23.github.io/web-doom/direct/)
 
-**Current status:** gameplay, DMX sound effects, Vanilla-style OPL music and browser/touch input are working in the published build.
+**Current status:** gameplay, DMX sound effects, Vanilla-style OPL music, keyboard/mouse/touch input and the MCP-ready engine control surface are working in the published build.
 
 ### Legacy / reference build
 
@@ -30,6 +30,7 @@ id Software LinuxDOOM 1.10
           ├── i_system.c → browser timing/system + audio startup
           ├── i_sound.c  → direct DMX SFX backend
           ├── OPL music  → Vanilla-DMX-compatible OPL path + Nuked OPL
+          ├── doom_control.c → explicit live engine-control API
           └── i_net.c    → browser/network boundary
                     │
                     ↓
@@ -60,13 +61,92 @@ The gameplay and renderer remain LinuxDOOM. Emscripten is the C → WebAssembly 
 - Fullscreen control
 - Click-to-start browser audio unlock
 - Custom browser shell — no Emscripten demo UI
+- Explicit live engine-control API compiled into WASM
+- Experimental local MCP server for AI control
 - Reproducible GitHub Actions build and GitHub Pages publishing
+
+# MCP control plane
+
+The current experimental MCP layer connects a local AI client to a **live running DOOM engine**, rather than simply displaying DOOM inside an MCP-capable UI.
+
+```text
+Claude / Cursor / Codex / MCP Inspector
+                 │
+                 │ stdio MCP
+                 ▼
+          mcp/server.js
+          ├── MCP tools
+          ├── localhost HTTP proxy
+          └── WebSocket /control
+                 │
+                 ▼
+          browser shell
+                 │
+          window.DoomControl
+                 │
+          Emscripten ccall
+                 │
+                 ▼
+        doom_control.c
+                 │
+                 ▼
+       live LinuxDOOM state
+```
+
+The public GitHub Pages game behaves normally and does **not** connect to localhost. MCP mode is activated by running the local server, which proxies the published game through `127.0.0.1` so the browser and control WebSocket share the same local origin.
+
+### Current MCP tools
+
+- `doom_bridge_status` — check whether a live browser is attached
+- `doom_get_state` — read map/player/enemy state
+- `doom_heal` — heal the current player, capped at 200
+- `doom_give_ammo` — give bullets, shells, cells or rockets while respecting max ammo
+- `doom_teleport` — collision-aware player movement through LinuxDOOM's own `P_TeleportMove()` path
+
+`doom_get_state` currently exposes:
+
+- episode / map / skill / game tic / level time
+- health / armor / weapon
+- player x/y/z and angle
+- bullets / shells / cells / rockets and max ammo
+- kill / item / secret counters
+- total map kills / items / secrets
+- live kill-counting monsters with type, health and coordinates
+
+The bridge intentionally does **not** expose arbitrary WASM memory. JavaScript can only invoke functions explicitly exported by [`direct-port/doom_control.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/doom_control.c).
+
+### Try the MCP server
+
+The MCP source is maintained on the [`direct-linuxdoom`](https://github.com/pavy23/web-doom/tree/direct-linuxdoom) branch.
+
+- [MCP setup and usage guide](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/mcp/README.md)
+- [`mcp/server.js`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/mcp/server.js)
+- [`mcp/package.json`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/mcp/package.json)
+
+Basic setup:
+
+```bash
+git clone https://github.com/pavy23/web-doom.git
+cd web-doom
+git checkout direct-linuxdoom
+cd mcp
+npm install
+npm start
+```
+
+Then open:
+
+```text
+http://127.0.0.1:3777/
+```
+
+Click **CLICK TO START**. When the local browser bridge attaches, the top bar shows **MCP CONNECTED**.
+
+For an MCP host, configure `mcp/server.js` as a local stdio MCP server using Node.js 20 or newer. The server uses the current official `@modelcontextprotocol/server` package and the stdio server entry point.
 
 ## Audio implementation
 
 ### Sound effects
-
-Sound effects are handled directly by this repository's browser platform layer:
 
 ```text
 DOOM IWAD DS* lump
@@ -86,9 +166,7 @@ Source: [`direct-port/i_sound_web.c`](https://github.com/pavy23/web-doom/blob/di
 
 ### Music — Vanilla DMX behavior + software OPL chip
 
-The previous browser music implementation approximated OPL instruments with WebAudio oscillators. That approach has been retired because it did not reproduce the original DOS timbre cleanly enough.
-
-The current build uses this path instead:
+The earlier browser implementation approximated OPL instruments with WebAudio oscillators. That path has been retired.
 
 ```text
 DOOM D_* MUS lump
@@ -111,30 +189,20 @@ SDL2_mixer post-mix
 🔊 browser audio
 ```
 
-At build time the project imports only the required OPL/MIDI subsystem from a **pinned Chocolate Doom 3.1.1 source revision**:
+At build time the project imports only the required OPL/MIDI subsystem from a pinned Chocolate Doom source revision:
 
-- Chocolate Doom commit: [`410d96855b5df5410ff591a90efeafa889119224`](https://github.com/chocolate-doom/chocolate-doom/commit/410d96855b5df5410ff591a90efeafa889119224)
-- LinuxDOOM baseline commit: [`a77dfb96cb91780ca334d0d4cfd86957558007e0`](https://github.com/id-Software/DOOM/commit/a77dfb96cb91780ca334d0d4cfd86957558007e0)
+- Chocolate Doom: [`410d96855b5df5410ff591a90efeafa889119224`](https://github.com/chocolate-doom/chocolate-doom/commit/410d96855b5df5410ff591a90efeafa889119224)
+- LinuxDOOM baseline: [`a77dfb96cb91780ca334d0d4cfd86957558007e0`](https://github.com/id-Software/DOOM/commit/a77dfb96cb91780ca334d0d4cfd86957558007e0)
 
-Chocolate Doom is **not** used as the game engine/runtime here. Its researched OPL music subsystem is used because it contains compatibility behavior intended to reproduce Vanilla Doom's DMX playback, including:
+Chocolate Doom is **not** used as the game engine/runtime. Its researched OPL subsystem supplies Vanilla/DMX-compatible behavior such as nonlinear volume mapping, frequency/pitch behavior, nine-voice allocation, `GENMIDI` programming, percussion and historical playback quirks. Nuked OPL3 v1.8 then renders the resulting OPL register stream.
 
-- nonlinear music-volume mapping
-- DOOM/DMX OPL frequency curve
-- pitch bend behavior
-- nine-voice allocation and voice stealing
-- `GENMIDI` melodic/percussion instrument programming
-- fixed-pitch and double-voice instruments
-- channel priority and historical playback quirks
+This music path does not use WebAudio oscillator synthesis, Timidity, browser MIDI or an external SoundFont.
 
-The resulting OPL register stream is rendered by **Nuked OPL3 v1.8**. With no OPL3 DMX option requested, the music path remains in OPL2-compatible nine-voice mode.
+### Browser audio startup
 
-This path does **not** use WebAudio oscillator synthesis, Timidity, browser MIDI, or an external SoundFont.
+LinuxDOOM's Unix target did not provide real music playback, so its original platform startup only called `I_InitSound()`.
 
-### Browser audio startup — important LinuxDOOM compatibility fix
-
-The original LinuxDOOM Unix target did not actually provide music playback, so its platform startup only called `I_InitSound()`.
-
-For the browser direct port we explicitly initialize both layers in ownership order:
+The browser port explicitly uses:
 
 ```text
 I_InitSound()
@@ -143,18 +211,16 @@ SDL2_mixer opens signed 16-bit stereo output
     ↓
 I_InitMusic()
     ↓
-Vanilla DMX / Nuked OPL backend registers its SDL_mixer post-mix callback
+Vanilla DMX / Nuked OPL backend registers its post-mix callback
 ```
 
-Shutdown runs in reverse order so the OPL callback is detached before the shared SDL_mixer device is closed.
+Shutdown runs in reverse ownership order.
 
 Source: [`direct-port/i_system_web.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_system_web.c)
 
 ### Restored DOS/Vanilla volume scaling
 
-LinuxDOOM's Unix source still contains the old DOS `* 8` volume conversion as commented-out code. Its menu values are `0..15`, while the DMX-compatible internal sound path works on approximately `0..127` values.
-
-The direct port restores this handoff at startup and when changing the sound menu:
+The direct port restores the old DOS-style handoff that remains commented in LinuxDOOM's Unix source:
 
 ```text
 DOOM menu volume: 0..15
@@ -162,56 +228,26 @@ DOOM menu volume: 0..15
 internal audio volume: 0..120
         ↓
 DMX-compatible volume mapping
-        ↓
-SFX / OPL output
 ```
 
-This matters especially for the OPL path: without the restored scaling, music can be technically active but far quieter than intended.
-
-The compatibility edits are documented and applied reproducibly in [`direct-port/apply_compat.py`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/apply_compat.py).
-
-### Relevant implementation files
-
-- [`direct-port/import_vanilla_opl.py`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/import_vanilla_opl.py) — prepares the pinned OPL/MIDI subset and LinuxDOOM compatibility boundary
-- [`direct-port/Makefile.web`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/Makefile.web) — compiles LinuxDOOM + OPL sources into browser WASM
-- [`direct-port/i_sound_web.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_sound_web.c) — direct browser DMX SFX backend
-- [`direct-port/i_system_web.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_system_web.c) — browser timing/system layer and sound/music startup order
-- [`direct-port/shell.html`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/shell.html) — browser UI and audio user-gesture startup
-- [`direct-port/apply_compat.py`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/apply_compat.py) — narrow LinuxDOOM/Emscripten + Vanilla audio compatibility edits
-
-The old `direct-port/opl_music.js` and `direct-port/i_music_opl_bridge.c` paths remain only as **deprecated compatibility stubs** because the existing CI workflow still checks/copies those paths. They are not loaded or compiled by the direct runtime.
-
-### What “original sound” means here
-
-This is much closer to the original **digital DOS-era AdLib/Sound Blaster OPL path** than the previous WebAudio approximation: DOOM's instrument data and DMX-style register behavior ultimately feed a software model of the OPL chip.
-
-It is not an electrical clone of every physical 1993 sound card. Real AdLib/Sound Blaster models and revisions can add their own DAC, low-pass filtering, mixer coloration and analog noise. If a specific historical board recording is the target, that analog output stage is a separate layer to model after the digital OPL path.
+These narrow compatibility edits are reproducible in [`direct-port/apply_compat.py`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/apply_compat.py).
 
 ## Browser platform source
 
-The direct-port implementation is maintained on the [`direct-linuxdoom`](https://github.com/pavy23/web-doom/tree/direct-linuxdoom) branch.
+The direct implementation is maintained on the [`direct-linuxdoom`](https://github.com/pavy23/web-doom/tree/direct-linuxdoom) branch.
 
 Key files:
 
 - [`direct-port/i_video_web.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_video_web.c) — video/input boundary
 - [`direct-port/i_system_web.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_system_web.c) — timing/system/audio-init boundary
 - [`direct-port/i_sound_web.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_sound_web.c) — direct DMX SFX backend
+- [`direct-port/doom_control.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/doom_control.c) — MCP-ready engine state/control API
 - [`direct-port/import_vanilla_opl.py`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/import_vanilla_opl.py) — OPL/MIDI import adapter
 - [`direct-port/i_net_web.c`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/i_net_web.c) — network boundary
-- [`direct-port/shell.html`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/shell.html) — browser shell
+- [`direct-port/shell.html`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/shell.html) — browser shell, audio unlock and localhost MCP bridge
 - [`direct-port/Makefile.web`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/Makefile.web) — Emscripten build
-- [`direct-port/apply_compat.py`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/apply_compat.py) — narrow modern-toolchain and Vanilla audio compatibility edits
+- [`direct-port/apply_compat.py`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/direct-port/apply_compat.py) — narrow compatibility edits
 - [`.github/workflows/direct-port.yml`](https://github.com/pavy23/web-doom/blob/direct-linuxdoom/.github/workflows/direct-port.yml) — CI build/publish workflow
-
-## Source baseline
-
-- [id Software DOOM source repository](https://github.com/id-Software/DOOM)
-- Direct-port baseline: [`linuxdoom-1.10`](https://github.com/id-Software/DOOM/tree/master/linuxdoom-1.10)
-- Pinned id Software commit: [`a77dfb96cb91780ca334d0d4cfd86957558007e0`](https://github.com/id-Software/DOOM/commit/a77dfb96cb91780ca334d0d4cfd86957558007e0)
-- Pinned Chocolate Doom OPL/MIDI revision: [`410d96855b5df5410ff591a90efeafa889119224`](https://github.com/chocolate-doom/chocolate-doom/commit/410d96855b5df5410ff591a90efeafa889119224)
-- [Emscripten](https://emscripten.org/) 6.0.5
-- [SDL2](https://github.com/libsdl-org/SDL/tree/SDL2)
-- [SDL2_mixer](https://github.com/libsdl-org/SDL_mixer/tree/SDL2)
 
 ## Shareware game data
 
@@ -223,7 +259,7 @@ Build verification:
 - MD5: `5f4eb849b1af12887dec04a2a12e5e62`
 - `GENMIDI` header: `#OPL_II#`
 
-The bundled shareware data contains **Episode 1: Knee-Deep in the Dead**, including secret map `E1M9`.
+The bundled data contains **Episode 1: Knee-Deep in the Dead**, including secret map `E1M9`.
 
 Commercial DOOM / DOOM II IWADs are **not** distributed by this repository.
 
@@ -236,15 +272,15 @@ fetch pinned id Software LinuxDOOM source
    ↓
 fetch + verify shareware IWAD / GENMIDI
    ↓
-install browser i_video / i_system / i_sound / i_net
+install browser platform layer
    ↓
-restore narrow LinuxDOOM browser/Vanilla-audio compatibility behavior
+install doom_control.c engine-control surface
    ↓
-fetch pinned Chocolate Doom OPL/MIDI source subset
+restore narrow LinuxDOOM / Vanilla compatibility behavior
    ↓
-adapt only the music/platform boundary
+fetch pinned Chocolate Doom OPL/MIDI subset
    ↓
-compile LinuxDOOM + DMX-compatible OPL logic + Nuked OPL
+compile LinuxDOOM + DMX-compatible OPL + Nuked OPL + control API
    ↓
 Emscripten 6.0.5 + SDL2 + SDL2_mixer
    ↓
@@ -263,24 +299,29 @@ Published provenance is recorded in [`direct/SOURCE.txt`](https://github.com/pav
 - `Shift`: run
 - `1`–`7`: weapon selection
 - `Esc`: DOOM menu
-- touch/browser pointer input is supported by the current browser backend
+- touch/browser pointer input is supported
 - **FULLSCREEN**: browser fullscreen mode
 - **RESTART**: reload the game runtime
 
-## Possible next steps
+## Next MCP milestones
 
-- compare Nuked OPL output against known real AdLib / Sound Blaster captures
-- model a specific board's analog low-pass / DAC / mixer coloration if needed
-- HiDPI / widescreen / higher-resolution rendering
-- pointer-lock mouse controls
-- richer gamepad/mobile control UX
-- IndexedDB save persistence
-- WAD / PWAD drag-and-drop
-- WebSocket or WebRTC multiplayer
+The current MCP layer is intentionally small. Good next steps are:
+
+1. decode numeric actor types into readable monster/item names
+2. query nearest and currently visible enemies
+3. spawn/remove actors through original engine functions
+4. inspect and modify sector light/floor/ceiling properties
+5. activate doors and linedefs
+6. pause and advance the simulation by exact tics
+7. save/restore simulation snapshots
+8. capture frames for multimodal AI inspection
+9. inspect/load WAD and PWAD content through MCP
 
 ## License and attribution
 
 The game engine is based on the [id Software DOOM source release](https://github.com/id-Software/DOOM). The OPL/MIDI compatibility subsystem imported at build time is derived from the pinned [Chocolate Doom](https://github.com/chocolate-doom/chocolate-doom) source revision, including its Nuked OPL integration. Refer to the respective upstream repositories and included license notices for applicable terms and attribution.
+
+The MCP server uses the official [Model Context Protocol TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk).
 
 SDL2 and SDL2_mixer retain their respective licenses and notices.
 
