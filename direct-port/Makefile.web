@@ -16,6 +16,9 @@ LINEDEF_PRE_JS := $(GITHUB_WORKSPACE)/direct-port/authoring_linedef_bridge.js
 VISUAL_SOURCE := $(GITHUB_WORKSPACE)/direct-port/doom_visuals.c
 VISUAL_PATCH := $(GITHUB_WORKSPACE)/direct-port/patch_control_visuals.py
 VISUAL_PRE_JS := $(GITHUB_WORKSPACE)/direct-port/authoring_visual_bridge.js
+PLAYTEST_SOURCE := $(GITHUB_WORKSPACE)/direct-port/doom_playtest.c
+PLAYTEST_PATCH := $(GITHUB_WORKSPACE)/direct-port/patch_playtest_ticker.py
+PLAYTEST_PRE_JS := $(GITHUB_WORKSPACE)/direct-port/playtest_bridge.js
 RELOAD_SOURCE := $(GITHUB_WORKSPACE)/direct-port/doom_reload.c
 RELOAD_PATCH := $(GITHUB_WORKSPACE)/direct-port/patch_control_reload.py
 RELOAD_PRE_JS := $(GITHUB_WORKSPACE)/direct-port/authoring_reload_bridge.js
@@ -29,7 +32,7 @@ CFLAGS := -O2 -w -std=gnu89 -DNORMALUNIX -D__EMSCRIPTEN__ $(PORT_FLAGS) -I. -Ich
 
 SOURCES := \
   doomdef.c doomstat.c dstrings.c \
-  i_system.c i_sound.c i_video.c i_net.c doom_control.c doom_linedefs.c doom_visuals.c doom_reload.c \
+  i_system.c i_sound.c i_video.c i_net.c doom_control.c doom_linedefs.c doom_visuals.c doom_playtest.c doom_reload.c \
   choco_opl/i_oplmusic.c choco_opl/memio.c choco_opl/mus2mid.c \
   choco_opl/midifile.c choco_opl/opl.c choco_opl/opl_queue.c \
   choco_opl/opl_sdl.c choco_opl/opl3.c \
@@ -56,6 +59,7 @@ EMFLAGS := $(PORT_FLAGS) \
   --pre-js $(RELOAD_PRE_JS) \
   --pre-js $(LINEDEF_PRE_JS) \
   --pre-js $(VISUAL_PRE_JS) \
+  --pre-js $(PLAYTEST_PRE_JS) \
   --preload-file doom1.wad@doom1.wad \
   --shell-file shell.html
 
@@ -82,16 +86,21 @@ prepare-control:
 	test -f $(VISUAL_SOURCE)
 	test -f $(VISUAL_PATCH)
 	test -f $(VISUAL_PRE_JS)
+	test -f $(PLAYTEST_SOURCE)
+	test -f $(PLAYTEST_PATCH)
+	test -f $(PLAYTEST_PRE_JS)
 	test -f $(RELOAD_SOURCE)
 	test -f $(RELOAD_PATCH)
 	test -f $(RELOAD_PRE_JS)
 	cp $(CONTROL_SOURCE) doom_control.c
 	cp $(LINEDEF_SOURCE) doom_linedefs.c
 	cp $(VISUAL_SOURCE) doom_visuals.c
+	cp $(PLAYTEST_SOURCE) doom_playtest.c
 	cp $(RELOAD_SOURCE) doom_reload.c
 	python3 $(LINEDEF_PATCH) doom_control.c
 	python3 $(VISUAL_PATCH) doom_control.c
 	python3 $(RELOAD_PATCH) doom_control.c
+	python3 $(PLAYTEST_PATCH) "$(CURDIR)"
 	grep -q "doomctl_get_state_json" doom_control.c
 	grep -q "doomctl_spawn_enemy" doom_control.c
 	grep -q "doomctl_remove_nearest_enemy_json" doom_control.c
@@ -115,6 +124,11 @@ prepare-control:
 	grep -q "doomctl_set_wall_texture_json" doom_visuals.c
 	grep -q "doomctl_set_sector_flat_json" doom_visuals.c
 	grep -q "R_CheckTextureNumForName" doom_visuals.c
+	grep -q "doomctl_set_playtest_paused" doom_playtest.c
+	grep -q "doomctl_step_playtest_tics" doom_playtest.c
+	grep -q "doomctl_get_playtest_telemetry_json" doom_playtest.c
+	grep -q "doomctl_playtest_after_world_tic" p_tick.c
+	grep -q "doomctl_consume_world_step" p_tick.c
 	grep -q "doomctl_load_pwad_json" doom_reload.c
 	grep -q "doomctl_reload_current_map_json" doom_reload.c
 	grep -q "W_AddFile" doom_reload.c
@@ -144,6 +158,12 @@ validate-mcp:
 	grep -q "doom_list_visual_assets" $(MCP_SERVER)
 	grep -q "doom_set_wall_texture" $(MCP_SERVER)
 	grep -q "doom_set_sector_flat" $(MCP_SERVER)
+	grep -q "doom_pause_playtest" $(MCP_SERVER)
+	grep -q "doom_resume_playtest" $(MCP_SERVER)
+	grep -q "doom_step_tics" $(MCP_SERVER)
+	grep -q "doom_get_playtest_telemetry" $(MCP_SERVER)
+	grep -q "doom_reset_playtest_metrics" $(MCP_SERVER)
+	grep -q "doom_capture_frame" $(MCP_SERVER)
 	grep -q "doom_spawn_enemy" $(MCP_SERVER)
 	grep -q "doom_remove_nearest_enemy" $(MCP_SERVER)
 	grep -q "doom_get_changeset" $(MCP_SERVER)
@@ -164,5 +184,5 @@ webdoom.html: $(SOURCES) doom1.wad shell.html
 
 clean:
 	rm -rf choco_opl
-	rm -f doom_control.c doom_linedefs.c doom_visuals.c doom_reload.c
+	rm -f doom_control.c doom_linedefs.c doom_visuals.c doom_playtest.c doom_reload.c
 	rm -f webdoom.html webdoom.js webdoom.wasm webdoom.data emcc-build.log
