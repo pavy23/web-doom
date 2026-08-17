@@ -17,7 +17,7 @@ CFLAGS := -O2 -std=gnu89 -DNORMALUNIX -D__EMSCRIPTEN__ $(PORT_FLAGS) \
 
 SOURCES := \
   doomdef.c doomstat.c dstrings.c \
-  i_system.c i_sound.c i_video.c i_net.c \
+  i_system.c i_sound.c i_music_opl_bridge.c i_video.c i_net.c \
   tables.c f_finale.c f_wipe.c d_main.c d_net.c d_items.c g_game.c \
   m_menu.c m_misc.c m_argv.c m_bbox.c m_fixed.c m_swap.c m_cheat.c m_random.c \
   am_map.c p_ceilng.c p_doors.c p_enemy.c p_floor.c p_inter.c p_lights.c \
@@ -37,7 +37,7 @@ EMFLAGS := $(PORT_FLAGS) \
   -sENVIRONMENT=web \
   -sINVOKE_RUN=0 \
   -sEXIT_RUNTIME=0 \
-  -sEXPORTED_RUNTIME_METHODS=callMain \
+  -sEXPORTED_RUNTIME_METHODS=callMain,FS \
   --preload-file doom1.wad@doom1.wad \
   --shell-file shell.html
 
