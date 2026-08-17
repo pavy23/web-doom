@@ -13,7 +13,7 @@ const PORT = Number(process.env.DOOM_MCP_PORT || 3777);
 const UPSTREAM = new URL(process.env.DOOM_MCP_UPSTREAM || 'https://pavy23.github.io/web-doom/direct/');
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const EXPORT_DIR = path.resolve(process.env.DOOM_MCP_EXPORT_DIR || path.join(MODULE_DIR, 'exports'));
-const VERSION = '0.5.0';
+const VERSION = '0.6.0';
 
 let browserSocket = null;
 let nextRequestId = 1;
@@ -88,7 +88,9 @@ async function proxyPublishedGame(req, res) {
     const upstreamUrl = new URL(relative, UPSTREAM);
     upstreamUrl.search = requestUrl.search;
     const upstreamResponse = await fetch(upstreamUrl, {
-      redirect: 'follow', cache: 'no-store', headers: { 'user-agent': `web-doom-mcp/${VERSION}` }
+      redirect: 'follow',
+      cache: 'no-store',
+      headers: { 'user-agent': `web-doom-mcp/${VERSION}` }
     });
     res.statusCode = upstreamResponse.status;
     const contentType = upstreamResponse.headers.get('content-type');
@@ -226,21 +228,29 @@ function inspectPwad(bytes) {
     lumps.push({ index: i, name, position, size });
   }
   return {
-    bytes: bytes.length, lumpCount, directoryOffset, lumps,
+    bytes: bytes.length,
+    lumpCount,
+    directoryOffset,
+    lumps,
     mapMarkers: lumps.map(lump => lump.name).filter(name => /^E[1-9]M[1-9]$/.test(name))
   };
 }
 
 async function getCombinedChangeset() {
-  const [base, linedefs] = await Promise.all([
+  const [base, linedefs, visuals] = await Promise.all([
     bridgeCall('get_changeset'),
-    bridgeCall('get_linedef_changes')
+    bridgeCall('get_linedef_changes'),
+    bridgeCall('get_visual_changes')
   ]);
   if (!base?.ready) return base;
   return {
     ...base,
     linedefCount: Number(linedefs?.count || 0),
-    linedefs: Array.isArray(linedefs?.linedefs) ? linedefs.linedefs : []
+    linedefs: Array.isArray(linedefs?.linedefs) ? linedefs.linedefs : [],
+    sidedefCount: Number(visuals?.sidedefCount || 0),
+    sectorFlatCount: Number(visuals?.sectorFlatCount || 0),
+    sidedefs: Array.isArray(visuals?.sidedefs) ? visuals.sidedefs : [],
+    sectorFlats: Array.isArray(visuals?.sectorFlats) ? visuals.sectorFlats : []
   };
 }
 
@@ -250,6 +260,8 @@ function hasAuthoringChanges(changeset) {
     || Number(changeset.spawnCount || 0) > 0
     || Number(changeset.removeCount || 0) > 0
     || Number(changeset.linedefCount || 0) > 0
+    || Number(changeset.sidedefCount || 0) > 0
+    || Number(changeset.sectorFlatCount || 0) > 0
   );
 }
 
@@ -269,11 +281,15 @@ async function listLocalExports() {
 export function createMcpServer() {
   const server = new McpServer(
     { name: 'web-doom-control', version: VERSION },
-    { instructions: 'Use inspection tools before mutation. Actor, sector-light and supported linedef special/tag edits are persistent authoring changes. Export them as PWAD, load the result back as the new baseline, then continue iterating. Linedef activation itself is playtest-only.' }
+    {
+      instructions:
+        'Use inspection tools before mutation. Actor, lighting, linedef semantics, wall textures and sector flats are persistent authoring changes. Visual names must come from doom_list_visual_assets. Export edits as PWAD, load that PWAD as the new baseline, then continue iterating. Player cheats and linedef activation remain playtest-only.'
+    }
   );
 
   server.registerTool('doom_bridge_status', {
-    title: 'DOOM bridge status', description: 'Check whether the local DOOM browser is connected.',
+    title: 'DOOM bridge status',
+    description: 'Check local browser/MCP connection and export directory.',
     inputSchema: z.object({}), annotations: { readOnlyHint: true }
   }, async () => jsonResult({ version: VERSION, connected: Boolean(bridgeConnected()), playUrl: `http://${HOST}:${PORT}/`, upstream: UPSTREAM.href, exportDir: EXPORT_DIR }));
 
@@ -308,19 +324,46 @@ export function createMcpServer() {
 
   server.registerTool('doom_get_linedefs', {
     title: 'Inspect nearby DOOM linedefs and doors',
-    description: 'Read nearby linedefs with vertices, sectors, flags, special/action, tag and distance. doorsOnly filters to recognized Vanilla door specials.',
-    inputSchema: z.object({
-      maxDistance: z.number().int().min(0).max(32768).optional(),
-      doorsOnly: z.boolean().optional(),
-      specialsOnly: z.boolean().optional(),
-      limit: z.number().int().min(1).max(512).optional()
-    }),
+    description: 'Read nearby linedefs with geometry references, special/action, tag and distance.',
+    inputSchema: z.object({ maxDistance: z.number().int().min(0).max(32768).optional(), doorsOnly: z.boolean().optional(), specialsOnly: z.boolean().optional(), limit: z.number().int().min(1).max(512).optional() }),
     annotations: { readOnlyHint: true }
   }, async ({ maxDistance = 1024, doorsOnly = false, specialsOnly = false, limit = 64 }) => {
     try {
       const state = await bridgeCall('get_linedefs', { limit: 512, maxDistance });
       const lines = filteredLinedefs(state, { doorsOnly, specialsOnly, limit });
       return jsonResult({ ready: Boolean(state?.ready), lineCount: state?.lineCount, pendingChanges: state?.changeCount, filters: { maxDistance, doorsOnly, specialsOnly, limit }, count: lines.length, lines });
+    } catch (error) { return toolError(error); }
+  });
+
+  server.registerTool('doom_get_visuals', {
+    title: 'Inspect nearby DOOM visual materials',
+    description: 'Read nearby sector floor/ceiling flat names plus front/back sidedef top/middle/bottom wall textures.',
+    inputSchema: z.object({ maxDistance: z.number().int().min(0).max(32768).optional(), limit: z.number().int().min(1).max(256).optional() }),
+    annotations: { readOnlyHint: true }
+  }, async ({ maxDistance = 1024, limit = 128 }) => {
+    try { return jsonResult(await bridgeCall('get_visuals', { maxDistance, limit })); }
+    catch (error) { return toolError(error); }
+  });
+
+  server.registerTool('doom_list_visual_assets', {
+    title: 'List valid DOOM wall textures and flats',
+    description: 'List visual asset names actually available in the loaded IWAD. Use this before selecting a wall texture or sector flat.',
+    inputSchema: z.object({
+      kind: z.enum(['all', 'wall', 'flat']).optional(),
+      query: z.string().max(32).optional(),
+      limit: z.number().int().min(1).max(512).optional()
+    }),
+    annotations: { readOnlyHint: true }
+  }, async ({ kind = 'all', query = '', limit = 256 }) => {
+    try {
+      const result = await bridgeCall('list_visual_assets', { limit: 512 });
+      const q = query.trim().toUpperCase();
+      const filter = values => (Array.isArray(values) ? values : [])
+        .filter(name => !q || String(name).toUpperCase().includes(q))
+        .slice(0, limit);
+      const wallTextures = kind === 'flat' ? [] : filter(result.wallTextures);
+      const flats = kind === 'wall' ? [] : filter(result.flats);
+      return jsonResult({ ready: Boolean(result?.ready), kind, query: q || null, wallTextures, flats });
     } catch (error) { return toolError(error); }
   });
 
@@ -338,12 +381,8 @@ export function createMcpServer() {
 
   server.registerTool('doom_set_linedef_action', {
     title: 'Persist a safe DOOM linedef/door action',
-    description: 'Change a linedef special using a bounded Vanilla door preset and optionally its sector tag. The edit is journaled and written into LINEDEFS on PWAD export.',
-    inputSchema: z.object({
-      index: z.number().int().min(0).max(65535),
-      preset: z.enum(linedefPresets),
-      tag: z.number().int().min(0).max(32767).optional()
-    }),
+    description: 'Change a linedef special using a bounded Vanilla door preset and optionally its sector tag.',
+    inputSchema: z.object({ index: z.number().int().min(0).max(65535), preset: z.enum(linedefPresets), tag: z.number().int().min(0).max(32767).optional() }),
     annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false }
   }, async ({ index, preset, tag }) => {
     try {
@@ -353,9 +392,44 @@ export function createMcpServer() {
     } catch (error) { return toolError(error); }
   });
 
+  server.registerTool('doom_set_wall_texture', {
+    title: 'Set a DOOM wall texture',
+    description: 'Change an existing linedef front/back sidedef top/middle/bottom texture. Texture must be a valid loaded wall asset and is persisted in SIDEDEFS.',
+    inputSchema: z.object({
+      line: z.number().int().min(0).max(65535),
+      side: z.enum(['front', 'back']),
+      slot: z.enum(['top', 'middle', 'bottom']),
+      texture: z.string().min(1).max(8)
+    }),
+    annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false }
+  }, async ({ line, side, slot, texture }) => {
+    try {
+      const result = await bridgeCall('set_wall_texture', { line, side, slot, texture });
+      if (!result?.updated) throw new Error(result?.error || 'Engine rejected wall texture edit');
+      return jsonResult(result);
+    } catch (error) { return toolError(error); }
+  });
+
+  server.registerTool('doom_set_sector_flat', {
+    title: 'Set a DOOM sector floor or ceiling flat',
+    description: 'Change an existing sector floor/ceiling flat using a valid loaded flat name. The edit is persisted in SECTORS.',
+    inputSchema: z.object({
+      sector: z.number().int().min(0).max(4095),
+      surface: z.enum(['floor', 'ceiling']),
+      flat: z.string().min(1).max(8)
+    }),
+    annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false }
+  }, async ({ sector, surface, flat }) => {
+    try {
+      const result = await bridgeCall('set_sector_flat', { sector, surface, flat });
+      if (!result?.updated) throw new Error(result?.error || 'Engine rejected sector flat edit');
+      return jsonResult(result);
+    } catch (error) { return toolError(error); }
+  });
+
   server.registerTool('doom_activate_linedef', {
     title: 'Playtest a DOOM linedef action now',
-    description: 'Invoke the selected linedef through original P_UseSpecialLine using the current player. This is a playtest action and is not itself persisted; persist behavior separately with doom_set_linedef_action.',
+    description: 'Invoke the selected linedef through original P_UseSpecialLine. Playtest-only; not itself persisted.',
     inputSchema: z.object({ index: z.number().int().min(0).max(65535) }),
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false }
   }, async ({ index }) => {
@@ -410,13 +484,13 @@ export function createMcpServer() {
 
   server.registerTool('doom_get_changeset', {
     title: 'Inspect DOOM authoring ChangeSet',
-    description: 'Read persistent sector-light, actor and linedef special/tag edits accumulated since the current PWAD/IWAD baseline.',
+    description: 'Read persistent actor, light, linedef, sidedef texture and sector-flat edits since the current baseline.',
     inputSchema: z.object({}), annotations: { readOnlyHint: true }
   }, async () => { try { return jsonResult(await getCombinedChangeset()); } catch (error) { return toolError(error); } });
 
   server.registerTool('doom_export_pwad', {
     title: 'Export current AI-authored map as PWAD',
-    description: 'Build a current-map PWAD from baseline lumps plus persistent THINGS, SECTORS and LINEDEFS edits.',
+    description: 'Build a current-map PWAD from baseline lumps plus persistent THINGS, LINEDEFS, SIDEDEFS and SECTORS edits.',
     inputSchema: z.object({ filename: z.string().min(1).max(120).optional() }),
     annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: false }
   }, async ({ filename } = {}) => {
@@ -433,9 +507,20 @@ export function createMcpServer() {
       const outputPath = localExportPath(safeName);
       await writeFile(outputPath, bytes);
       return jsonResult({
-        exported: true, filename: safeName, path: outputPath, bytes: bytes.length,
-        episode: changeset.episode, map: changeset.map,
-        changes: { sectorLights: changeset.sectorLightCount, spawnedThings: changeset.spawnCount, removedThings: changeset.removeCount, linedefs: changeset.linedefCount }
+        exported: true,
+        filename: safeName,
+        path: outputPath,
+        bytes: bytes.length,
+        episode: changeset.episode,
+        map: changeset.map,
+        changes: {
+          sectorLights: changeset.sectorLightCount,
+          spawnedThings: changeset.spawnCount,
+          removedThings: changeset.removeCount,
+          linedefs: changeset.linedefCount,
+          sidedefs: changeset.sidedefCount,
+          sectorFlats: changeset.sectorFlatCount
+        }
       });
     } catch (error) { return toolError(error); }
   });
@@ -470,14 +555,21 @@ export function createMcpServer() {
         sourcePath: inputPath,
         pwad: { filename: safeName, bytes: bytes.length, lumpCount: inspection.lumpCount, mapMarkers: inspection.mapMarkers },
         liveState: { ready: after?.ready, episode: after?.episode, map: after?.map, currentSector: after?.currentSector, enemyCount: after?.enemyCount },
-        changeSet: { sectorLights: resetChanges?.sectorLightCount, spawnedThings: resetChanges?.spawnCount, removedThings: resetChanges?.removeCount, linedefs: resetChanges?.linedefCount }
+        changeSet: {
+          sectorLights: resetChanges?.sectorLightCount,
+          spawnedThings: resetChanges?.spawnCount,
+          removedThings: resetChanges?.removeCount,
+          linedefs: resetChanges?.linedefCount,
+          sidedefs: resetChanges?.sidedefCount,
+          sectorFlats: resetChanges?.sectorFlatCount
+        }
       });
     } catch (error) { return toolError(error); }
   });
 
   server.registerTool('doom_reload_current_map', {
     title: 'Reload current DOOM authoring baseline',
-    description: 'Restart the current map from the latest loaded IWAD/PWAD baseline, discarding live authoring edits only when explicitly allowed.',
+    description: 'Restart current map from the latest loaded baseline, discarding live authoring edits only when explicitly allowed.',
     inputSchema: z.object({ discardChanges: z.boolean().optional() }),
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false }
   }, async ({ discardChanges = false } = {}) => {
