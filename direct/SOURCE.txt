@@ -1,40 +1,94 @@
 Direct browser port of id Software LinuxDOOM 1.10
 =================================================
 
-Engine/game source baseline:
+Engine/game source baseline
+---------------------------
 https://github.com/id-Software/DOOM
 pinned commit: a77dfb96cb91780ca334d0d4cfd86957558007e0
 
-Browser platform replacement source and explicit compatibility edits:
+Browser platform replacement source:
 https://github.com/pavy23/web-doom/tree/direct-linuxdoom/direct-port
 
-Build system: Emscripten 6.0.5 + SDL2 + SDL2_mixer + WebAudio.
-The original gameplay/rendering/game-state code remains id's LinuxDOOM;
-platform i_video/i_system/i_sound/i_net are replaced for the browser,
-plus narrowly scoped modern-toolchain/platform edits documented in
-direct-port/apply_compat.py.
+Build system: Emscripten 6.0.5 + SDL2 + SDL2_mixer.
+The gameplay, renderer, WAD handling and game-state code remain the original
+id Software LinuxDOOM 1.10 source. Browser-specific i_video, i_system,
+i_sound and i_net boundaries are maintained in this repository.
 
-Audio implementation:
-- DOOM DMX type-3 SFX lumps are parsed directly and converted to PCM/WAV.
-- Original SFX pitch variation, volume and stereo separation are preserved.
-- DOOM MUS music is parsed directly at its native 140 Hz timing.
-- The original IWAD GENMIDI lump supplies 128 melodic and 47 percussion
-  instrument definitions to our repository-owned browser FM engine.
-- GENMIDI modulator/carrier multiplier, level, ADSR-like rates, waveform,
-  feedback/connection, fixed-note, base-note offset, fine tuning and
-  double-voice fields drive WebAudio 2-operator FM graphs.
-- The synth models the OPL2/AdLib nine-voice constraint with voice stealing.
-- Music does not require Timidity, browser MIDI, or an external SoundFont.
-- This is an OPL2-style reconstruction, not a cycle-accurate YM3812 emulator.
+Sound effects
+-------------
+- DOOM DMX type-3 DS* sound-effect lumps are read directly from the IWAD.
+- Original 8-bit PCM is wrapped for SDL2_mixer playback.
+- DOOM pitch variation, volume and stereo separation are mapped to the browser
+  mixer path.
 
-Music source:
-direct-port/i_music_opl_bridge.c
-direct-port/opl_music.js
+Music accuracy path
+-------------------
+The former repository-owned GENMIDI -> WebAudio oscillator/FM approximation
+has been retired and is not loaded by the direct build.
 
-The browser UI is repository-owned: direct-port/shell.html replaces
-Emscripten's generated demo shell while Emscripten remains the C-to-WASM
-build toolchain underneath. A user click starts the game and unlocks
-browser audio according to autoplay policy.
+The current music subsystem imports a narrowly scoped, pinned OPL/MIDI subset
+from Chocolate Doom 3.1.1 at build time:
+https://github.com/chocolate-doom/chocolate-doom
+pinned commit: 410d96855b5df5410ff591a90efeafa889119224
 
-The included IWAD is the redistributable DOOM shareware data fetched
-from SDL's long-standing DOOM project archive during CI.
+Only the music/OPL support code is imported; Chocolate Doom is not used as the
+game runtime or rendering/gameplay layer.
+
+The active music path is:
+
+DOOM MUS lump
+    -> MUS-to-MIDI event conversion / timing
+    -> Vanilla-Doom / DMX-compatible music behavior
+    -> IWAD GENMIDI instrument programming
+    -> OPL register writes
+    -> Nuked OPL3 v1.8 software chip emulator
+    -> OPL2-compatible mode by default (nine voices)
+    -> signed 16-bit PCM
+    -> SDL2_mixer post-mix
+    -> browser audio
+
+The imported DMX-compatible layer supplies researched behavior including:
+- nonlinear DOOM/DMX music-volume mapping
+- the OPL frequency curve and pitch-bend behavior
+- nine-voice allocation and voice stealing
+- GENMIDI melodic and percussion instrument programming
+- fixed-pitch and double-voice instrument handling
+- historical channel priority/driver quirks used by Vanilla Doom playback
+
+The Nuked OPL emulator receives OPL register writes and produces PCM. The web
+page no longer creates oscillator nodes or synthesizes GENMIDI instruments with
+the Web Audio API. Timidity, browser MIDI and external SoundFonts are not used.
+
+Browser-specific physical-card detection is skipped because no ISA OPL device
+exists in the browser; the software OPL device is known to be present. Register
+programming, callback timing and chip sample generation remain in the imported
+OPL path. OPL3 mode is not requested, so the music logic uses OPL2-compatible
+nine-voice behavior.
+
+Relevant source in this repository:
+- direct-port/i_sound_web.c            : direct DMX sound effects
+- direct-port/import_vanilla_opl.py    : pinned OPL/MIDI import + web adapter
+- direct-port/Makefile.web             : direct LinuxDOOM + OPL WebAssembly build
+- direct-port/shell.html               : browser shell / audio user gesture
+- direct-port/opl_music.js             : deprecated compatibility stub, not loaded
+- direct-port/i_music_opl_bridge.c     : deprecated compatibility stub, not built
+
+Accuracy scope
+--------------
+This reproduces the digital DOS-era OPL register/chip-emulation path much more
+closely than the previous WebAudio approximation. It should not be described as
+an electrical clone of every 1993 AdLib or Sound Blaster board: real cards can
+differ in DAC, analog filtering, mixer stages and board revision. Those analog
+characteristics are outside the current software-chip path.
+
+Shareware game data
+-------------------
+The included IWAD is the redistributable DOOM shareware data fetched from SDL's
+long-standing DOOM project archive during CI.
+
+Build-verified IWAD:
+- size: 4,196,020 bytes
+- MD5: 5f4eb849b1af12887dec04a2a12e5e62
+- GENMIDI header: #OPL_II#
+
+Commercial DOOM / DOOM II IWADs are not distributed by this repository.
