@@ -72,17 +72,23 @@ const importObject = {
   env: { memory }
 };
 
+const REMOTE_WASM = 'https://cdn.jsdelivr.net/gh/ashtonmeuser/godot-wasm-doom@3fdb0ecdb3182d799f598e2575c7243efec22622/doom.wasm';
+
+async function instantiateFromArrayBuffer(url) {
+  const response = await fetch(url, { cache: 'force-cache' });
+  if (!response.ok) throw new Error(url + ' HTTP ' + response.status);
+  const bytes = await response.arrayBuffer();
+  return await WebAssembly.instantiate(bytes, importObject);
+}
+
 async function instantiateDoom() {
-  bootStatus.textContent = 'LOADING DOOM.WASM…';
+  bootStatus.textContent = 'LOADING LOCAL DOOM.WASM…';
   try {
     return await WebAssembly.instantiateStreaming(fetch('doom.wasm'), importObject);
-  } catch (streamError) {
-    console.warn('instantiateStreaming failed, falling back to ArrayBuffer:', streamError);
-    bootStatus.textContent = 'LOADING DOOM.WASM (FALLBACK)…';
-    const response = await fetch('doom.wasm');
-    if (!response.ok) throw new Error('doom.wasm HTTP ' + response.status);
-    const bytes = await response.arrayBuffer();
-    return await WebAssembly.instantiate(bytes, importObject);
+  } catch (localError) {
+    console.warn('Local doom.wasm unavailable; using pinned CDN mirror.', localError);
+    bootStatus.textContent = 'LOADING DOOM.WASM FROM CDN…';
+    return await instantiateFromArrayBuffer(REMOTE_WASM);
   }
 }
 
@@ -113,21 +119,15 @@ instantiateDoom().then(obj => {
     keyDown(doomKeyCode(event.keyCode));
     event.preventDefault();
   }, false);
-
   canvas.addEventListener('keyup', function(event) {
     keyUp(doomKeyCode(event.keyCode));
     event.preventDefault();
   }, false);
 
   [
-    ['enterButton', 13],
-    ['leftButton', 0xac],
-    ['rightButton', 0xae],
-    ['upButton', 0xad],
-    ['downButton', 0xaf],
-    ['ctrlButton', 0x80 + 0x1d],
-    ['spaceButton', 32],
-    ['altButton', 0x80 + 0x38]
+    ['enterButton', 13], ['leftButton', 0xac], ['rightButton', 0xae],
+    ['upButton', 0xad], ['downButton', 0xaf], ['ctrlButton', 0x80 + 0x1d],
+    ['spaceButton', 32], ['altButton', 0x80 + 0x38]
   ].forEach(([elementID, keyCode]) => {
     const button = document.getElementById(elementID);
     const press = e => { e.preventDefault(); keyDown(keyCode); };
