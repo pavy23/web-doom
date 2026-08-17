@@ -40,7 +40,7 @@ jobs:
           git -C /tmp/id-doom checkout a77dfb96cb91780ca334d0d4cfd86957558007e0
           test -f /tmp/id-doom/linuxdoom-1.10/d_main.c
 
-      - name: Fetch DOOM shareware data
+      - name: Fetch and verify DOOM shareware data
         shell: bash
         run: |
           set -euo pipefail
@@ -57,17 +57,36 @@ jobs:
           test "$(stat -c%s /tmp/id-doom/linuxdoom-1.10/doom1.wad)" -eq 4196020
           echo "5f4eb849b1af12887dec04a2a12e5e62  /tmp/id-doom/linuxdoom-1.10/doom1.wad" | md5sum -c -
 
+          python3 - <<'PY'
+          import struct
+          from pathlib import Path
+          wad = Path('/tmp/id-doom/linuxdoom-1.10/doom1.wad').read_bytes()
+          count, directory = struct.unpack_from('<II', wad, 4)
+          found = None
+          for i in range(count):
+              pos, size, raw_name = struct.unpack_from('<II8s', wad, directory + i * 16)
+              name = raw_name.split(b'\0', 1)[0].decode('ascii').upper()
+              if name == 'GENMIDI':
+                  found = wad[pos:pos + size]
+                  break
+          assert found is not None, 'GENMIDI lump missing from shareware IWAD'
+          assert found[:8] == b'#OPL_II#', 'unexpected GENMIDI header'
+          assert len(found) >= 8 + (128 + 47) * 36, 'GENMIDI instrument table truncated'
+          print('Verified GENMIDI:', len(found), 'bytes')
+          PY
+
       - name: Install our browser platform layer
         shell: bash
         run: |
           set -euo pipefail
           SRC=/tmp/id-doom/linuxdoom-1.10
-          cp direct-port/i_video_web.c  "$SRC/i_video.c"
-          cp direct-port/i_system_web.c "$SRC/i_system.c"
-          cp direct-port/i_sound_web.c  "$SRC/i_sound.c"
-          cp direct-port/i_net_web.c    "$SRC/i_net.c"
-          cp direct-port/Makefile.web   "$SRC/Makefile.web"
-          cp direct-port/shell.html     "$SRC/shell.html"
+          cp direct-port/i_video_web.c        "$SRC/i_video.c"
+          cp direct-port/i_system_web.c       "$SRC/i_system.c"
+          cp direct-port/i_sound_web.c        "$SRC/i_sound.c"
+          cp direct-port/i_music_opl_bridge.c "$SRC/i_music_opl_bridge.c"
+          cp direct-port/i_net_web.c          "$SRC/i_net.c"
+          cp direct-port/Makefile.web         "$SRC/Makefile.web"
+          cp direct-port/shell.html           "$SRC/shell.html"
           python3 direct-port/apply_compat.py "$SRC"
 
       - name: Compile original LinuxDOOM with our web layer
@@ -84,6 +103,10 @@ jobs:
           test "$(od -An -tx1 -N4 webdoom.wasm | tr -d ' \n')" = "0061736d"
           ! grep -q "Emscripten-Generated Code" webdoom.html
           grep -q "LINUXDOOM 1.10" webdoom.html
+          grep -q "GENMIDI FM" webdoom.html
+          grep -q "opl_music.js" webdoom.html
+          grep -q "GENMIDI" "$GITHUB_WORKSPACE/direct-port/opl_music.js"
+          grep -q "OPL_VOICE_LIMIT = 9" "$GITHUB_WORKSPACE/direct-port/opl_music.js"
 
       - name: Publish direct-port preview under /direct/
         shell: bash
@@ -97,10 +120,11 @@ jobs:
 
           rm -rf /tmp/publish-main/direct
           mkdir -p /tmp/publish-main/direct
-          cp /tmp/id-doom/linuxdoom-1.10/webdoom.html /tmp/publish-main/direct/index.html
-          cp /tmp/id-doom/linuxdoom-1.10/webdoom.js   /tmp/publish-main/direct/webdoom.js
-          cp /tmp/id-doom/linuxdoom-1.10/webdoom.wasm /tmp/publish-main/direct/webdoom.wasm
-          cp /tmp/id-doom/linuxdoom-1.10/webdoom.data /tmp/publish-main/direct/webdoom.data
+          cp /tmp/id-doom/linuxdoom-1.10/webdoom.html  /tmp/publish-main/direct/index.html
+          cp /tmp/id-doom/linuxdoom-1.10/webdoom.js    /tmp/publish-main/direct/webdoom.js
+          cp /tmp/id-doom/linuxdoom-1.10/webdoom.wasm  /tmp/publish-main/direct/webdoom.wasm
+          cp /tmp/id-doom/linuxdoom-1.10/webdoom.data  /tmp/publish-main/direct/webdoom.data
+          cp direct-port/opl_music.js                   /tmp/publish-main/direct/opl_music.js
 
           cat > /tmp/publish-main/direct/SOURCE.txt <<'EOF'
           Direct browser port of id Software LinuxDOOM 1.10
@@ -116,19 +140,27 @@ jobs:
           Build system: Emscripten 6.0.5 + SDL2 + SDL2_mixer + WebAudio.
           The original gameplay/rendering/game-state code remains id's LinuxDOOM;
           platform i_video/i_system/i_sound/i_net are replaced for the browser,
-          plus narrowly scoped modern-toolchain compatibility edits documented in
+          plus narrowly scoped modern-toolchain/platform edits documented in
           direct-port/apply_compat.py.
 
-          Audio is implemented in this repository's direct-port/i_sound_web.c:
+          Audio implementation:
           - DOOM DMX type-3 SFX lumps are parsed directly and converted to PCM/WAV.
-          - Original pitch variation is encoded into sample-rate conversion.
-          - DOOM stereo separation and volume are mapped to SDL2_mixer channels.
+          - Original SFX pitch variation, volume and stereo separation are preserved.
           - DOOM MUS music is parsed directly at its native 140 Hz timing.
-          - Program, note, velocity, volume, expression, pan, pitch and percussion
-            events are synthesized by our browser WebAudio oscillator/noise engine.
+          - The original IWAD GENMIDI lump supplies 128 melodic and 47 percussion
+            instrument definitions to our repository-owned browser FM engine.
+          - GENMIDI modulator/carrier multiplier, level, ADSR-like rates, waveform,
+            feedback/connection, fixed-note, base-note offset, fine tuning and
+            double-voice fields drive WebAudio 2-operator FM graphs.
+          - The synth models the OPL2/AdLib nine-voice constraint with voice stealing.
           - Music does not require Timidity, browser MIDI, or an external SoundFont.
+          - This is an OPL2-style reconstruction, not a cycle-accurate YM3812 emulator.
 
-          The browser UI is also repository-owned: direct-port/shell.html replaces
+          Music source:
+          direct-port/i_music_opl_bridge.c
+          direct-port/opl_music.js
+
+          The browser UI is repository-owned: direct-port/shell.html replaces
           Emscripten's generated demo shell while Emscripten remains the C-to-WASM
           build toolchain underneath. A user click starts the game and unlocks
           browser audio according to autoplay policy.
