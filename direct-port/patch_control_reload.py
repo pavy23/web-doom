@@ -3,9 +3,9 @@
 
 The authoring journal internals intentionally remain private/static in the
 repository-owned control surface. Runtime PWAD reload lives in a separate C
-translation unit, so the build copy gets one explicit wrapper that can reset the
-actor/sector journal plus the separate linedef and visual journals after a newly
-imported PWAD becomes the current baseline.
+translation unit, so the build copy gets one explicit wrapper that resets the
+actor/sector journal plus linedef/visual journals and the playtest telemetry
+baseline after a newly imported PWAD becomes the current baseline.
 """
 
 from pathlib import Path
@@ -13,6 +13,8 @@ import sys
 
 
 APPEND = r'''
+
+extern void doomctl_reset_playtest_telemetry(void);
 
 // Build-added authoring baseline reset used only after an explicit PWAD reload.
 EMSCRIPTEN_KEEPALIVE
@@ -26,6 +28,7 @@ int doomctl_reset_changeset(void)
     doomctl_journal_map = gamemap;
     doomctl_reset_linedef_changes();
     doomctl_reset_visual_changes();
+    doomctl_reset_playtest_telemetry();
     return 1;
 }
 '''
@@ -54,7 +57,7 @@ def main() -> None:
         raise SystemExit(f"doom_control.c markers missing: {missing}")
 
     path.write_text(text.rstrip() + APPEND + "\n", encoding="utf-8")
-    print("Added doomctl_reset_changeset wrapper with linedef + visual journal reset")
+    print("Added doomctl_reset_changeset wrapper with authoring + playtest resets")
 
 
 if __name__ == "__main__":
