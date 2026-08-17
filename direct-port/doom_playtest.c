@@ -19,6 +19,8 @@
 #define DOOMCTL_MAX_TRACKED_SECTORS 4096
 #define DOOMCTL_PLAYTEST_BUFSIZE 8192
 
+extern int leveltime;
+
 static char doomctl_playtest_buffer[DOOMCTL_PLAYTEST_BUFSIZE];
 static int doomctl_step_budget = 0;
 static int doomctl_metrics_episode = -1;
