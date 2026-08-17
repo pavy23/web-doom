@@ -1,6 +1,5 @@
 import http from 'node:http';
 import { pathToFileURL } from 'node:url';
-import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { WebSocket, WebSocketServer } from 'ws';
 import * as z from 'zod/v4';
@@ -9,7 +8,7 @@ import { createMcpServer as createAuthoringServer, startBridge as startAuthoring
 
 const HOST = '127.0.0.1';
 const PLAYTEST_PORT = 3778;
-const VERSION = '0.7.0';
+const VERSION = '0.8.0';
 
 let playtestHttpServer = null;
 let playtestWss = null;
@@ -25,13 +24,14 @@ function toolError(error) {
   return { isError: true, content: [{ type: 'text', text: String(error?.message || error) }] };
 }
 
-function imageResult(frame) {
+function imageResult(frame, extra = {}) {
   const metadata = {
     captured: true,
     mimeType: frame.mimeType,
     width: frame.width,
     height: frame.height,
-    telemetry: frame.telemetry
+    telemetry: frame.telemetry,
+    ...extra
   };
   return {
     content: [
@@ -111,7 +111,7 @@ export function startPlaytestBridge() {
       try { browserSocket.close(1012, 'Replaced by newer playtest browser'); } catch {}
     }
     browserSocket = ws;
-    console.error('DOOM MCP: playtest/vision bridge connected');
+    console.error('DOOM MCP: playtest/vision/agent bridge connected');
 
     ws.on('message', raw => {
       try {
@@ -126,12 +126,12 @@ export function startPlaytestBridge() {
     ws.on('close', () => {
       if (browserSocket === ws) browserSocket = null;
       rejectAll('DOOM playtest browser disconnected');
-      console.error('DOOM MCP: playtest/vision bridge disconnected');
+      console.error('DOOM MCP: playtest/vision/agent bridge disconnected');
     });
   });
 
   playtestHttpServer.listen(PLAYTEST_PORT, HOST, () => {
-    console.error(`DOOM MCP: playtest/vision bridge at ws://${HOST}:${PLAYTEST_PORT}/playtest`);
+    console.error(`DOOM MCP: playtest/vision/agent bridge at ws://${HOST}:${PLAYTEST_PORT}/playtest`);
   });
   return playtestHttpServer;
 }
@@ -155,19 +155,66 @@ async function waitForSteps(beforeWorldTics, count) {
   throw new Error(`Timed out waiting for ${count} exact world tics`);
 }
 
+const actionShape = z.object({
+  forward: z.number().min(-1).max(1).optional(),
+  strafe: z.number().min(-1).max(1).optional(),
+  turn: z.number().min(-1).max(1).optional(),
+  attack: z.boolean().optional(),
+  use: z.boolean().optional(),
+  tics: z.number().int().min(1).max(350)
+});
+
+function normalizedAction(action) {
+  return {
+    forward: Number(action.forward || 0),
+    strafe: Number(action.strafe || 0),
+    turn: Number(action.turn || 0),
+    attack: Boolean(action.attack),
+    use: Boolean(action.use),
+    tics: Math.trunc(action.tics)
+  };
+}
+
+async function ensurePaused() {
+  let telemetry = await playtestCall('get_playtest_telemetry');
+  if (!telemetry?.paused) {
+    await playtestCall('set_playtest_paused', { paused: true });
+    telemetry = await playtestCall('get_playtest_telemetry');
+  }
+  return telemetry;
+}
+
+async function runDeterministicAction(action) {
+  const command = normalizedAction(action);
+  const before = await ensurePaused();
+  const priorAgent = await playtestCall('get_agent_input_status');
+  if (priorAgent?.active) {
+    throw new Error('Another agent input is still active; cancel it before starting a new action');
+  }
+
+  await playtestCall('queue_agent_input', command);
+  await playtestCall('step_playtest_tics', { count: command.tics });
+  const after = await waitForSteps(before.worldTics, command.tics);
+  const agent = await playtestCall('get_agent_input_status');
+  if (agent?.active || Number(agent?.remainingTics || 0) !== 0) {
+    throw new Error('Agent input did not fully drain with the requested world tics');
+  }
+  return { command, before, after, agent };
+}
+
 export function createMcpServer() {
   const server = createAuthoringServer();
 
   server.registerTool('doom_playtest_status', {
     title: 'DOOM AI playtest status',
-    description: 'Check the v0.7 playtest/vision bridge used for screenshots, telemetry and exact world-tic stepping.',
+    description: 'Check the v0.8 playtest/vision/agent bridge used for screenshots, telemetry, exact world-tic stepping and autonomous input.',
     inputSchema: z.object({}),
     annotations: { readOnlyHint: true }
   }, async () => jsonResult({ version: VERSION, connected: Boolean(connected()), playtestPort: PLAYTEST_PORT }));
 
   server.registerTool('doom_pause_playtest', {
     title: 'Pause DOOM world simulation',
-    description: 'Pause P_Ticker world simulation while keeping browser rendering, input processing and MCP connectivity alive.',
+    description: 'Pause P_Ticker world simulation while keeping browser rendering and MCP connectivity alive.',
     inputSchema: z.object({}),
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async () => {
@@ -184,6 +231,7 @@ export function createMcpServer() {
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async () => {
     try {
+      await playtestCall('cancel_agent_input');
       await playtestCall('set_playtest_paused', { paused: false });
       return jsonResult(await playtestCall('get_playtest_telemetry'));
     } catch (error) { return toolError(error); }
@@ -237,6 +285,72 @@ export function createMcpServer() {
     } catch (error) { return toolError(error); }
   });
 
+  server.registerTool('doom_agent_input_status', {
+    title: 'Read autonomous DOOM input status',
+    description: 'Read the currently queued bounded ticcmd override, if any.',
+    inputSchema: z.object({}),
+    annotations: { readOnlyHint: true }
+  }, async () => {
+    try { return jsonResult(await playtestCall('get_agent_input_status')); }
+    catch (error) { return toolError(error); }
+  });
+
+  server.registerTool('doom_cancel_agent_input', {
+    title: 'Cancel autonomous DOOM input',
+    description: 'Immediately clear any queued AI movement/turn/fire/use command without changing level content.',
+    inputSchema: z.object({}),
+    annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false }
+  }, async () => {
+    try { return jsonResult(await playtestCall('cancel_agent_input')); }
+    catch (error) { return toolError(error); }
+  });
+
+  server.registerTool('doom_run_input', {
+    title: 'Run one deterministic DOOM input action',
+    description: 'Pause the world if needed, apply bounded movement/turn/attack/use through the original ticcmd path for exactly N world tics, leave the world paused, and optionally return the resulting frame.',
+    inputSchema: actionShape.extend({ captureAfter: z.boolean().optional() }),
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false }
+  }, async ({ captureAfter = true, ...action }) => {
+    try {
+      const result = await runDeterministicAction(action);
+      if (!captureAfter) return jsonResult(result);
+      const frame = await playtestCall('capture_frame', {}, 10000);
+      return imageResult(frame, { autonomousAction: result });
+    } catch (error) {
+      try { await playtestCall('cancel_agent_input'); } catch {}
+      return toolError(error);
+    }
+  });
+
+  server.registerTool('doom_run_input_sequence', {
+    title: 'Run a bounded deterministic DOOM input sequence',
+    description: 'Execute up to 16 autonomous ticcmd actions sequentially while paused. Total sequence length is capped at 700 world tics. Useful for short navigation/combat plans followed by visual evaluation.',
+    inputSchema: z.object({ actions: z.array(actionShape).min(1).max(16), captureAfter: z.boolean().optional() }),
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false }
+  }, async ({ actions, captureAfter = true }) => {
+    try {
+      const totalTics = actions.reduce((sum, action) => sum + Math.trunc(action.tics), 0);
+      if (totalTics > 700) throw new Error(`Input sequence is ${totalTics} tics; maximum is 700`);
+      await ensurePaused();
+      const results = [];
+      for (let index = 0; index < actions.length; index++) {
+        const result = await runDeterministicAction(actions[index]);
+        results.push({ index, ...result });
+        if (Number(result.after?.deaths || 0) > Number(result.before?.deaths || 0)
+            || Number(result.after?.health || 0) <= 0) {
+          break;
+        }
+      }
+      const summary = { requestedActions: actions.length, executedActions: results.length, totalRequestedTics: totalTics, results };
+      if (!captureAfter) return jsonResult(summary);
+      const frame = await playtestCall('capture_frame', {}, 10000);
+      return imageResult(frame, { autonomousSequence: summary });
+    } catch (error) {
+      try { await playtestCall('cancel_agent_input'); } catch {}
+      return toolError(error);
+    }
+  });
+
   return server;
 }
 
@@ -249,5 +363,5 @@ if (isDirectExecution()) {
   startAuthoringBridge();
   startPlaytestBridge();
   void serveStdio(createMcpServer);
-  console.error(`DOOM MCP ${VERSION}: authoring + playtest/vision stdio server ready`);
+  console.error(`DOOM MCP ${VERSION}: authoring + autonomous playtest/vision stdio server ready`);
 }
