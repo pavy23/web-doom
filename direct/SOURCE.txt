@@ -11,19 +11,27 @@ https://github.com/pavy23/web-doom/tree/direct-linuxdoom/direct-port
 Build system: Emscripten 6.0.5 + SDL2 + SDL2_mixer + WebAudio.
 The original gameplay/rendering/game-state code remains id's LinuxDOOM;
 platform i_video/i_system/i_sound/i_net are replaced for the browser,
-plus narrowly scoped modern-toolchain compatibility edits documented in
+plus narrowly scoped modern-toolchain/platform edits documented in
 direct-port/apply_compat.py.
 
-Audio is implemented in this repository's direct-port/i_sound_web.c:
+Audio implementation:
 - DOOM DMX type-3 SFX lumps are parsed directly and converted to PCM/WAV.
-- Original pitch variation is encoded into sample-rate conversion.
-- DOOM stereo separation and volume are mapped to SDL2_mixer channels.
+- Original SFX pitch variation, volume and stereo separation are preserved.
 - DOOM MUS music is parsed directly at its native 140 Hz timing.
-- Program, note, velocity, volume, expression, pan, pitch and percussion
-  events are synthesized by our browser WebAudio oscillator/noise engine.
+- The original IWAD GENMIDI lump supplies 128 melodic and 47 percussion
+  instrument definitions to our repository-owned browser FM engine.
+- GENMIDI modulator/carrier multiplier, level, ADSR-like rates, waveform,
+  feedback/connection, fixed-note, base-note offset, fine tuning and
+  double-voice fields drive WebAudio 2-operator FM graphs.
+- The synth models the OPL2/AdLib nine-voice constraint with voice stealing.
 - Music does not require Timidity, browser MIDI, or an external SoundFont.
+- This is an OPL2-style reconstruction, not a cycle-accurate YM3812 emulator.
 
-The browser UI is also repository-owned: direct-port/shell.html replaces
+Music source:
+direct-port/i_music_opl_bridge.c
+direct-port/opl_music.js
+
+The browser UI is repository-owned: direct-port/shell.html replaces
 Emscripten's generated demo shell while Emscripten remains the C-to-WASM
 build toolchain underneath. A user click starts the game and unlocks
 browser audio according to autoplay policy.
