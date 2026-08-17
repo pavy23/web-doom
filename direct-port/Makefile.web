@@ -22,12 +22,15 @@ PLAYTEST_PRE_JS := $(GITHUB_WORKSPACE)/direct-port/playtest_bridge.js
 AGENT_SOURCE := $(GITHUB_WORKSPACE)/direct-port/doom_agent_input.c
 AGENT_PATCH := $(GITHUB_WORKSPACE)/direct-port/patch_agent_input.py
 AGENT_PRE_JS := $(GITHUB_WORKSPACE)/direct-port/agent_input_bridge.js
+ORCHESTRATION_PRE_JS := $(GITHUB_WORKSPACE)/direct-port/orchestration_bridge.js
 RELOAD_SOURCE := $(GITHUB_WORKSPACE)/direct-port/doom_reload.c
 RELOAD_PATCH := $(GITHUB_WORKSPACE)/direct-port/patch_control_reload.py
 RELOAD_PRE_JS := $(GITHUB_WORKSPACE)/direct-port/authoring_reload_bridge.js
 MCP_DIR := $(GITHUB_WORKSPACE)/mcp
 MCP_SERVER := $(MCP_DIR)/server.js
 MCP_PLAYTEST_SERVER := $(MCP_DIR)/playtest_server.js
+MCP_V1_SERVER := $(MCP_DIR)/v1_server.js
+MCP_ORCHESTRATOR := $(MCP_DIR)/orchestrator.js
 MCP_PACKAGE := $(MCP_DIR)/package.json
 
 # LinuxDOOM 1.10 predates modern compiler diagnostics by decades. Suppress
@@ -65,6 +68,7 @@ EMFLAGS := $(PORT_FLAGS) \
   --pre-js $(VISUAL_PRE_JS) \
   --pre-js $(PLAYTEST_PRE_JS) \
   --pre-js $(AGENT_PRE_JS) \
+  --pre-js $(ORCHESTRATION_PRE_JS) \
   --preload-file doom1.wad@doom1.wad \
   --shell-file shell.html
 
@@ -97,6 +101,7 @@ prepare-control:
 	test -f $(AGENT_SOURCE)
 	test -f $(AGENT_PATCH)
 	test -f $(AGENT_PRE_JS)
+	test -f $(ORCHESTRATION_PRE_JS)
 	test -f $(RELOAD_SOURCE)
 	test -f $(RELOAD_PATCH)
 	test -f $(RELOAD_PRE_JS)
@@ -156,14 +161,19 @@ validate-mcp:
 	@test -n "$(GITHUB_WORKSPACE)" || (echo "GITHUB_WORKSPACE is required" && false)
 	test -f $(MCP_SERVER)
 	test -f $(MCP_PLAYTEST_SERVER)
+	test -f $(MCP_V1_SERVER)
+	test -f $(MCP_ORCHESTRATOR)
 	test -f $(MCP_PACKAGE)
 	@test -n "$$EMSDK_NODE" || (echo "EMSDK_NODE is required" && false)
 	chmod +x "$$EMSDK_NODE"
 	"$$EMSDK_NODE" --check $(MCP_SERVER)
 	"$$EMSDK_NODE" --check $(MCP_PLAYTEST_SERVER)
+	"$$EMSDK_NODE" --check $(MCP_V1_SERVER)
+	"$$EMSDK_NODE" --check $(MCP_ORCHESTRATOR)
 	"$$EMSDK_NODE" -e "JSON.parse(require('fs').readFileSync('$(MCP_PACKAGE)', 'utf8')); console.error('MCP package.json valid')"
 	npm install --prefix $(MCP_DIR) --ignore-scripts --no-audit --no-fund
-	"$$EMSDK_NODE" --input-type=module -e "import { pathToFileURL } from 'node:url'; const m = await import(pathToFileURL('$(MCP_PLAYTEST_SERVER)').href); const s = m.createMcpServer(); if (!s) process.exit(1); console.error('MCP v0.8 authoring + autonomous playtest import/self-test passed')"
+	"$$EMSDK_NODE" --input-type=module -e "import { pathToFileURL } from 'node:url'; const m = await import(pathToFileURL('$(MCP_V1_SERVER)').href); const s = m.createMcpServer(); if (!s) process.exit(1); console.error('MCP v1 closed-loop orchestrator import/self-test passed')"
+	"$$EMSDK_NODE" --input-type=module -e "import { pathToFileURL } from 'node:url'; const o = await import(pathToFileURL('$(MCP_ORCHESTRATOR)').href); if (o.ORCHESTRATOR_VERSION !== '1.0.0') process.exit(1); console.error('MCP v1 orchestrator helpers self-test passed')"
 	grep -q "doom_get_state" $(MCP_SERVER)
 	grep -q "doom_get_enemies" $(MCP_SERVER)
 	grep -q "doom_get_sectors" $(MCP_SERVER)
@@ -192,8 +202,17 @@ validate-mcp:
 	grep -q "doom_cancel_agent_input" $(MCP_PLAYTEST_SERVER)
 	grep -q "doom_run_input" $(MCP_PLAYTEST_SERVER)
 	grep -q "doom_run_input_sequence" $(MCP_PLAYTEST_SERVER)
+	grep -q "doom_run_design_trial" $(MCP_PLAYTEST_SERVER)
+	grep -q "doom_evaluate_playtest" $(MCP_PLAYTEST_SERVER)
+	grep -q "doom_begin_design_session" $(MCP_V1_SERVER)
+	grep -q "doom_run_authoring_iteration" $(MCP_V1_SERVER)
+	grep -q "doom_review_design_iteration" $(MCP_V1_SERVER)
+	grep -q "doom_restore_design_candidate" $(MCP_V1_SERVER)
+	grep -q "doom_finalize_design_session" $(MCP_V1_SERVER)
+	grep -q "sessionArtifactName" $(MCP_ORCHESTRATOR)
+	grep -q "revisionHints" $(MCP_ORCHESTRATOR)
 	grep -q "type: 'image'" $(MCP_PLAYTEST_SERVER)
-	grep -q "serveStdio" $(MCP_PLAYTEST_SERVER)
+	grep -q "serveStdio" $(MCP_V1_SERVER)
 
 webdoom.html: $(SOURCES) doom1.wad shell.html
 	@rm -f emcc-build.log
