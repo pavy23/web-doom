@@ -6,6 +6,9 @@
 CC := emcc
 
 PORT_FLAGS := -sUSE_SDL=2 -sUSE_SDL_MIXER=2
+CHOCO_COMMIT := 410d96855b5df5410ff591a90efeafa889119224
+CHOCO_DIR := /tmp/chocolate-doom-opl
+IMPORT_SCRIPT := $(GITHUB_WORKSPACE)/direct-port/import_vanilla_opl.py
 
 CFLAGS := -O2 -std=gnu89 -DNORMALUNIX -D__EMSCRIPTEN__ $(PORT_FLAGS) -Ichoco_opl \
   -Wno-implicit-int \
@@ -46,10 +49,23 @@ EMFLAGS := $(PORT_FLAGS) \
   --preload-file doom1.wad@doom1.wad \
   --shell-file shell.html
 
-all: webdoom.html
+all: prepare-opl
+	$(MAKE) webdoom.html
+
+prepare-opl:
+	@test -n "$(GITHUB_WORKSPACE)" || (echo "GITHUB_WORKSPACE is required" && false)
+	rm -rf $(CHOCO_DIR)
+	git clone -q https://github.com/chocolate-doom/chocolate-doom.git $(CHOCO_DIR)
+	git -C $(CHOCO_DIR) checkout -q $(CHOCO_COMMIT)
+	test -f $(CHOCO_DIR)/src/i_oplmusic.c
+	grep -q "version: 1.8" $(CHOCO_DIR)/opl/opl3.c
+	python3 $(IMPORT_SCRIPT) "$(CURDIR)" $(CHOCO_DIR)
+	grep -q "Vanilla DMX + Nuked OPL2 backend ready" choco_opl/i_oplmusic.c
+	grep -q "OPL3_GenerateStream" choco_opl/opl_sdl.c
 
 webdoom.html: $(SOURCES) doom1.wad shell.html
 	$(CC) $(CFLAGS) $(SOURCES) -o $@ $(EMFLAGS) -lm
 
 clean:
+	rm -rf choco_opl
 	rm -f webdoom.html webdoom.js webdoom.wasm webdoom.data
