@@ -13,6 +13,7 @@
 #include <emscripten/emscripten.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define DOOMCTL_RELOAD_BUFSIZE 1024
@@ -166,7 +167,9 @@ const char *doomctl_load_pwad_json(const char *path)
     int validation;
     int imported_lumps;
     int before;
+    int expected_total;
     int reset_result;
+    void **newcache;
 
     doomctl_reload_buffer[0] = '\0';
 
@@ -199,11 +202,30 @@ const char *doomctl_load_pwad_json(const char *path)
     }
 
     before = numlumps;
-    W_AddFile((char *) path);
-    if (numlumps <= before)
+    expected_total = before + imported_lumps;
+
+    // W_AddFile() can append lumpinfo at runtime, but vanilla W_InitMultipleFiles()
+    // allocates lumpcache only once at startup. Grow it before the append so any
+    // newly overridden map lump can safely use W_CacheLumpNum/Name afterward.
+    newcache = (void **) realloc(lumpcache,
+                                (size_t) expected_total * sizeof(*lumpcache));
+    if (newcache == NULL)
     {
         snprintf(doomctl_reload_buffer, DOOMCTL_RELOAD_BUFSIZE,
-                 "{\"loaded\":false,\"error\":\"wad_append_failed\"}");
+                 "{\"loaded\":false,\"error\":\"lumpcache_realloc_failed\"}");
+        return doomctl_reload_buffer;
+    }
+    lumpcache = newcache;
+    memset(lumpcache + before, 0,
+           (size_t) imported_lumps * sizeof(*lumpcache));
+
+    W_AddFile((char *) path);
+    if (numlumps != expected_total)
+    {
+        snprintf(doomctl_reload_buffer, DOOMCTL_RELOAD_BUFSIZE,
+                 "{\"loaded\":false,\"error\":\"wad_append_failed\","
+                 "\"expectedLumps\":%d,\"actualLumps\":%d}",
+                 expected_total, numlumps);
         return doomctl_reload_buffer;
     }
 
