@@ -1,78 +1,111 @@
-name: Deploy Web DOOM
+name: Build sound-enabled Web DOOM
 
 on:
   push:
     branches: ["main"]
+    paths:
+      - "build/**"
+      - "scripts/**"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
-  group: pages
+  group: doom-sound-build
   cancel-in-progress: true
 
 jobs:
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - name: Checkout web-doom
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Assemble static site
+      - name: Install Emscripten 6.0.5
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p site/source
-          cp index.html main.js site/
-          touch site/.nojekyll
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git /tmp/emsdk
+          /tmp/emsdk/emsdk install 6.0.5
+          /tmp/emsdk/emsdk activate 6.0.5
 
-          # Precompiled Linux DOOM WebAssembly binary. Pinned to a fixed commit.
+      - name: Prepare doomgeneric and shareware IWAD
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /tmp/emsdk/emsdk_env.sh
+
+          git clone https://github.com/ozkl/doomgeneric.git /tmp/doomgeneric
+          git -C /tmp/doomgeneric checkout dcb7a8dbc7a16ce3dda29382ac9aae9d77d21284
+
+          # The existing working Web DOOM binary contains the shareware IWAD.
+          # Extract the WAD so the new sound-enabled engine can load it normally.
           curl -fL --retry 3 \
-            "https://raw.githubusercontent.com/ashtonmeuser/godot-wasm-doom/3fdb0ecdb3182d799f598e2575c7243efec22622/doom.wasm" \
-            -o site/doom.wasm
+            https://raw.githubusercontent.com/ashtonmeuser/godot-wasm-doom/3fdb0ecdb3182d799f598e2575c7243efec22622/doom.wasm \
+            -o /tmp/silent-doom.wasm
+          python3 scripts/extract_wad.py /tmp/silent-doom.wasm /tmp/doom1.wad
 
-          # Sanity-check WebAssembly magic and expected size (~6.8 MB).
-          test "$(od -An -tx1 -N4 site/doom.wasm | tr -d ' \n')" = "0061736d"
-          test "$(stat -c%s site/doom.wasm)" -gt 6000000
+          test "$(head -c4 /tmp/doom1.wad)" = "IWAD"
+          test "$(stat -c%s /tmp/doom1.wad)" -gt 3000000
 
-          # Corresponding source/provenance bundle for the GPL DOOM-derived binary.
-          curl -fL --retry 3 \
-            "https://github.com/diekmann/wasm-fizzbuzz/archive/51a7030bea563d96027301a36619c17347b9270d.tar.gz" \
-            -o site/source/wasm-fizzbuzz-51a7030.tar.gz
+          cp build/Makefile.web /tmp/doomgeneric/doomgeneric/Makefile.web
+          cp build/doomgeneric_web.c /tmp/doomgeneric/doomgeneric/doomgeneric_web.c
 
-          cat > site/SOURCE.txt <<'EOF'
-          Web DOOM source provenance
-          ==========================
+      - name: Compile DOOM with SDL2 sound and music
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /tmp/emsdk/emsdk_env.sh
+          cd /tmp/doomgeneric/doomgeneric
+          emmake make -f Makefile.web clean
+          emmake make -f Makefile.web -j2
 
-          Original id Software DOOM source:
+          test -s engine.js
+          test -s engine.wasm
+          test "$(od -An -tx1 -N4 engine.wasm | tr -d ' \n')" = "0061736d"
+          grep -q "createDoomModule" engine.js
+
+      - name: Publish generated engine files to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/doomgeneric/doomgeneric/engine.js ./engine.js
+          cp /tmp/doomgeneric/doomgeneric/engine.wasm ./engine.wasm
+          cp /tmp/doom1.wad ./doom1.wad
+          cp /tmp/doomgeneric/LICENSE ./DOOMGENERIC-LICENSE
+
+          cat > ENGINE-SOURCE.txt <<'EOF'
+          Sound-enabled browser engine
+          ============================
+
+          doomgeneric source (GPL):
+          https://github.com/ozkl/doomgeneric
+          pinned commit: dcb7a8dbc7a16ce3dda29382ac9aae9d77d21284
+
+          Original id Software DOOM source release:
           https://github.com/id-Software/DOOM
 
-          Browser/WebAssembly port source:
-          https://github.com/diekmann/wasm-fizzbuzz/tree/51a7030bea563d96027301a36619c17347b9270d/doom
+          Toolchain:
+          Emscripten 6.0.5
+          SDL2 + SDL2_mixer, MIDI enabled
 
-          Corresponding source archive shipped with this deployment:
-          ./source/wasm-fizzbuzz-51a7030.tar.gz
-
-          Precompiled doom.wasm mirror used by the deployment workflow:
-          https://github.com/ashtonmeuser/godot-wasm-doom/blob/3fdb0ecdb3182d799f598e2575c7243efec22622/doom.wasm
-
-          The DOOM source release is GPL licensed. Commercial DOOM WAD files are not added by this repository.
+          Browser glue maintained in this repository:
+          build/Makefile.web
+          build/doomgeneric_web.c
+          scripts/extract_wad.py
           EOF
 
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add engine.js engine.wasm doom1.wad DOOMGENERIC-LICENSE ENGINE-SOURCE.txt
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v4
-        with:
-          path: site
-
-      - name: Deploy
-        id: deployment
-        uses: actions/deploy-pages@v4
+          if git diff --cached --quiet; then
+            echo "Generated engine is unchanged."
+          else
+            git commit -m "Build sound-enabled DOOM engine [skip ci]"
+            git push origin HEAD:main
+          fi
