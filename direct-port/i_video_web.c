@@ -1,12 +1,12 @@
 // Browser platform layer for the original id Software LinuxDOOM 1.10.
 // This file is written for pavy23/web-doom and replaces only i_video.c.
 
-#include <SDL.h>
-#include <emscripten/emscripten.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
+// Parse Doom's historical boolean enum before modern Emscripten headers,
+// which define true/false macros.
 #include "doomdef.h"
 #include "doomstat.h"
 #include "d_event.h"
@@ -14,6 +14,9 @@
 #include "i_system.h"
 #include "i_video.h"
 #include "v_video.h"
+
+#include <SDL.h>
+#include <emscripten/emscripten.h>
 
 static SDL_Window *web_window;
 static SDL_Renderer *web_renderer;
