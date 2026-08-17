@@ -1,36 +1,11 @@
-// Bridge between LinuxDOOM's i_sound music calls and the repository-owned
-// browser OPL2-style music engine in direct-port/opl_music.js.
-
-#include <emscripten.h>
-
-EM_JS(void, web_music_js_start,
-      (const unsigned char *ptr, int len, int looping, int volume),
-{
-    if (!globalThis.DoomOPL2Music || !globalThis.DoomOPL2Music.start) {
-        console.error('DOOM music: opl_music.js is not loaded');
-        return;
-    }
-
-    const mus = HEAPU8.slice(ptr, ptr + len);
-    globalThis.DoomOPL2Music.start(mus, !!looping, volume);
-});
-
-EM_JS(void, web_music_js_stop, (), {
-    if (globalThis.DoomOPL2Music && globalThis.DoomOPL2Music.stop)
-        globalThis.DoomOPL2Music.stop();
-});
-
-EM_JS(void, web_music_js_pause, (), {
-    if (globalThis.DoomOPL2Music && globalThis.DoomOPL2Music.pause)
-        globalThis.DoomOPL2Music.pause();
-});
-
-EM_JS(void, web_music_js_resume, (), {
-    if (globalThis.DoomOPL2Music && globalThis.DoomOPL2Music.resume)
-        globalThis.DoomOPL2Music.resume();
-});
-
-EM_JS(void, web_music_js_set_volume, (int volume), {
-    if (globalThis.DoomOPL2Music && globalThis.DoomOPL2Music.setVolume)
-        globalThis.DoomOPL2Music.setVolume(volume);
-});
+// DEPRECATED COMPATIBILITY STUB — NOT COMPILED BY direct-port/Makefile.web.
+//
+// This file used to bridge LinuxDOOM music calls to direct-port/opl_music.js.
+// The WebAudio approximation has been retired. The active music implementation
+// is now prepared by direct-port/import_vanilla_opl.py and compiled directly
+// into the WebAssembly binary using Vanilla-DMX-compatible OPL register logic
+// and Nuked OPL3 v1.8 in OPL2-compatible mode.
+//
+// The legacy GitHub Actions workflow still copies this path into its temporary
+// source tree, so the file remains as an explicit tombstone rather than being
+// deleted. It contains no functions and is absent from the Makefile source list.
