@@ -18,7 +18,9 @@
     #topbar { position: absolute; top: 12px; left: 12px; right: 12px; display: flex; justify-content: space-between; align-items: center; gap: 10px; opacity: 0; transition: opacity .2s ease; }
     #frame:hover #topbar, #frame:focus-within #topbar { opacity: 1; }
     .badge { background: rgba(0,0,0,.72); border: 1px solid rgba(255,255,255,.16); border-radius: 7px; padding: 7px 9px; color: #ddd; font-size: 11px; letter-spacing: .04em; backdrop-filter: blur(6px); }
-    #controls { display: flex; gap: 7px; pointer-events: auto; }
+    #controls { display: flex; gap: 7px; pointer-events: auto; align-items: center; }
+    #mcpBadge { display: none; }
+    #mcpBadge.online { display: inline-block; border-color: rgba(116,255,147,.5); color: #b8ffc7; }
     button { appearance: none; border: 1px solid rgba(255,255,255,.22); background: rgba(0,0,0,.76); color: #eee; border-radius: 7px; padding: 7px 10px; font: inherit; font-size: 11px; cursor: pointer; }
     button:hover { background: rgba(40,40,40,.92); }
     #loading { position: absolute; inset: 0; display: grid; place-items: center; background: #050505; color: #ddd; transition: opacity .25s ease; pointer-events: auto; }
@@ -42,6 +44,7 @@
         <div id="topbar">
           <div class="badge">LINUXDOOM 1.10 · DIRECT WASM · VANILLA DMX / NUKED OPL2</div>
           <div id="controls">
+            <span id="mcpBadge" class="badge">MCP CONNECTED</span>
             <button id="restart" type="button">RESTART</button>
             <button id="fullscreen" type="button">FULLSCREEN</button>
           </div>
@@ -66,9 +69,12 @@
     const progressEl = document.getElementById('progress');
     const startButton = document.getElementById('start');
     const audioNote = document.getElementById('audioNote');
+    const mcpBadge = document.getElementById('mcpBadge');
 
     let runtimeReady = false;
     let gameStarted = false;
+    let mcpSocket = null;
+    let mcpReconnectTimer = null;
 
     function showReady() {
       statusEl.textContent = 'Ready';
@@ -94,6 +100,118 @@
       }
     }
 
+    function requireRuntime() {
+      if (!runtimeReady || typeof Module.ccall !== 'function') {
+        throw new Error('DOOM WebAssembly runtime is not ready yet');
+      }
+    }
+
+    // Public, intentionally narrow engine-control API.  MCP talks to this
+    // surface rather than reading or writing arbitrary WASM memory.
+    window.DoomControl = {
+      getState() {
+        requireRuntime();
+        const json = Module.ccall('doomctl_get_state_json', 'string', [], []);
+        return JSON.parse(json);
+      },
+      heal(amount) {
+        requireRuntime();
+        return Module.ccall('doomctl_heal', 'number', ['number'], [Math.trunc(amount)]);
+      },
+      giveAmmo(ammoType, amount) {
+        requireRuntime();
+        return Module.ccall('doomctl_give_ammo', 'number', ['number', 'number'],
+          [Math.trunc(ammoType), Math.trunc(amount)]);
+      },
+      teleport(x, y) {
+        requireRuntime();
+        return Module.ccall('doomctl_teleport', 'number', ['number', 'number'],
+          [Math.trunc(x), Math.trunc(y)]);
+      }
+    };
+
+    function localMcpBridgeUrl() {
+      const local = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
+      if (!local) return null;
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${protocol}//${location.host}/control`;
+    }
+
+    function replyMcp(id, ok, payload) {
+      if (!mcpSocket || mcpSocket.readyState !== WebSocket.OPEN) return;
+      mcpSocket.send(JSON.stringify(ok
+        ? { id, ok: true, result: payload }
+        : { id, ok: false, error: String(payload && payload.message ? payload.message : payload) }));
+    }
+
+    function handleMcpRequest(message) {
+      const { id, method, params = {} } = message || {};
+      if (!id || !method) return;
+
+      try {
+        let result;
+        switch (method) {
+          case 'ping':
+            result = { runtimeReady, gameStarted };
+            break;
+          case 'get_state':
+            result = window.DoomControl.getState();
+            break;
+          case 'heal':
+            result = { health: window.DoomControl.heal(params.amount) };
+            break;
+          case 'give_ammo':
+            result = { ammo: window.DoomControl.giveAmmo(params.ammoType, params.amount) };
+            break;
+          case 'teleport':
+            result = { moved: window.DoomControl.teleport(params.x, params.y) };
+            break;
+          default:
+            throw new Error(`Unknown DOOM control method: ${method}`);
+        }
+        replyMcp(id, true, result);
+      } catch (err) {
+        replyMcp(id, false, err);
+      }
+    }
+
+    function connectMcpBridge() {
+      const url = localMcpBridgeUrl();
+      if (!url || mcpSocket) return;
+
+      try {
+        mcpSocket = new WebSocket(url);
+      } catch (err) {
+        console.error('MCP bridge connection failed:', err);
+        mcpSocket = null;
+        return;
+      }
+
+      mcpSocket.addEventListener('open', () => {
+        mcpBadge.classList.add('online');
+        mcpSocket.send(JSON.stringify({ event: 'hello', runtimeReady, gameStarted }));
+      });
+
+      mcpSocket.addEventListener('message', event => {
+        try {
+          handleMcpRequest(JSON.parse(event.data));
+        } catch (err) {
+          console.error('Bad MCP bridge message:', err);
+        }
+      });
+
+      mcpSocket.addEventListener('close', () => {
+        mcpBadge.classList.remove('online');
+        mcpSocket = null;
+        clearTimeout(mcpReconnectTimer);
+        mcpReconnectTimer = setTimeout(connectMcpBridge, 1200);
+      });
+
+      mcpSocket.addEventListener('error', () => {
+        // close will schedule a reconnect; keep the game itself unaffected.
+      });
+    }
+
     var Module = {
       canvas,
       print: (...args) => console.log(...args),
@@ -101,6 +219,7 @@
       onRuntimeInitialized() {
         runtimeReady = true;
         showReady();
+        connectMcpBridge();
       },
       setStatus(text) {
         if (!text) {
@@ -141,6 +260,9 @@
         const result = Module.callMain([]);
         resumeAudioContext();
         hideLauncher();
+        if (mcpSocket && mcpSocket.readyState === WebSocket.OPEN) {
+          mcpSocket.send(JSON.stringify({ event: 'game_started' }));
+        }
         if (result && typeof result.catch === 'function') {
           result.catch(err => {
             console.error(err);
@@ -171,6 +293,7 @@
     });
 
     document.getElementById('restart').addEventListener('click', () => location.reload());
+    connectMcpBridge();
   </script>
 
   {{{ SCRIPT }}}
