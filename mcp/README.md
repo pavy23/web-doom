@@ -1,27 +1,34 @@
-# Web DOOM MCP — Authoring + Autonomous AI Playtest
+# Web DOOM MCP — AI Authoring, Autonomous Playtest & Evaluation
 
 This directory contains the local MCP layer for the direct LinuxDOOM WebAssembly port.
 
-Current MCP version: **0.8.0**.
+Current MCP version: **0.9.0**.
 
-v0.6 completed bounded authoring over existing geometry. v0.7 added frame capture, exact world-tic stepping and telemetry. v0.8 closes the next gap: AI can now **drive the original DOOM player through the real `ticcmd_t` gameplay input path** and observe the result.
+The project has progressed through four layers:
 
 ```text
-AI goal
+v0.6  bounded level authoring
+v0.7  frame capture + telemetry + exact world-tic control
+v0.8  bounded autonomous player input through real ticcmd_t
+v0.9  design goals + repeatable trial scoring + iteration comparison
+```
+
+The current loop is:
+
+```text
+AI design goal
   ↓
 inspect / author map
   ↓
-reset metrics
+run deterministic design trial
   ↓
-short autonomous input action
+telemetry score + final PNG
   ↓
-exact P_Ticker world tics
+AI vision rubric
   ↓
-PNG frame + telemetry
+combined evaluation
   ↓
-evaluate navigation / combat / readability
-  ↓
-next action or authoring revision
+revise or accept
   ↓
 PWAD export + reload
 ```
@@ -44,7 +51,7 @@ Open `http://127.0.0.1:3777/` and click **CLICK TO START**.
 - authoring bridge: `127.0.0.1:3777/control`
 - playtest / vision / agent bridge: `127.0.0.1:3778/playtest`
 
-For an MCP host:
+MCP host configuration:
 
 ```json
 {
@@ -53,94 +60,219 @@ For an MCP host:
 }
 ```
 
-`npm start` already launches the v0.8 entry point.
+# v0.9 design-goal evaluation
 
-# v0.8 autonomous input
+## `doom_run_design_trial`
+
+Runs a repeatable bounded playtest against a structured design goal.
+
+The tool:
+
+1. pauses the world,
+2. cancels old autonomous input,
+3. resets the telemetry window,
+4. executes up to 16 deterministic actions,
+5. caps the trial at 700 requested world tics,
+6. stores every action's before/after telemetry,
+7. scores the result,
+8. stores the trial in memory,
+9. returns the final PNG frame for vision review.
+
+Example goal:
+
+```json
+{
+  "name": "opening_horror_encounter",
+  "description": "Tense but survivable opening with clear navigation.",
+  "hard": {
+    "maxDeaths": 0,
+    "minFinalHealth": 20
+  },
+  "targets": {
+    "maxDamageTaken": 45,
+    "minVisitedSectors": 3,
+    "minDistanceUnits": 180,
+    "maxStuckActions": 1,
+    "minKills": 2,
+    "minScore": 0.75
+  },
+  "weights": {
+    "survivability": 0.35,
+    "traversal": 0.25,
+    "combat": 0.15,
+    "pacing": 0.10,
+    "visual": 0.15
+  },
+  "visualRubric": [
+    {
+      "id": "atmosphere",
+      "label": "Horror atmosphere",
+      "minScore": 0.75,
+      "weight": 1
+    },
+    {
+      "id": "enemy_readability",
+      "label": "Enemies are readable but threatening",
+      "minScore": 0.65,
+      "weight": 1
+    },
+    {
+      "id": "navigation_clarity",
+      "label": "Player can infer the route",
+      "minScore": 0.65,
+      "weight": 1
+    }
+  ]
+}
+```
+
+Example action plan:
+
+```json
+[
+  { "forward": 1, "tics": 30 },
+  { "turn": 0.45, "tics": 16 },
+  { "forward": 1, "attack": true, "tics": 45 },
+  { "use": true, "tics": 2 }
+]
+```
+
+The first result is a telemetry-based score plus a final frame. If the goal contains a visual rubric, inspect that image and then attach the visual scores using `doom_evaluate_playtest`.
+
+## `doom_evaluate_playtest`
+
+Evaluates either the current telemetry window or a stored trial.
+
+Telemetry dimensions include:
+
+- deaths
+- final/minimum health
+- damage taken
+- visited sectors
+- distance travelled
+- stuck movement actions
+- kills
+- elapsed time
+
+Optional vision scores use a `0..1` range and can include a short reason:
+
+```json
+{
+  "trialId": "trial-0001",
+  "visualAssessment": {
+    "atmosphere": {
+      "score": 0.88,
+      "reason": "Dark room hierarchy and distant silhouettes create tension."
+    },
+    "enemy_readability": {
+      "score": 0.58,
+      "reason": "The nearest imp blends into the wall texture."
+    },
+    "navigation_clarity": {
+      "score": 0.72,
+      "reason": "The exit door remains visually distinct."
+    }
+  }
+}
+```
+
+The evaluator returns:
+
+```text
+passed
+score (0..100)
+hardPassed
+visualPassed
+dimension scores
+hardFailures
+targetFailures
+stuckActions
+suggestions
+trial summary
+```
+
+Hard constraints always matter even if the weighted score is high.
+
+## `doom_get_trial_history`
+
+Returns up to the most recent 20 in-process trials without image payloads.
+
+Each record includes goal, score, pass/fail, failures and summary telemetry.
+
+## `doom_compare_trials`
+
+Compares two to six stored trials and ranks them using the same evaluator output.
+
+This makes it possible to compare authored variants such as:
+
+```text
+horror_v1.wad → trial-0001 → 61.4
+horror_v2.wad → trial-0002 → 78.7
+horror_v3.wad → trial-0003 → 84.2 ✓
+```
+
+Trial history is currently **process-memory only**. PWAD files remain the persistent artifact.
+
+# Scoring philosophy
+
+`mcp/evaluator.js` is deliberately deterministic and does not call an LLM.
+
+```text
+engine telemetry
+      +
+optional AI vision rubric
+      ↓
+explicit scoring function
+      ↓
+pass/fail + reasons + suggestions
+```
+
+This separation matters: the AI can propose or revise content, but it cannot silently redefine success after seeing the result.
+
+The default weighted dimensions are:
+
+```text
+survivability  35%
+traversal      30%
+combat         15%
+pacing         10%
+visual         10%
+```
+
+A goal may override those weights.
+
+# v0.8 autonomous input retained
 
 ## `doom_run_input`
 
-Runs one deterministic action for exactly N real world tics. The tool pauses the world if needed, queues a bounded console-player command, advances the exact step budget and leaves the world paused for inspection.
+Runs one deterministic action through LinuxDOOM's real `ticcmd_t` path for exactly N world tics.
 
 Inputs:
 
 ```text
-forward  -1.0 .. +1.0   backward .. forward
-strafe   -1.0 .. +1.0   left .. right
-turn     -1.0 .. +1.0   left .. right
+forward  -1.0 .. +1.0
+strafe   -1.0 .. +1.0
+turn     -1.0 .. +1.0
 attack   false / true
 use      false / true
 tics     1 .. 350
 ```
 
-Example:
-
-```text
-Move forward at full speed while turning slightly right for 35 tics.
-Capture the resulting frame.
-```
-
-Equivalent conceptual action:
-
-```json
-{
-  "forward": 1,
-  "turn": 0.25,
-  "attack": false,
-  "use": false,
-  "tics": 35,
-  "captureAfter": true
-}
-```
-
-The command is injected after LinuxDOOM selects the console player's real net/demo command inside `G_Ticker()`, immediately before gameplay consumes it. It does not fake keyboard DOM events and does not rewrite arbitrary WASM memory.
-
-Movement stays inside the original DOOM command envelope: fast forward maps to 50 ticcmd units, fast strafe to 40 and full turn to the original fast keyboard turn magnitude.
-
 ## `doom_run_input_sequence`
 
-Runs up to 16 short actions sequentially, capped at 700 requested world tics total. The sequence stops early if the player dies.
-
-This is intended for short tactical plans, not blind full-level scripting.
-
-Example:
-
-```text
-1. move forward for 30 tics
-2. turn right for 18 tics
-3. move forward + attack for 45 tics
-4. use for 2 tics
-5. capture the final frame and telemetry
-```
+Runs up to 16 short actions with a total cap of 700 requested world tics.
 
 ## `doom_agent_input_status`
 
-Reports the currently queued autonomous input and its remaining world-tic lifetime.
+Reads the active autonomous command and remaining world-tic lifetime.
 
 ## `doom_cancel_agent_input`
 
-Clears queued autonomous input immediately.
+Clears autonomous input immediately.
 
-# Why the input lifetime is deterministic
+Autonomous input is playtest-only and never enters an exported PWAD.
 
-The AI command lifetime is **not** decremented by browser frames or by prebuilt networking commands.
-
-```text
-G_Ticker selects players[consoleplayer].cmd
-  ↓
-v0.8 bounded ticcmd override
-  ↓
-P_Ticker world simulation
-  ↓
-v0.7 telemetry hook
-  ↓
-v0.8 input lifetime -1 tic
-```
-
-When the world is paused, ordinary browser/render frames consume no autonomous-input lifetime. Exact v0.7 step requests are therefore directly composable with v0.8 input.
-
-Holding `attack` behaves like holding DOOM's fire control. Holding `use` follows normal DOOM debounce behavior, so a short 1–2 tic use action is usually appropriate for a door or switch.
-
-# v0.7 playtest / vision tools retained
+# v0.7 observation tools retained
 
 - `doom_playtest_status`
 - `doom_pause_playtest`
@@ -150,11 +282,9 @@ Holding `attack` behaves like holding DOOM's fire control. Holding `use` follows
 - `doom_reset_playtest_metrics`
 - `doom_capture_frame`
 
-`doom_capture_frame` returns the final SDL/Emscripten browser canvas as MCP image content plus matching telemetry.
+`doom_capture_frame` returns the final SDL/Emscripten canvas as MCP image content plus matching telemetry.
 
-Telemetry includes world time, visited sectors, approximate movement distance, health/damage/healing, deaths, kills/items/secrets and ammunition.
-
-# Existing authoring tools retained
+# Authoring tools retained
 
 Inspection:
 
@@ -181,55 +311,9 @@ Iteration:
 - `doom_load_pwad`
 - `doom_reload_current_map`
 
-# Recommended v0.8 AI loop
-
-```text
-1. Inspect current world + frame.
-2. Reset playtest metrics.
-3. Choose a short action (roughly 5–70 tics).
-4. Run it with doom_run_input.
-5. Read resulting frame + telemetry.
-6. Detect progress, collision/stall, damage or enemy pressure.
-7. Choose another short action.
-8. If the design itself is the problem, edit actors/light/doors/materials.
-9. Reload or continue playtest.
-10. Export the accepted result as PWAD.
-```
-
-A useful stuck heuristic is: substantial forward input + near-zero `distanceUnits` growth. The AI can then turn, inspect the frame or try `use` instead of continuing to push blindly.
-
-# Architecture
-
-```text
-MCP client
-   │ stdio
-   ▼
-playtest_server.js (v0.8)
-   ├── v0.6 authoring tools
-   ├── v0.7 frame / telemetry / exact-step tools
-   └── v0.8 deterministic input / sequence tools
-       │
-       ├──── :3777/control   authoring
-       └──── :3778/playtest  vision + autonomous input
-                         │
-                         ▼
-                 Browser / DoomControl
-                         │
-       ┌─────────────────┼──────────────────┐
-       ▼                 ▼                  ▼
- authoring modules  doom_playtest.c   doom_agent_input.c
- PWAD/ChangeSet     pause/metrics     bounded ticcmd override
-       └─────────────────┬──────────────────┘
-                         ▼
-                    LinuxDOOM
-                 G_Ticker → P_Ticker
-```
-
 # Persistence boundary
 
-Autonomous input is **playtest-only**. It never becomes part of the PWAD.
-
-Persistent content remains:
+The playable artifact remains a normal PWAD. Persistent content is still limited to existing-geometry records:
 
 ```text
 THINGS    actor placement
@@ -240,6 +324,47 @@ SECTORS   light + floor/ceiling flats
 
 `VERTEXES`, `SEGS`, `SSECTORS`, `NODES`, `REJECT` and `BLOCKMAP` remain unchanged.
 
+# Recommended v0.9 workflow
+
+```text
+1. Define a design goal before editing.
+2. Inspect the level and make bounded authoring changes.
+3. Reload the candidate PWAD as the baseline if needed.
+4. Run doom_run_design_trial with a short action plan.
+5. Read the telemetry score and failure reasons.
+6. Inspect the returned PNG.
+7. Add visual rubric scores with doom_evaluate_playtest.
+8. Revise only the failing design dimensions.
+9. Run another trial with the same goal.
+10. Compare trials.
+11. Export/accept the strongest version.
+```
+
+# Architecture
+
+```text
+MCP client
+   │ stdio
+   ▼
+playtest_server.js (v0.9)
+   ├── authoring tools
+   ├── vision / telemetry / exact step
+   ├── bounded ticcmd player agency
+   └── trial runner / history / comparison
+             │
+             ├──────────── evaluator.js
+             │              hard constraints
+             │              weighted metrics
+             │              optional vision rubric
+             │
+             ├── :3777/control
+             └── :3778/playtest
+                         │
+                         ▼
+                    LinuxDOOM
+                 G_Ticker → P_Ticker
+```
+
 # Next milestone
 
-v0.8 gives an AI agency, but it still chooses actions turn by turn through the MCP host. The next useful milestone is **v0.9 design-goal evaluation / automated playtest policy**: structured goals such as survivability, visibility, traversal progress and encounter pressure, with repeatable acceptance criteria before a PWAD is accepted.
+v0.9 can now say **why a candidate failed** and compare iterations. The remaining step for v1.0 is the orchestration policy: let the MCP-host AI consume those failures, choose bounded authoring changes, rerun the same goal, stop when the acceptance criteria are met, then export the accepted PWAD.
