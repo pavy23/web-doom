@@ -1,9 +1,9 @@
 {
   "name": "web-doom-mcp",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
-  "description": "Local MCP authoring, autonomous AI playtest/vision, PWAD export/reload, and control plane for the direct LinuxDOOM WebAssembly port",
+  "description": "Local MCP authoring, autonomous AI playtest/vision, design-goal evaluation, PWAD export/reload, and control plane for the direct LinuxDOOM WebAssembly port",
   "engines": {
     "node": ">=20"
   },
