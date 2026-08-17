@@ -1,0 +1,124 @@
+name: Build direct LinuxDOOM browser port
+
+on:
+  push:
+    branches: ["direct-linuxdoom"]
+    paths:
+      - "direct-port/**"
+      - ".github/workflows/direct-port.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: direct-linuxdoom-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout direct port branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Emscripten 6.0.5
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git /tmp/emsdk
+          /tmp/emsdk/emsdk install 6.0.5
+          /tmp/emsdk/emsdk activate 6.0.5
+
+      - name: Fetch pristine id Software LinuxDOOM 1.10
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/id-Software/DOOM.git /tmp/id-doom
+          git -C /tmp/id-doom checkout a77dfb96cb91780ca334d0d4cfd86957558007e0
+          test -f /tmp/id-doom/linuxdoom-1.10/d_main.c
+
+      - name: Fetch DOOM shareware data
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 \
+            https://www.libsdl.org/projects/doom/data/doom1.wad.zip \
+            -o /tmp/doom1.wad.zip
+          rm -rf /tmp/doom-shareware
+          mkdir -p /tmp/doom-shareware
+          unzip -j /tmp/doom1.wad.zip -d /tmp/doom-shareware
+          WAD="$(find /tmp/doom-shareware -type f -iname 'doom1.wad' | head -n1)"
+          test -n "$WAD"
+          cp "$WAD" /tmp/id-doom/linuxdoom-1.10/doom1.wad
+          test "$(head -c4 /tmp/id-doom/linuxdoom-1.10/doom1.wad)" = "IWAD"
+          test "$(stat -c%s /tmp/id-doom/linuxdoom-1.10/doom1.wad)" -eq 4196020
+          echo "5f4eb849b1af12887dec04a2a12e5e62  /tmp/id-doom/linuxdoom-1.10/doom1.wad" | md5sum -c -
+
+      - name: Install our browser platform layer
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC=/tmp/id-doom/linuxdoom-1.10
+          cp direct-port/i_video_web.c  "$SRC/i_video.c"
+          cp direct-port/i_system_web.c "$SRC/i_system.c"
+          cp direct-port/i_sound_web.c  "$SRC/i_sound.c"
+          cp direct-port/i_net_web.c    "$SRC/i_net.c"
+          cp direct-port/Makefile.web   "$SRC/Makefile.web"
+
+      - name: Compile original LinuxDOOM with our web layer
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /tmp/emsdk/emsdk_env.sh
+          cd /tmp/id-doom/linuxdoom-1.10
+          emmake make -f Makefile.web
+          test -s webdoom.js
+          test -s webdoom.wasm
+          test -s webdoom.data
+          test "$(od -An -tx1 -N4 webdoom.wasm | tr -d ' \n')" = "0061736d"
+
+      - name: Publish direct-port preview under /direct/
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          rm -rf /tmp/publish-main
+          git worktree add -B publish-main /tmp/publish-main origin/main
+
+          rm -rf /tmp/publish-main/direct
+          mkdir -p /tmp/publish-main/direct
+          cp /tmp/id-doom/linuxdoom-1.10/webdoom.html /tmp/publish-main/direct/index.html
+          cp /tmp/id-doom/linuxdoom-1.10/webdoom.js   /tmp/publish-main/direct/webdoom.js
+          cp /tmp/id-doom/linuxdoom-1.10/webdoom.wasm /tmp/publish-main/direct/webdoom.wasm
+          cp /tmp/id-doom/linuxdoom-1.10/webdoom.data /tmp/publish-main/direct/webdoom.data
+
+          cat > /tmp/publish-main/direct/SOURCE.txt <<'EOF'
+          Direct browser port of id Software LinuxDOOM 1.10
+          =================================================
+
+          Engine/game source is cloned unmodified from:
+          https://github.com/id-Software/DOOM
+          pinned commit: a77dfb96cb91780ca334d0d4cfd86957558007e0
+
+          Browser platform replacement source is maintained here:
+          https://github.com/pavy23/web-doom/tree/direct-linuxdoom/direct-port
+
+          Build system: Emscripten 6.0.5 + SDL2.
+          This preview intentionally uses a no-audio backend for milestone 1.
+          The included IWAD is the redistributable DOOM shareware data fetched
+          from SDL's long-standing DOOM project archive during CI.
+          EOF
+
+          touch /tmp/publish-main/.nojekyll
+          git -C /tmp/publish-main add direct .nojekyll
+          if git -C /tmp/publish-main diff --cached --quiet; then
+            echo "No preview changes to publish."
+            exit 0
+          fi
+          git -C /tmp/publish-main commit -m "Publish direct LinuxDOOM browser port preview"
+          git -C /tmp/publish-main push origin HEAD:main
