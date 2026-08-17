@@ -9,6 +9,7 @@ PORT_FLAGS := -sUSE_SDL=2 -sUSE_SDL_MIXER=2
 CHOCO_COMMIT := 410d96855b5df5410ff591a90efeafa889119224
 CHOCO_DIR := /tmp/chocolate-doom-opl
 IMPORT_SCRIPT := $(GITHUB_WORKSPACE)/direct-port/import_vanilla_opl.py
+CONTROL_SOURCE := $(GITHUB_WORKSPACE)/direct-port/doom_control.c
 
 # LinuxDOOM 1.10 predates modern compiler diagnostics by decades. Suppress
 # legacy warnings so CI logs surface real adapter/link errors clearly.
@@ -16,7 +17,7 @@ CFLAGS := -O2 -w -std=gnu89 -DNORMALUNIX -D__EMSCRIPTEN__ $(PORT_FLAGS) -I. -Ich
 
 SOURCES := \
   doomdef.c doomstat.c dstrings.c \
-  i_system.c i_sound.c i_video.c i_net.c \
+  i_system.c i_sound.c i_video.c i_net.c doom_control.c \
   choco_opl/i_oplmusic.c choco_opl/memio.c choco_opl/mus2mid.c \
   choco_opl/midifile.c choco_opl/opl.c choco_opl/opl_queue.c \
   choco_opl/opl_sdl.c choco_opl/opl3.c \
@@ -39,11 +40,11 @@ EMFLAGS := $(PORT_FLAGS) \
   -sENVIRONMENT=web \
   -sINVOKE_RUN=0 \
   -sEXIT_RUNTIME=0 \
-  -sEXPORTED_RUNTIME_METHODS=callMain \
+  -sEXPORTED_RUNTIME_METHODS=callMain,ccall \
   --preload-file doom1.wad@doom1.wad \
   --shell-file shell.html
 
-all: prepare-opl
+all: prepare-opl prepare-control
 	$(MAKE) -f Makefile.web webdoom.html
 
 prepare-opl:
@@ -57,6 +58,12 @@ prepare-opl:
 	grep -q "Vanilla DMX + Nuked OPL2 backend ready" choco_opl/i_oplmusic.c
 	grep -q "OPL3_GenerateStream" choco_opl/opl_sdl.c
 
+prepare-control:
+	@test -n "$(GITHUB_WORKSPACE)" || (echo "GITHUB_WORKSPACE is required" && false)
+	test -f $(CONTROL_SOURCE)
+	cp $(CONTROL_SOURCE) doom_control.c
+	grep -q "doomctl_get_state_json" doom_control.c
+
 webdoom.html: $(SOURCES) doom1.wad shell.html
 	@rm -f emcc-build.log
 	@($(CC) $(CFLAGS) $(SOURCES) -o $@ $(EMFLAGS) -lm >emcc-build.log 2>&1) || { \
@@ -68,4 +75,5 @@ webdoom.html: $(SOURCES) doom1.wad shell.html
 
 clean:
 	rm -rf choco_opl
+	rm -f doom_control.c
 	rm -f webdoom.html webdoom.js webdoom.wasm webdoom.data emcc-build.log
