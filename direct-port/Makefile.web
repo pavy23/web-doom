@@ -10,8 +10,9 @@ CHOCO_COMMIT := 410d96855b5df5410ff591a90efeafa889119224
 CHOCO_DIR := /tmp/chocolate-doom-opl
 IMPORT_SCRIPT := $(GITHUB_WORKSPACE)/direct-port/import_vanilla_opl.py
 CONTROL_SOURCE := $(GITHUB_WORKSPACE)/direct-port/doom_control.c
-MCP_SERVER := $(GITHUB_WORKSPACE)/mcp/server.js
-MCP_PACKAGE := $(GITHUB_WORKSPACE)/mcp/package.json
+MCP_DIR := $(GITHUB_WORKSPACE)/mcp
+MCP_SERVER := $(MCP_DIR)/server.js
+MCP_PACKAGE := $(MCP_DIR)/package.json
 
 # LinuxDOOM 1.10 predates modern compiler diagnostics by decades. Suppress
 # legacy warnings so CI logs surface real adapter/link errors clearly.
@@ -74,6 +75,8 @@ validate-mcp:
 	chmod +x "$$EMSDK_NODE"
 	"$$EMSDK_NODE" --check $(MCP_SERVER)
 	"$$EMSDK_NODE" -e "JSON.parse(require('fs').readFileSync('$(MCP_PACKAGE)', 'utf8')); console.error('MCP package.json valid')"
+	npm install --prefix $(MCP_DIR) --ignore-scripts --no-audit --no-fund
+	"$$EMSDK_NODE" --input-type=module -e "import { pathToFileURL } from 'node:url'; const m = await import(pathToFileURL('$(MCP_SERVER)').href); const s = m.createMcpServer(); if (!s) process.exit(1); console.error('MCP SDK import/self-test passed')"
 	grep -q "doom_get_state" $(MCP_SERVER)
 	grep -q "serveStdio" $(MCP_SERVER)
 
