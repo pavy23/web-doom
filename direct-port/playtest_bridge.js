@@ -1,8 +1,9 @@
 // Browser-side AI playtest bridge for MCP v0.7.
 //
 // Frame capture uses the final SDL/Emscripten canvas, so the image returned to
-// the MCP client is the same composed frame a human sees (3D view, status bar,
-// automap/menu overlays when present). Pause/tic control itself lives in C.
+// the MCP client is the same composed frame a human sees. Pause/tic control
+// lives in C. A dedicated localhost WebSocket keeps image/step traffic separate
+// from the authoring control socket.
 
 (function () {
   function requirePlaytestRuntime() {
@@ -62,45 +63,79 @@
     };
   };
 
-  if (typeof handleMcpRequest !== 'function' || typeof replyMcp !== 'function') {
-    console.error('DOOM MCP playtest bridge could not find shell dispatcher');
-    return;
+  function dispatchPlaytest(method, params) {
+    switch (method) {
+      case 'set_playtest_paused':
+        return window.DoomControl.setPlaytestPaused(Boolean(params.paused));
+      case 'step_playtest_tics':
+        return window.DoomControl.stepPlaytestTics(params.count);
+      case 'get_playtest_telemetry':
+        return window.DoomControl.getPlaytestTelemetry();
+      case 'reset_playtest_metrics':
+        return window.DoomControl.resetPlaytestMetrics();
+      case 'capture_frame':
+        return window.DoomControl.captureFrame();
+      default:
+        throw new Error(`Unknown playtest method: ${method}`);
+    }
   }
 
-  const previousHandleMcpRequest = handleMcpRequest;
-  handleMcpRequest = function playtestHandleMcpRequest(message) {
-    const { id, method, params = {} } = message || {};
-    if (!id || !method) return previousHandleMcpRequest(message);
-
-    if (!['set_playtest_paused', 'step_playtest_tics', 'get_playtest_telemetry',
-          'reset_playtest_metrics', 'capture_frame'].includes(method)) {
-      return previousHandleMcpRequest(message);
-    }
-
-    try {
-      let result;
-      switch (method) {
-        case 'set_playtest_paused':
-          result = window.DoomControl.setPlaytestPaused(Boolean(params.paused));
-          break;
-        case 'step_playtest_tics':
-          result = window.DoomControl.stepPlaytestTics(params.count);
-          break;
-        case 'get_playtest_telemetry':
-          result = window.DoomControl.getPlaytestTelemetry();
-          break;
-        case 'reset_playtest_metrics':
-          result = window.DoomControl.resetPlaytestMetrics();
-          break;
-        case 'capture_frame':
-          result = window.DoomControl.captureFrame();
-          break;
-        default:
-          throw new Error(`Unknown playtest method: ${method}`);
+  // Extend the original authoring dispatcher too, for compatibility/debugging.
+  if (typeof handleMcpRequest === 'function' && typeof replyMcp === 'function') {
+    const previousHandleMcpRequest = handleMcpRequest;
+    handleMcpRequest = function playtestHandleMcpRequest(message) {
+      const { id, method, params = {} } = message || {};
+      if (!id || !method) return previousHandleMcpRequest(message);
+      if (!['set_playtest_paused', 'step_playtest_tics', 'get_playtest_telemetry',
+            'reset_playtest_metrics', 'capture_frame'].includes(method)) {
+        return previousHandleMcpRequest(message);
       }
-      replyMcp(id, true, result);
-    } catch (error) {
-      replyMcp(id, false, error);
-    }
-  };
+      try { replyMcp(id, true, dispatchPlaytest(method, params)); }
+      catch (error) { replyMcp(id, false, error); }
+    };
+  }
+
+  let socket = null;
+  let reconnectTimer = null;
+
+  function playtestUrl() {
+    const local = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
+    if (!local) return null;
+    return 'ws://127.0.0.1:3778/playtest';
+  }
+
+  function reply(socketRef, id, ok, payload) {
+    if (!socketRef || socketRef.readyState !== WebSocket.OPEN) return;
+    socketRef.send(JSON.stringify(ok
+      ? { id, ok: true, result: payload }
+      : { id, ok: false, error: String(payload && payload.message ? payload.message : payload) }));
+  }
+
+  function connect() {
+    const url = playtestUrl();
+    if (!url || socket) return;
+    try { socket = new WebSocket(url); }
+    catch { socket = null; return; }
+
+    socket.addEventListener('open', () => {
+      socket.send(JSON.stringify({ event: 'playtest_hello' }));
+    });
+
+    socket.addEventListener('message', event => {
+      let message;
+      try { message = JSON.parse(event.data); }
+      catch { return; }
+      if (!message?.id || !message?.method) return;
+      try { reply(socket, message.id, true, dispatchPlaytest(message.method, message.params || {})); }
+      catch (error) { reply(socket, message.id, false, error); }
+    });
+
+    socket.addEventListener('close', () => {
+      socket = null;
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, 1200);
+    });
+  }
+
+  connect();
 })();
