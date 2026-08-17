@@ -42,15 +42,18 @@ jobs:
           git clone https://github.com/ozkl/doomgeneric.git /tmp/doomgeneric
           git -C /tmp/doomgeneric checkout dcb7a8dbc7a16ce3dda29382ac9aae9d77d21284
 
-          # The existing working Web DOOM binary contains the shareware IWAD.
-          # Extract the WAD so the new sound-enabled engine can load it normally.
+          # SDL's official DOOM project page hosts the unmodified shareware data.
           curl -fL --retry 3 \
-            https://raw.githubusercontent.com/ashtonmeuser/godot-wasm-doom/3fdb0ecdb3182d799f598e2575c7243efec22622/doom.wasm \
-            -o /tmp/silent-doom.wasm
-          python3 scripts/extract_wad.py /tmp/silent-doom.wasm /tmp/doom1.wad
+            https://www.libsdl.org/projects/doom/data/doom1.wad.zip \
+            -o /tmp/doom1.wad.zip
+          unzip -j /tmp/doom1.wad.zip -d /tmp/doom-shareware
+          WAD_PATH="$(find /tmp/doom-shareware -type f -iname 'doom1.wad' | head -n1)"
+          test -n "$WAD_PATH"
+          cp "$WAD_PATH" /tmp/doom1.wad
 
           test "$(head -c4 /tmp/doom1.wad)" = "IWAD"
-          test "$(stat -c%s /tmp/doom1.wad)" -gt 3000000
+          test "$(stat -c%s /tmp/doom1.wad)" -eq 4196020
+          echo "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771  /tmp/doom1.wad" | sha256sum -c -
 
           cp build/Makefile.web /tmp/doomgeneric/doomgeneric/Makefile.web
           cp build/doomgeneric_web.c /tmp/doomgeneric/doomgeneric/doomgeneric_web.c
@@ -93,10 +96,13 @@ jobs:
           Emscripten 6.0.5
           SDL2 + SDL2_mixer, MIDI enabled
 
+          Shareware IWAD source:
+          https://www.libsdl.org/projects/doom/data/doom1.wad.zip
+          SHA-256: 1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771
+
           Browser glue maintained in this repository:
           build/Makefile.web
           build/doomgeneric_web.c
-          scripts/extract_wad.py
           EOF
 
           git config user.name "github-actions[bot]"
