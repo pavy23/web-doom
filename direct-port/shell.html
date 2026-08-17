@@ -106,7 +106,7 @@
       }
     }
 
-    // Public, intentionally narrow engine-control API.  MCP talks to this
+    // Public, intentionally narrow engine-control API. MCP talks to this
     // surface rather than reading or writing arbitrary WASM memory.
     window.DoomControl = {
       getState() {
@@ -127,6 +127,17 @@
         requireRuntime();
         return Module.ccall('doomctl_teleport', 'number', ['number', 'number'],
           [Math.trunc(x), Math.trunc(y)]);
+      },
+      spawnEnemy(name, count, distance) {
+        requireRuntime();
+        return Module.ccall('doomctl_spawn_enemy', 'number', ['string', 'number', 'number'],
+          [String(name), Math.trunc(count), Math.trunc(distance)]);
+      },
+      removeNearestEnemy(visibleOnly, maxDistance) {
+        requireRuntime();
+        const json = Module.ccall('doomctl_remove_nearest_enemy_json', 'string',
+          ['number', 'number'], [visibleOnly ? 1 : 0, Math.trunc(maxDistance)]);
+        return JSON.parse(json);
       }
     };
 
@@ -165,6 +176,16 @@
             break;
           case 'teleport':
             result = { moved: window.DoomControl.teleport(params.x, params.y) };
+            break;
+          case 'spawn_enemy':
+            result = {
+              spawned: window.DoomControl.spawnEnemy(params.name, params.count, params.distance)
+            };
+            break;
+          case 'remove_nearest_enemy':
+            result = window.DoomControl.removeNearestEnemy(
+              Boolean(params.visibleOnly), params.maxDistance
+            );
             break;
           default:
             throw new Error(`Unknown DOOM control method: ${method}`);
