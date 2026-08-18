@@ -1,20 +1,23 @@
 {
   "name": "web-doom-mcp",
-  "version": "2.3.0-p1.2",
+  "version": "2.4.0-p1.3",
   "private": true,
   "type": "module",
-  "description": "Local DOOM MCP P1.2: general THINGS plus semantic polygon, stairs, doors, lifts and sector splits on the P0 atomic multi-map pipeline",
+  "description": "Local DOOM MCP P1.3: THINGS + semantic geometry + sector navigation graph and deterministic autonomous QA",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "start": "node p1_server.js",
+    "start": "node p1_navigation_server.js",
+    "start:p1.2": "node p1_server.js",
     "start:p0": "node p0_experiment_server.js",
     "start:p0-core": "node p0_server.js",
     "start:v2": "node geometry_server.js",
     "test:p1": "node p1_things_selftest.mjs",
     "test:p1:semantic": "node p1_semantic_selftest.mjs",
     "test:p1:semantic:runtime": "node p1_semantic_runtime_selftest.mjs",
+    "test:p1:navigation": "node p1_navigation_selftest.mjs",
+    "test:p1:navigation:runtime": "node p1_navigation_runtime_selftest.mjs",
     "test:p0": "node p0_selftest.mjs",
     "test:experiment": "node p0_experiment_selftest.mjs",
     "prepare-experiment": "playwright install chromium",
