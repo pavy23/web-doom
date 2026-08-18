@@ -10,7 +10,7 @@ import {
 } from './geometry.js';
 import { rebuildVanillaNodes } from './nodebuilder.js';
 
-export const EPISODE_WORKSPACE_VERSION = '2.2.0-p1.1';
+export const EPISODE_WORKSPACE_VERSION = '2.3.0-p1.2';
 export const DEFAULT_EPISODE_MAPS = Object.freeze([
   'E1M1', 'E1M2', 'E1M3', 'E1M4', 'E1M5', 'E1M6', 'E1M7', 'E1M8'
 ]);
@@ -80,6 +80,11 @@ function validationView(validation) {
   };
 }
 
+function requireMethod(workspace, name, layer) {
+  if (typeof workspace[name] !== 'function') throw new Error(`${layer} authoring layer is not installed`);
+  return workspace[name].bind(workspace);
+}
+
 function applyEditToWorkspace(workspace, edit) {
   switch (edit.type) {
     case 'add_room':
@@ -118,18 +123,24 @@ function applyEditToWorkspace(workspace, edit) {
       return workspace.addSidedef(edit);
     case 'add_linedef':
       return workspace.addLinedef(edit);
+    case 'add_polygon_room':
+      return requireMethod(workspace, 'addPolygonRoomFromWall', 'P1.2 semantic geometry')(edit);
+    case 'add_staircase':
+      return requireMethod(workspace, 'addStaircaseFromWall', 'P1.2 semantic geometry')(edit);
+    case 'add_door_room':
+      return requireMethod(workspace, 'addDoorRoomFromWall', 'P1.2 semantic geometry')(edit);
+    case 'add_lift_room':
+      return requireMethod(workspace, 'addLiftRoomFromWall', 'P1.2 semantic geometry')(edit);
+    case 'split_sector':
+      return requireMethod(workspace, 'splitSectorBetweenVertices', 'P1.2 semantic geometry')(edit);
     case 'thing_add':
-      if (typeof workspace.addThing !== 'function') throw new Error('P1 THINGS authoring layer is not installed');
-      return workspace.addThing(edit);
+      return requireMethod(workspace, 'addThing', 'P1 THINGS')(edit);
     case 'thing_move':
-      if (typeof workspace.moveThing !== 'function') throw new Error('P1 THINGS authoring layer is not installed');
-      return workspace.moveThing(edit);
+      return requireMethod(workspace, 'moveThing', 'P1 THINGS')(edit);
     case 'thing_update':
-      if (typeof workspace.updateThing !== 'function') throw new Error('P1 THINGS authoring layer is not installed');
-      return workspace.updateThing(edit);
+      return requireMethod(workspace, 'updateThing', 'P1 THINGS')(edit);
     case 'thing_delete':
-      if (typeof workspace.deleteThing !== 'function') throw new Error('P1 THINGS authoring layer is not installed');
-      return workspace.deleteThing(edit);
+      return requireMethod(workspace, 'deleteThing', 'P1 THINGS')(edit);
     case 'undo':
       return workspace.undo();
     default:
