@@ -4,9 +4,8 @@
 The upstream 1997 gameplay/rendering code remains intact. Browser platform files are
 installed explicitly by CI; this script only resolves narrow modern-toolchain source
 collisions, restores DOS-era audio scaling, injects the local-only v2 geometry bridge,
-forces browser stdin to non-interactive EOF, and (on GitHub Actions only) gates
-publishing on the real geometry/ZDBSP integration self-test. Music adaptation is
-handled separately by import_vanilla_opl.py.
+and (on GitHub Actions only) gates publishing on the real geometry/ZDBSP integration
+self-test. Music adaptation is handled separately by import_vanilla_opl.py.
 """
 from pathlib import Path
 import os
@@ -80,26 +79,6 @@ if marker not in s:
 if "127.0.0.1:3781/geometry" not in s:
     injected = "\n  <script>\n" + bridge + "\n  </script>\n"
     s = s.replace(marker, injected + marker, 1)
-
-# Emscripten's default browser stdin device falls back to window.prompt().
-# LinuxDOOM's browser port has no terminal-input UX at all: keyboard/mouse input
-# arrives through SDL and authoring/reload traffic arrives through the MCP bridge.
-# Therefore make stdin explicitly EOF-only before main(). If any legacy/error
-# path accidentally attempts a libc read from stdin during runtime PWAD reload,
-# it gets EOF immediately instead of opening a blocking browser prompt.
-stdin_anchor = "      printErr: (...args) => console.error(...args),\n"
-if "doomNonInteractiveStdin" not in s:
-    if stdin_anchor not in s:
-        raise SystemExit(f"Emscripten Module stdin anchor not found in {p}")
-    stdin_hook = (
-        "      printErr: (...args) => console.error(...args),\n"
-        "      preRun: [function doomNonInteractiveStdin() {\n"
-        "        if (typeof FS !== 'undefined' && typeof FS.init === 'function') {\n"
-        "          FS.init(function () { return null; });\n"
-        "        }\n"
-        "      }],\n"
-    )
-    s = s.replace(stdin_anchor, stdin_hook, 1)
 p.write_text(s)
 
 # The main direct-port workflow already executes this script before compiling.
@@ -119,7 +98,6 @@ print("Applied LinuxDOOM/Emscripten compatibility edits:")
 print(" - w_wad.c: private strupr helper renamed to doom_strupr")
 print(" - d_main.c/m_menu.c: restored DOS 0..15 -> internal *8 audio scaling")
 print(" - shell.html: injected local-only MCP v2 geometry bridge (:3781)")
-print(" - shell.html: browser stdin forced to EOF-only (no window.prompt fallback)")
 if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
     print(" - CI gate: structural room -> ZDBSP -> vanilla derived-lump self-test passed")
 print(" - music compatibility is prepared separately by import_vanilla_opl.py")
