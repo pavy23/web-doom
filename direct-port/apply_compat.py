@@ -4,8 +4,9 @@
 The upstream 1997 gameplay/rendering code remains intact. Browser platform files are
 installed explicitly by CI; this script only resolves narrow modern-toolchain source
 collisions, restores DOS-era audio scaling, injects the local-only v2 geometry bridge,
-and (on GitHub Actions only) gates publishing on the real geometry/ZDBSP integration
-self-test. Music adaptation is handled separately by import_vanilla_opl.py.
+adds the v2.1 fresh-runtime PWAD boot hook, and (on GitHub Actions only) gates
+publishing on the real geometry/ZDBSP integration self-test. Music adaptation is
+handled separately by import_vanilla_opl.py.
 """
 from pathlib import Path
 import os
@@ -46,6 +47,32 @@ new = "S_Init (snd_SfxVolume * 8, snd_MusicVolume * 8);"
 if old not in s:
     raise SystemExit(f"expected DOS audio scaling anchor not found in {p}: {old!r}")
 s = s.replace(old, new, 1)
+
+# Structural PWADs must be present before LinuxDOOM allocates lumpcache and
+# constructs its first level.  The browser writes the candidate into the fresh
+# Emscripten filesystem before main(), doom_reload.c stages its path, and this
+# hook appends it to Doom's wadfiles[] list immediately before
+# W_InitMultipleFiles().  This deliberately avoids live P_SetupLevel teardown.
+decl_anchor = "void D_CheckNetGame (void);\n"
+decl = "extern int doomctl_prepare_boot_pwad (void);\n"
+if decl_anchor not in s:
+    raise SystemExit(f"expected cold-boot declaration anchor not found in {p}: {decl_anchor!r}")
+if decl not in s:
+    s = s.replace(decl_anchor, decl_anchor + decl, 1)
+
+wad_anchor = (
+    '    printf ("W_Init: Init WADfiles.\\n");\n'
+    '    W_InitMultipleFiles (wadfiles);'
+)
+wad_replacement = (
+    '    printf ("W_Init: Init WADfiles.\\n");\n'
+    '    if (doomctl_prepare_boot_pwad () < 0)\n'
+    '        I_Error ("DOOM MCP: failed to stage cold-boot PWAD");\n'
+    '    W_InitMultipleFiles (wadfiles);'
+)
+if wad_anchor not in s:
+    raise SystemExit(f"expected W_InitMultipleFiles anchor not found in {p}")
+s = s.replace(wad_anchor, wad_replacement, 1)
 p.write_text(s)
 
 p = root / "m_menu.c"
@@ -63,7 +90,7 @@ for old, new in menu_replacements:
 p.write_text(s)
 
 # v2 geometry authoring operates in the local Node MCP process, but the browser
-# still needs a narrow snapshot/reload websocket at :3781. Keep it out of the
+# still needs a narrow snapshot/apply websocket at :3781. Keep it out of the
 # public shell source itself and inject it only during the direct build so the
 # same checked-in bridge file is used by CI and local builds.
 bridge_path = script_dir / "geometry_bridge.js"
@@ -97,7 +124,8 @@ if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
 print("Applied LinuxDOOM/Emscripten compatibility edits:")
 print(" - w_wad.c: private strupr helper renamed to doom_strupr")
 print(" - d_main.c/m_menu.c: restored DOS 0..15 -> internal *8 audio scaling")
-print(" - shell.html: injected local-only MCP v2 geometry bridge (:3781)")
+print(" - d_main.c: fresh-runtime MCP candidate staged before W_InitMultipleFiles")
+print(" - shell.html: injected local-only MCP v2.1 geometry cold-boot bridge (:3781)")
 if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
     print(" - CI gate: structural room -> ZDBSP -> vanilla derived-lump self-test passed")
 print(" - music compatibility is prepared separately by import_vanilla_opl.py")
