@@ -1,0 +1,62 @@
+name: Validate DOOM MCP P0 episode authoring
+
+on:
+  push:
+    branches: ["p0-episode-authoring"]
+    paths:
+      - "mcp/topology_validator.js"
+      - "mcp/episode_workspace.js"
+      - "mcp/p0_server.js"
+      - "mcp/p0_selftest.mjs"
+      - "mcp/p0_browser_e2e.mjs"
+      - "mcp/package.json"
+      - ".github/workflows/p0-episode.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  p0:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout P0 branch
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install MCP dependencies
+        run: npm install --prefix mcp --ignore-scripts --no-audit --no-fund
+
+      - name: Syntax-check P0 modules
+        run: |
+          node --check mcp/topology_validator.js
+          node --check mcp/episode_workspace.js
+          node --check mcp/p0_server.js
+          node --check mcp/p0_selftest.mjs
+          node --check mcp/p0_browser_e2e.mjs
+
+      - name: Instantiate P0 MCP server
+        run: |
+          cd mcp
+          node --input-type=module -e "import('./p0_server.js').then(m => { const s=m.createMcpServer(); if(!s) process.exit(1); console.error('P0 MCP server import passed'); })"
+
+      - name: Run E1M1-E1M8 transaction + ZDBSP integration test
+        run: |
+          cd mcp
+          npm run test:p0
+
+      - name: Install Playwright Chromium
+        run: |
+          cd mcp
+          npm install --no-save --ignore-scripts --no-audit --no-fund playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Run real browser + five-bridge E2E smoke
+        run: |
+          cd mcp
+          node p0_browser_e2e.mjs
