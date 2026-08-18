@@ -38,6 +38,32 @@ async function verified(pathname, expected) {
   }
 }
 
+async function sleep(ms) {
+  await new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchVerifiedArtifact(item) {
+  let lastError;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      const response = await fetch(item.url, { redirect: 'follow', cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const bytes = Buffer.from(await response.arrayBuffer());
+      const actual = gitBlobSha(bytes);
+      if (actual !== item.gitBlob) {
+        throw new Error(`Git blob hash mismatch: expected ${item.gitBlob}, got ${actual}`);
+      }
+      await writeFile(item.path, bytes);
+      if (!(await verified(item.path, item.gitBlob))) throw new Error('cache verification failed after write');
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 4) await sleep(attempt * 1200);
+    }
+  }
+  throw new Error(`Failed to fetch pinned ZDBSP WASM artifact ${path.basename(item.path)} after retries: ${lastError?.message || lastError}`);
+}
+
 export async function nodeBuilderStatus() {
   const files = [];
   for (const item of FILES) {
@@ -57,12 +83,7 @@ export async function prepareNodeBuilder() {
   await mkdir(CACHE_DIR, { recursive: true });
   for (const item of FILES) {
     if (await verified(item.path, item.gitBlob)) continue;
-    const response = await fetch(item.url, { redirect: 'follow', cache: 'no-store' });
-    if (!response.ok) throw new Error(`Failed to fetch pinned ZDBSP WASM artifact ${path.basename(item.path)}: HTTP ${response.status}`);
-    const bytes = Buffer.from(await response.arrayBuffer());
-    const actual = gitBlobSha(bytes);
-    if (actual !== item.gitBlob) throw new Error(`Pinned ZDBSP artifact hash mismatch for ${path.basename(item.path)}: expected ${item.gitBlob}, got ${actual}`);
-    await writeFile(item.path, bytes);
+    await fetchVerifiedArtifact(item);
   }
   const status = await nodeBuilderStatus();
   if (!status.ready) throw new Error('ZDBSP WASM cache could not be verified');
