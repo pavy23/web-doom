@@ -1,0 +1,3 @@
+DOOM MCP v2 geometry self-test passed: {"ok":true,"map":"E1M1","bytes":817,"counts":{"vertices":6,"linedefs":7,"sidedefs":8,"sectors":2,"segBytes":96,"subsectorBytes":8,"nodeBytes":28,"rejectBytes":1,"expectedRejectBytes":1,"blockmapBytes":72},"missingDerivedLumps":[]}
+
+EXIT_CODE=0
