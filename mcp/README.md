@@ -1,27 +1,38 @@
-# Web DOOM MCP — v1.1 Closed-loop Authoring + Live Cheats
+# Web DOOM MCP — v2 Structural Geometry Authoring
 
 This directory contains the local MCP control plane for the direct LinuxDOOM WebAssembly port.
 
-Current MCP version: **1.1.0**.
+Current MCP version: **2.0.0**.
 
-v1.1 retains the complete v1.0 authoring loop and adds two live-session capabilities:
-
-- explicit DOOM cheat controls for debugging and navigation,
-- stronger desktop-browser audio diagnostics and recovery.
-
-Cheats and audio controls are **playtest-only**. They never enter the authoring ChangeSet and are never serialized into a PWAD.
+v2 retains every v1.1 capability and adds **validated structural map editing**:
 
 ```text
 MCP-host AI
    │
-   ├─ author / checkpoint / reload / evaluate
-   ├─ autonomous player input
-   ├─ live cheats
-   └─ audio diagnostics
-   │
-   ▼
-LinuxDOOM WebAssembly
+   ├─ v1 semantic authoring / PWAD checkpointing
+   ├─ autonomous playtest / vision / evaluation
+   ├─ live cheats + audio diagnostics
+   └─ v2 structural geometry authoring
+          │
+          ▼
+     Doom Geometry IR
+          │
+     deterministic validation
+          │
+          ▼
+     pinned ZDBSP WASM
+     nodes + blockmap + REJECT rebuild
+          │
+          ▼
+     candidate PWAD
+          │
+     binary verification
+          │
+          ▼
+     LinuxDOOM reload / playtest
 ```
+
+The AI never writes BSP nodes directly. It edits map primitives or semantic room/corridor operations; deterministic code rebuilds derived lumps before LinuxDOOM is allowed to load the result.
 
 ## Setup
 
@@ -36,7 +47,7 @@ npm install
 npm start
 ```
 
-`npm start` launches **`cheat_server.js`**, which composes all v1.0 tools plus v1.1 cheat/audio tools.
+`npm start` launches **`geometry_server.js`**, which composes all earlier MCP tools plus geometry v2.
 
 Open:
 
@@ -49,10 +60,11 @@ Click **CLICK TO START**.
 Local bridges:
 
 ```text
-127.0.0.1:3777/control       bounded authoring
-127.0.0.1:3778/playtest      vision / telemetry / exact-tic / agent input
-127.0.0.1:3779/orchestrate   closed-loop authoring sessions
+127.0.0.1:3777/control       semantic authoring / PWAD
+127.0.0.1:3778/playtest      vision / telemetry / exact-tic / AI input
+127.0.0.1:3779/orchestrate   closed-loop v1 design sessions
 127.0.0.1:3780/cheats        live cheats + audio diagnostics
+127.0.0.1:3781/geometry      structural geometry snapshot / reload
 ```
 
 Generic MCP host configuration:
@@ -60,178 +72,293 @@ Generic MCP host configuration:
 ```json
 {
   "command": "node",
-  "args": ["C:/absolute/path/to/web-doom/mcp/cheat_server.js"]
+  "args": ["C:/absolute/path/to/web-doom/mcp/geometry_server.js"]
 }
 ```
 
-If the MCP host launches `cheat_server.js`, do not also run `npm start` on the same ports.
+If the MCP host launches `geometry_server.js`, do not also run `npm start` on the same ports.
 
-# v1.1 live cheat tools
+## Grok Build
 
-## `doom_cheat_status`
+If an older Grok MCP entry points at `cheat_server.js`, replace it with v2:
 
-Reads the live player state relevant to debugging:
-
-```text
-god mode
-noclip
-health / armor
-weapons
-keys
-bullets / shells / cells / rockets
-active power-ups
-current episode / map
+```powershell
+grok mcp remove web-doom
+grok mcp add web-doom -- node "C:\absolute\path\web-doom\mcp\geometry_server.js"
+grok mcp doctor web-doom
 ```
 
-## `doom_set_god_mode`
+Then open the local browser URL above and start DOOM.
 
-Enable or disable the original-style `CF_GODMODE` player flag.
+# v2 geometry workflow
 
-Example natural-language request:
-
-```text
-무적 켜줘.
-```
-
-## `doom_set_noclip`
-
-Enable or disable the original-style `CF_NOCLIP` flag.
+A structural session always starts from an ordinary playable PWAD snapshot of the current map.
 
 ```text
-노클립 켜줘.
+doom_begin_geometry_session
+      ↓
+inspect Geometry IR
+      ↓
+small bounded edits
+      ↓
+doom_geometry_validate
+      ↓
+doom_geometry_build
+      ↓
+LINEDEFS / SIDEDEFS / VERTEXES / SECTORS rewritten
+SEGS / SSECTORS / NODES / BLOCKMAP / REJECT rebuilt
+      ↓
+verified candidate .wad
+      ↓
+LinuxDOOM reload
 ```
 
-## `doom_give_arsenal`
-
-Gives the classic IDFA/IDKFA-style live loadout:
-
-- 200 armor,
-- all weapons,
-- max ammunition,
-- optionally all keys.
+If a candidate is worse or invalid:
 
 ```text
-무기, 탄약, 키 전부 줘.
+doom_geometry_restore_baseline
+or
+doom_geometry_restore_candidate
 ```
 
-`includeKeys=false` gives weapons/ammo/armor without the keys.
+A verified candidate can be promoted to a final ordinary PWAD with `doom_geometry_finalize`.
 
-## `doom_give_keys`
+# Semantic geometry tools
 
-Gives all available card/skull keys without changing weapons or ammo.
+## `doom_geometry_add_room`
 
-## `doom_set_health_armor`
+Extrudes a rectangular room from an existing **one-sided wall**.
 
-Directly sets live health and armor within bounded values:
+The selected linedef becomes an open two-sided portal. The new room inherits valid floor/ceiling materials and heights from the source sector unless overridden.
+
+Conceptual request:
 
 ```text
-health     1..200
-armor      0..200
-armorType  0..2
+현재 시작방의 동쪽 한쪽 벽을 찾아서
+깊이 192짜리 새 방을 바깥쪽으로 추가해.
 ```
 
-## `doom_give_powerup`
-
-Uses the original DOOM power state for one of:
+The operation creates:
 
 ```text
-invulnerability
-berserk
-invisibility
-radiation
-allmap
-lightamp
+1 new sector
+2 new outer vertices
+1 new back sidedef on the former wall
+3 outer wall sidedefs
+3 outer linedefs
 ```
 
-## `doom_warp`
+and converts the former blocking wall into a portal.
 
-Starts another valid map through LinuxDOOM `G_InitNew()` at the current skill.
+## `doom_geometry_resize_room`
 
-The public shareware IWAD supports:
+Changes the extrusion depth of a room created in the current unapplied workspace.
+
+## `doom_geometry_delete_room`
+
+Removes a generated room while it is still the latest geometry edit. For already-applied candidates, use candidate/baseline restore instead.
+
+## `doom_geometry_add_corridor`
+
+Connects two facing one-sided walls using a new corridor sector.
+
+For safety the current semantic primitive requires the selected walls to be:
+
+- one-sided,
+- parallel,
+- approximately equal length,
+- facing each other on their outside/left sides.
+
+Both walls become portals and deterministic side walls close the corridor.
+
+# Low-level geometry tools
+
+These are available for precise agents and debugging, but semantic operations are preferred:
+
+- `doom_geometry_add_vertex`
+- `doom_geometry_move_vertex`
+- `doom_geometry_add_sector`
+- `doom_geometry_add_sidedef`
+- `doom_geometry_add_linedef`
+- `doom_geometry_set_sector_heights`
+- `doom_geometry_undo`
+
+Use `doom_get_geometry` before low-level editing and `doom_geometry_validate` before every build.
+
+# Geometry inspection and safety
+
+## `doom_geometry_status`
+
+Reports:
+
+- v2 bridge connection,
+- local ZDBSP cache state,
+- active geometry sessions/candidates.
+
+## `doom_geometry_prepare_nodebuilder`
+
+Prepares the node builder before the first structural build.
+
+The current implementation uses immutable artifacts from:
 
 ```text
-E1M1 .. E1M9
+seanmorris/zdbsp-wasm
+commit acc45bf6b2232a75bdbb0b6295822e72e13dfeec
 ```
 
-Example:
+The JavaScript wrapper and WASM binary are downloaded to `mcp/.cache/zdbsp/` and verified against their exact Git blob SHA before execution. They are never accepted merely because the download succeeded.
+
+You can pre-cache explicitly:
+
+```bash
+npm run prepare-geometry
+```
+
+Otherwise the first structural build prepares the cache automatically.
+
+ZDBSP is used in vanilla-compatible mode equivalent to:
 
 ```text
-E1M5로 이동해.
+--zero-reject
+--no-prune
+--map=E#M#
 ```
 
-Warping is playtest-only but changes the current live map, so do not casually use it in the middle of an active authoring session whose goal assumes another map.
+This rebuilds normal Doom nodes and a full-sized zero REJECT table rather than a ZDoom-only empty REJECT.
 
-# Desktop browser audio recovery
+## `doom_geometry_validate`
 
-The modern Emscripten SDL2 WebAudio context can live at `Module.SDL2.audioContext`. v1.1 explicitly checks that context as well as legacy/global locations.
+Before invoking the node builder the IR validator checks, among other things:
 
-The browser layer now:
+- signed 16-bit Doom map-coordinate bounds,
+- vertex / sidedef / sector references,
+- zero-length linedefs,
+- sector floor < ceiling,
+- new-line proper crossings,
+- closed boundary degree for newly-created sectors,
+- two-sided linedef consistency warnings.
 
-1. retries `AudioContext.resume()` after CLICK TO START,
-2. retries on pointer, keyboard and touch user gestures,
-3. retries when the tab becomes visible again,
-4. explicitly unpauses the SDL audio device/mixer,
-5. adds an on-screen **AUDIO** button for a guaranteed fresh browser user gesture.
+## post-build verification
 
-If a desktop browser is silent:
+After ZDBSP, the candidate is parsed again and must contain non-empty:
 
 ```text
-1. CLICK TO START
-2. click AUDIO once
-3. confirm it changes to AUDIO ON
+SEGS
+SSECTORS
+NODES
+BLOCKMAP
 ```
 
-Then use the MCP diagnostics if necessary.
-
-## `doom_audio_status`
-
-Returns browser AudioContext state plus SDL/SDL_mixer state.
-
-Useful fields include:
+and a full `REJECT` of the vanilla-required size:
 
 ```text
-browser context state: suspended / running
-sample rate
-SDL audio initialized
-SDL_mixer open
-mixer frequency / channels / format
+ceil(number_of_sectors² / 8)
 ```
 
-## `doom_audio_resume`
+Only then can the candidate be applied to the running LinuxDOOM session.
 
-Attempts to resume the discovered browser audio context and unpause SDL audio.
+# Session boundaries
 
-Browser autoplay policy can require a real user gesture, so if the MCP call alone cannot unlock audio, click the on-screen **AUDIO** button once.
+`doom_begin_geometry_session` refuses to silently absorb pending actor/light/door/material ChangeSet edits by default.
 
-# v1.0 closed-loop authoring retained
+If those edits are intentionally meant to become the structural baseline, pass:
 
-The complete v1 loop remains available:
+```text
+adoptPendingChanges=true
+```
+
+Every applied structural candidate becomes a fresh geometry baseline in memory. Candidate files are retained under:
+
+```text
+mcp/exports/
+```
+
+Current hard limits:
+
+```text
+geometry sessions/process  8
+built candidates/session   12
+```
+
+Restart the MCP process to clear process-memory geometry sessions.
+
+# Example full v2 test
+
+A useful first test is intentionally small:
+
+```text
+1. 현재 E1M1에서 geometry session을 시작해.
+2. geometry를 조사해서 안전하게 바깥쪽으로 확장 가능한 one-sided wall 하나를 찾아.
+3. 그 벽에서 depth 192의 새 방을 하나 추가해.
+4. geometry validation을 실행해.
+5. geom_e1m1_v1.wad로 build하고 바로 apply해.
+6. 화면을 캡처하고 새 방에 직접 들어가서 playtest해.
+7. 필요하면 기존 visual/actor MCP로 조명·텍스처·적을 추가해.
+8. 만족하면 geom_e1m1_final.wad로 finalize해.
+```
+
+For a corridor:
+
+```text
+두 sector 사이에서 서로 마주 보는 one-sided parallel wall을 찾아
+corridor로 연결하고 validate/build/apply 해.
+```
+
+# Modern desktop controls
+
+The direct browser platform layer now defaults to a modern FPS-style scheme while preserving original arrow-key behavior:
+
+```text
+W / S          forward / backward
+A / D          strafe left / right
+Left / Right   rotate (original behavior)
+Up / Down      forward / backward (original behavior)
+Mouse X        horizontal turn, roughly 2x previous browser sensitivity
+Mouse Y        ignored (no accidental vanilla mouse-forward movement)
+Click canvas   Pointer Lock + hide cursor
+Esc            release Pointer Lock
+Ctrl / J       fire
+Space / E      use/open
+Shift          run
+1..7           weapons
+```
+
+A/D reuse LinuxDOOM's original dedicated `key_strafeleft` / `key_straferight` path rather than replacing movement physics.
+
+# v1.1 live debugging retained
+
+Runtime-only tools remain available and never enter PWAD data:
+
+- `doom_cheat_status`
+- `doom_set_god_mode`
+- `doom_set_noclip`
+- `doom_give_arsenal`
+- `doom_give_keys`
+- `doom_set_health_armor`
+- `doom_give_powerup`
+- `doom_warp`
+- `doom_audio_status`
+- `doom_audio_resume`
+
+Disable cheats when evaluating normal-player difficulty.
+
+# v1 closed-loop authoring retained
+
+The full earlier pipeline remains available:
 
 ```text
 design goal
-  ↓
-bounded semantic edits
-  ↓
-candidate PWAD checkpoint
-  ↓
-reload candidate as fresh baseline
-  ↓
-autonomous deterministic playtest
-  ↓
-telemetry + final PNG
-  ↓
-deterministic evaluation + optional AI vision rubric
-  ↓
-revision or restore previous candidate
-  ↓
-passing candidate
-  ↓
-final ordinary PWAD
+→ bounded semantic edit
+→ PWAD checkpoint / reload
+→ autonomous ticcmd playtest
+→ PNG + telemetry
+→ deterministic evaluation + optional AI vision rubric
+→ revision / restore
+→ final PWAD
 ```
 
-Main session tools:
+Session tools:
 
-- `doom_orchestrator_status`
 - `doom_begin_design_session`
 - `doom_run_authoring_iteration`
 - `doom_review_design_iteration`
@@ -239,96 +366,47 @@ Main session tools:
 - `doom_restore_design_candidate`
 - `doom_finalize_design_session`
 
-Hard limits remain:
+Observation/agency tools include:
 
-```text
-maximum design iterations       8
-maximum persistent edits/iter  12
-maximum trial actions          16
-maximum trial world tics      700
-maximum one action            350 tics
-```
-
-Every authoring iteration produces a real local PWAD checkpoint under `mcp/exports/` before playtesting.
-
-# Lower-level authoring and playtest tools retained
-
-Inspection:
-
-- `doom_get_state`
-- `doom_get_enemies`
-- `doom_get_sectors`
-- `doom_get_linedefs`
-- `doom_get_visuals`
-- `doom_list_visual_assets`
-- `doom_get_changeset`
-
-Persistent authoring:
-
-- `doom_set_sector_light` → `SECTORS`
-- `doom_spawn_enemy` / `doom_remove_nearest_enemy` → `THINGS`
-- `doom_set_linedef_action` → `LINEDEFS`
-- `doom_set_wall_texture` → `SIDEDEFS`
-- `doom_set_sector_flat` → `SECTORS`
-
-PWAD iteration:
-
-- `doom_export_pwad`
-- `doom_list_exports`
-- `doom_load_pwad`
-- `doom_reload_current_map`
-
-Observation / simulation:
-
+- `doom_capture_frame`
+- `doom_get_playtest_telemetry`
 - `doom_pause_playtest`
 - `doom_resume_playtest`
 - `doom_step_tics`
-- `doom_get_playtest_telemetry`
-- `doom_reset_playtest_metrics`
-- `doom_capture_frame`
 - `doom_run_input`
 - `doom_run_input_sequence`
 
-Evaluation:
+Existing semantic authoring remains useful after structural edits:
 
-- `doom_run_design_trial`
-- `doom_evaluate_playtest`
-- `doom_get_trial_history`
-- `doom_compare_trials`
+- enemies / objects → `THINGS`
+- door/trigger behavior → `LINEDEFS`
+- wall textures → `SIDEDEFS`
+- lighting / floor / ceiling flats → `SECTORS`
 
-Older debug helpers remain available as well, including `doom_heal`, `doom_give_ammo` and `doom_teleport`.
+# Current v2 scope
 
-# Persistence boundary
+v2 removes the old “no topology changes” limitation, but it is intentionally not an unrestricted CAD kernel.
 
-Persistent authoring is still intentionally limited to existing-geometry records:
-
-```text
-THINGS
-LINEDEFS
-SIDEDEFS
-SECTORS
-```
-
-The following topology/BSP-derived records remain unchanged:
+Supported now:
 
 ```text
-VERTEXES
-SEGS
-SSECTORS
-NODES
-REJECT
-BLOCKMAP
+existing vertex movement
+sector height changes
+low-level vertex/linedef/sidedef/sector addition
+semantic rectangular room extrusion
+semantic straight corridor connection
+node / subsector / blockmap / REJECT rebuild
+candidate reload / rollback / finalization
 ```
 
-Live cheats, player movement, teleport, health/ammo manipulation, power-ups, god mode, noclip and map warp are **not** PWAD authoring operations.
+Still deliberately outside the safe semantic surface:
 
-# Recommended separation
+```text
+arbitrary curved/free-form room generation
+boolean polygon operations
+automatic multi-turn corridor routing around obstacles
+merging/deleting arbitrary legacy sectors
+moving large groups of legacy vertices without spatial planning
+```
 
-Use cheats for:
-
-- manual debugging,
-- quickly reaching another room/map,
-- inspecting doors or materials,
-- isolating combat/navigation problems.
-
-Turn cheats off for automated difficulty evaluation. A candidate should pass its design goal under the intended normal player state, not because god mode or a full arsenal was active.
+Those can be added later on top of the same Geometry IR, but they should preserve the same rule: **AI proposes topology; deterministic geometry validation + node building decides whether it is loadable.**
