@@ -1,16 +1,22 @@
 // Runtime PWAD import/reload adapter for the direct LinuxDOOM browser port.
 //
-// This deliberately uses LinuxDOOM's own WAD override semantics: append a
-// validated PWAD after the IWAD, then ask the original game ticker to restart
-// the current map through G_DeferedInitNew().  Calling G_InitNew() directly
-// from a browser/MCP callback can re-enter level setup while a live level is
-// still being processed, which is unsafe.  The JS bridge polls the completion
-// status and only reports success after the deferred gameaction has completed.
-// Later lumps therefore override earlier lumps exactly as the original engine
-// expects. The authoring ChangeSet is reset only after the new map is live.
+// There are now two intentionally different paths:
+//
+// 1) Geometry/cold-boot path (preferred for structural PWADs): JavaScript writes
+//    a candidate PWAD into the fresh Emscripten FS before main(), calls
+//    doomctl_set_boot_pwad_path(), and D_DoomMain asks
+//    doomctl_prepare_boot_pwad() to append that path to wadfiles BEFORE
+//    W_InitMultipleFiles().  LinuxDOOM therefore constructs lumpinfo/lumpcache
+//    and the first level from IWAD + candidate in one clean startup lifecycle.
+//
+// 2) Legacy live-reload path (kept for compatibility with older authoring
+//    tools): append a validated PWAD after the IWAD and defer the map restart
+//    through G_DeferedInitNew().  Structural geometry authoring no longer uses
+//    this path because P_SetupLevel tears down the whole PU_LEVEL lifetime.
 
 #include "doomdef.h"
 #include "doomstat.h"
+#include "d_main.h"
 #include "g_game.h"
 #include "w_wad.h"
 
@@ -22,11 +28,13 @@
 
 #define DOOMCTL_RELOAD_BUFSIZE 1024
 #define DOOMCTL_MAX_IMPORTS 32
+#define DOOMCTL_BOOT_PATH_BUFSIZE 512
 
 extern void W_AddFile(char *filename);
 extern int doomctl_reset_changeset(void);
 
 static char doomctl_reload_buffer[DOOMCTL_RELOAD_BUFSIZE];
+static char doomctl_boot_pwad_path[DOOMCTL_BOOT_PATH_BUFSIZE];
 static int doomctl_import_count = 0;
 static int doomctl_reload_pending = 0;
 static int doomctl_reload_episode = 0;
@@ -56,6 +64,57 @@ static int doomctl_name_equals(const unsigned char *raw, const char *name)
         value[i] = (char) raw[i];
     }
     return !strcmp(value, name);
+}
+
+static int doomctl_has_wad_extension(const char *path)
+{
+    size_t length;
+    const char *ext;
+
+    if (path == NULL)
+        return 0;
+    length = strlen(path);
+    if (length < 4)
+        return 0;
+    ext = path + length - 4;
+    return (ext[0] == '.')
+        && (ext[1] == 'w' || ext[1] == 'W')
+        && (ext[2] == 'a' || ext[2] == 'A')
+        && (ext[3] == 'd' || ext[3] == 'D');
+}
+
+// Called from JavaScript after the WASM runtime/filesystem is initialized but
+// before Module.callMain().  The path must already exist in Emscripten FS.
+EMSCRIPTEN_KEEPALIVE
+int doomctl_set_boot_pwad_path(const char *path)
+{
+    size_t length;
+
+    doomctl_boot_pwad_path[0] = '\0';
+    if (path == NULL || path[0] != '/' || !doomctl_has_wad_extension(path))
+        return -1;
+
+    length = strlen(path);
+    if (length >= sizeof(doomctl_boot_pwad_path))
+        return -2;
+
+    memcpy(doomctl_boot_pwad_path, path, length + 1);
+    return 1;
+}
+
+// Called by build-patched D_DoomMain immediately before W_InitMultipleFiles().
+// D_AddFile copies the string, so clearing our staging buffer afterward is safe.
+// Returning 1 means a cold-boot PWAD was added, 0 means normal IWAD-only boot.
+int doomctl_prepare_boot_pwad(void)
+{
+    if (doomctl_boot_pwad_path[0] == '\0')
+        return 0;
+
+    D_AddFile(doomctl_boot_pwad_path);
+    printf("DOOM MCP cold boot: staged %s before W_InitMultipleFiles\n",
+           doomctl_boot_pwad_path);
+    doomctl_boot_pwad_path[0] = '\0';
+    return 1;
 }
 
 static int doomctl_validate_current_map_pwad(const char *path,
@@ -182,9 +241,7 @@ static void doomctl_schedule_reload(int was_import,
     doomctl_reload_imported_lumps = imported_lumps;
     doomctl_reload_total_lumps = total_lumps;
 
-    // Do not call G_InitNew() from the JS/WebSocket callback.  Vanilla Doom's
-    // normal gameaction path will consume ga_newgame from G_Ticker, after the
-    // current browser callback has returned to the main loop.
+    // Compatibility path only. Structural geometry uses fresh-runtime cold boot.
     G_DeferedInitNew(gameskill, gameepisode, gamemap);
 }
 
@@ -204,9 +261,6 @@ const char *doomctl_reload_status_json(void)
         return doomctl_reload_buffer;
     }
 
-    // G_DeferedInitNew sets gameaction to ga_newgame.  Completion is reached
-    // only after the original ticker consumes that action and returns to a live
-    // GS_LEVEL for the requested episode/map.
     if (gameaction != ga_nothing
      || gamestate != GS_LEVEL
      || gameepisode != doomctl_reload_episode
@@ -283,9 +337,9 @@ const char *doomctl_load_pwad_json(const char *path)
     before = numlumps;
     expected_total = before + imported_lumps;
 
-    // W_AddFile() can append lumpinfo at runtime, but vanilla W_InitMultipleFiles()
-    // allocates lumpcache only once at startup. Grow it before the append so any
-    // newly overridden map lump can safely use W_CacheLumpNum/Name afterward.
+    // Legacy compatibility path: live appends need a larger cache array. New
+    // geometry cold boot does not need this because W_InitMultipleFiles sizes
+    // lumpcache once from IWAD + candidate before any level is constructed.
     newcache = (void **) realloc(lumpcache,
                                 (size_t) expected_total * sizeof(*lumpcache));
     if (newcache == NULL)
