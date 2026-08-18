@@ -3,8 +3,9 @@
 
 The upstream 1997 gameplay/rendering code remains intact. Browser platform files are
 installed explicitly by CI; this script only resolves narrow modern-toolchain source
-collisions and restores DOS-era audio scaling that the Linux music-disabled port had
-commented out. Music adaptation is handled separately by import_vanilla_opl.py.
+collisions, restores DOS-era audio scaling, and injects the local-only v2 geometry
+bridge into the generated browser shell. Music adaptation is handled separately by
+import_vanilla_opl.py.
 """
 from pathlib import Path
 import sys
@@ -13,6 +14,7 @@ if len(sys.argv) != 2:
     raise SystemExit("usage: apply_compat.py /path/to/linuxdoom-1.10")
 
 root = Path(sys.argv[1])
+script_dir = Path(__file__).resolve().parent
 
 # Emscripten's compat/string.h already declares `char *strupr(char *)`, while
 # LinuxDOOM 1.10 contains a local `void strupr(char *)`. Rename only Doom's
@@ -57,7 +59,27 @@ for old, new in menu_replacements:
     s = s.replace(old, new, 1)
 p.write_text(s)
 
+# v2 geometry authoring operates in the local Node MCP process, but the browser
+# still needs a narrow snapshot/reload websocket at :3781. Keep it out of the
+# public shell source itself and inject it only during the direct build so the
+# same checked-in bridge file is used by CI and local builds.
+bridge_path = script_dir / "geometry_bridge.js"
+if not bridge_path.is_file():
+    raise SystemExit(f"geometry bridge source missing: {bridge_path}")
+bridge = bridge_path.read_text()
+
+p = root / "shell.html"
+s = p.read_text()
+marker = "\n  {{{ SCRIPT }}}\n"
+if marker not in s:
+    raise SystemExit(f"Emscripten SCRIPT marker not found in {p}")
+if "127.0.0.1:3781/geometry" not in s:
+    injected = "\n  <script>\n" + bridge + "\n  </script>\n"
+    s = s.replace(marker, injected + marker, 1)
+p.write_text(s)
+
 print("Applied LinuxDOOM/Emscripten compatibility edits:")
 print(" - w_wad.c: private strupr helper renamed to doom_strupr")
 print(" - d_main.c/m_menu.c: restored DOS 0..15 -> internal *8 audio scaling")
+print(" - shell.html: injected local-only MCP v2 geometry bridge (:3781)")
 print(" - music compatibility is prepared separately by import_vanilla_opl.py")
