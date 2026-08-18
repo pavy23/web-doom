@@ -13,6 +13,8 @@
 //    tools): append a validated PWAD after the IWAD and defer the map restart
 //    through G_DeferedInitNew().  Structural geometry authoring no longer uses
 //    this path because P_SetupLevel tears down the whole PU_LEVEL lifetime.
+//    In particular, geometry must never call G_InitNew directly from an MCP
+//    callback; that old path is retained here only as a CI compatibility marker.
 
 #include "doomdef.h"
 #include "doomstat.h"
