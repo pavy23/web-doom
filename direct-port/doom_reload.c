@@ -1,9 +1,13 @@
 // Runtime PWAD import/reload adapter for the direct LinuxDOOM browser port.
 //
 // This deliberately uses LinuxDOOM's own WAD override semantics: append a
-// validated PWAD after the IWAD, then restart the current map through G_InitNew.
+// validated PWAD after the IWAD, then ask the original game ticker to restart
+// the current map through G_DeferedInitNew().  Calling G_InitNew() directly
+// from a browser/MCP callback can re-enter level setup while a live level is
+// still being processed, which is unsafe.  The JS bridge polls the completion
+// status and only reports success after the deferred gameaction has completed.
 // Later lumps therefore override earlier lumps exactly as the original engine
-// expects. The authoring ChangeSet is reset after the new map becomes baseline.
+// expects. The authoring ChangeSet is reset only after the new map is live.
 
 #include "doomdef.h"
 #include "doomstat.h"
@@ -24,6 +28,12 @@ extern int doomctl_reset_changeset(void);
 
 static char doomctl_reload_buffer[DOOMCTL_RELOAD_BUFSIZE];
 static int doomctl_import_count = 0;
+static int doomctl_reload_pending = 0;
+static int doomctl_reload_episode = 0;
+static int doomctl_reload_map = 0;
+static int doomctl_reload_was_import = 0;
+static int doomctl_reload_imported_lumps = 0;
+static int doomctl_reload_total_lumps = 0;
 
 static unsigned int doomctl_read_u32(const unsigned char *p)
 {
@@ -161,6 +171,70 @@ static int doomctl_validate_current_map_pwad(const char *path,
     return 1;
 }
 
+static void doomctl_schedule_reload(int was_import,
+                                    int imported_lumps,
+                                    int total_lumps)
+{
+    doomctl_reload_pending = 1;
+    doomctl_reload_episode = gameepisode;
+    doomctl_reload_map = gamemap;
+    doomctl_reload_was_import = was_import;
+    doomctl_reload_imported_lumps = imported_lumps;
+    doomctl_reload_total_lumps = total_lumps;
+
+    // Do not call G_InitNew() from the JS/WebSocket callback.  Vanilla Doom's
+    // normal gameaction path will consume ga_newgame from G_Ticker, after the
+    // current browser callback has returned to the main loop.
+    G_DeferedInitNew(gameskill, gameepisode, gamemap);
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *doomctl_reload_status_json(void)
+{
+    int reset_result;
+
+    doomctl_reload_buffer[0] = '\0';
+
+    if (!doomctl_reload_pending)
+    {
+        snprintf(doomctl_reload_buffer, DOOMCTL_RELOAD_BUFSIZE,
+                 "{\"pending\":false,\"completed\":true,"
+                 "\"episode\":%d,\"map\":%d}",
+                 gameepisode, gamemap);
+        return doomctl_reload_buffer;
+    }
+
+    // G_DeferedInitNew sets gameaction to ga_newgame.  Completion is reached
+    // only after the original ticker consumes that action and returns to a live
+    // GS_LEVEL for the requested episode/map.
+    if (gameaction != ga_nothing
+     || gamestate != GS_LEVEL
+     || gameepisode != doomctl_reload_episode
+     || gamemap != doomctl_reload_map)
+    {
+        snprintf(doomctl_reload_buffer, DOOMCTL_RELOAD_BUFSIZE,
+                 "{\"pending\":true,\"completed\":false,"
+                 "\"episode\":%d,\"map\":%d,\"gameaction\":%d,"
+                 "\"gamestate\":%d}",
+                 gameepisode, gamemap, (int) gameaction, (int) gamestate);
+        return doomctl_reload_buffer;
+    }
+
+    reset_result = doomctl_reset_changeset();
+    doomctl_reload_pending = 0;
+
+    snprintf(doomctl_reload_buffer, DOOMCTL_RELOAD_BUFSIZE,
+             "{\"pending\":false,\"completed\":true,"
+             "\"episode\":%d,\"map\":%d,\"wasImport\":%s,"
+             "\"importedLumps\":%d,\"totalLumps\":%d,"
+             "\"importsThisSession\":%d,\"changeSetReset\":%s}",
+             gameepisode, gamemap,
+             doomctl_reload_was_import ? "true" : "false",
+             doomctl_reload_imported_lumps, doomctl_reload_total_lumps,
+             doomctl_import_count, reset_result > 0 ? "true" : "false");
+    return doomctl_reload_buffer;
+}
+
 EMSCRIPTEN_KEEPALIVE
 const char *doomctl_load_pwad_json(const char *path)
 {
@@ -168,11 +242,16 @@ const char *doomctl_load_pwad_json(const char *path)
     int imported_lumps;
     int before;
     int expected_total;
-    int reset_result;
     void **newcache;
 
     doomctl_reload_buffer[0] = '\0';
 
+    if (doomctl_reload_pending)
+    {
+        snprintf(doomctl_reload_buffer, DOOMCTL_RELOAD_BUFSIZE,
+                 "{\"loaded\":false,\"error\":\"reload_in_progress\"}");
+        return doomctl_reload_buffer;
+    }
     if (gamestate != GS_LEVEL)
     {
         snprintf(doomctl_reload_buffer, DOOMCTL_RELOAD_BUFSIZE,
@@ -230,24 +309,28 @@ const char *doomctl_load_pwad_json(const char *path)
     }
 
     ++doomctl_import_count;
-    G_InitNew(gameskill, gameepisode, gamemap);
-    reset_result = doomctl_reset_changeset();
+    doomctl_schedule_reload(1, imported_lumps, numlumps);
 
     snprintf(doomctl_reload_buffer, DOOMCTL_RELOAD_BUFSIZE,
-             "{\"loaded\":true,\"episode\":%d,\"map\":%d,"
-             "\"importedLumps\":%d,\"totalLumps\":%d,\"importsThisSession\":%d,"
-             "\"changeSetReset\":%s}",
+             "{\"loaded\":true,\"scheduled\":true,\"completed\":false,"
+             "\"episode\":%d,\"map\":%d,\"importedLumps\":%d,"
+             "\"totalLumps\":%d,\"importsThisSession\":%d}",
              gameepisode, gamemap, imported_lumps, numlumps,
-             doomctl_import_count, reset_result > 0 ? "true" : "false");
+             doomctl_import_count);
     return doomctl_reload_buffer;
 }
 
 EMSCRIPTEN_KEEPALIVE
 const char *doomctl_reload_current_map_json(void)
 {
-    int reset_result;
-
     doomctl_reload_buffer[0] = '\0';
+
+    if (doomctl_reload_pending)
+    {
+        snprintf(doomctl_reload_buffer, DOOMCTL_RELOAD_BUFSIZE,
+                 "{\"reloaded\":false,\"error\":\"reload_in_progress\"}");
+        return doomctl_reload_buffer;
+    }
     if (gamestate != GS_LEVEL)
     {
         snprintf(doomctl_reload_buffer, DOOMCTL_RELOAD_BUFSIZE,
@@ -255,12 +338,11 @@ const char *doomctl_reload_current_map_json(void)
         return doomctl_reload_buffer;
     }
 
-    G_InitNew(gameskill, gameepisode, gamemap);
-    reset_result = doomctl_reset_changeset();
+    doomctl_schedule_reload(0, 0, numlumps);
 
     snprintf(doomctl_reload_buffer, DOOMCTL_RELOAD_BUFSIZE,
-             "{\"reloaded\":true,\"episode\":%d,\"map\":%d,"
-             "\"changeSetReset\":%s}",
-             gameepisode, gamemap, reset_result > 0 ? "true" : "false");
+             "{\"reloaded\":true,\"scheduled\":true,\"completed\":false,"
+             "\"episode\":%d,\"map\":%d}",
+             gameepisode, gamemap);
     return doomctl_reload_buffer;
 }
