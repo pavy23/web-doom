@@ -105,7 +105,7 @@ async function allocArgv(module, args) {
 
 export async function rebuildVanillaNodes(inputBytes, mapName) {
   await prepareNodeBuilder();
-  // Add a cache-busting query so every build gets a fresh Emscripten module and fresh getopt globals.
+  // A fresh ES-module instance avoids stale getopt/static state between builds.
   const factoryModule = await import(`${pathToFileURL(MODULE_PATH).href}?run=${Date.now()}-${Math.random()}`);
   const Zdbsp = factoryModule.default;
   const output = [];
@@ -118,13 +118,31 @@ export async function rebuildVanillaNodes(inputBytes, mapName) {
   const source = '/geometry-source.wad';
   const target = '/geometry-built.wad';
   zdbsp.FS.writeFile(source, new Uint8Array(Buffer.from(inputBytes)));
-  const args = ['zdbsp', '--zero-reject', '--no-prune', `--map=${String(mapName).toUpperCase()}`, source, `--output=${target}`];
+
+  // Match the upstream wrapper demo: -o output syntax plus async ccall. Long
+  // options select the vanilla-compatible derived-data policy we need.
+  const args = [
+    'zdbsp',
+    '--zero-reject',
+    '--no-prune',
+    `--map=${String(mapName).toUpperCase()}`,
+    source,
+    '-o',
+    target
+  ];
   const { ptrs, argv } = await allocArgv(zdbsp, args);
   let exitCode = 0;
   try {
-    const result = zdbsp.ccall('main', 'number', ['number', 'number'], [args.length, argv]);
+    const result = await zdbsp.ccall(
+      'main',
+      'number',
+      ['number', 'number'],
+      [args.length, argv],
+      { async: true }
+    );
     if (Number.isFinite(result)) exitCode = Number(result);
   } catch (error) {
+    // Emscripten main may report a normal process exit as ExitStatus(0).
     if (typeof error?.status === 'number' && error.status === 0) exitCode = 0;
     else throw new Error(`ZDBSP failed: ${error?.message || error}\n${errors.join('\n')}`);
   } finally {
