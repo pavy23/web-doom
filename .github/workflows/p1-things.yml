@@ -9,6 +9,7 @@ on:
       - "mcp/p0_server.js"
       - "mcp/p1_server.js"
       - "mcp/p1_things_selftest.mjs"
+      - "mcp/p1_runtime_selftest.mjs"
       - "mcp/package.json"
       - ".github/workflows/p1-things.yml"
   pull_request:
@@ -19,6 +20,7 @@ on:
       - "mcp/p0_server.js"
       - "mcp/p1_server.js"
       - "mcp/p1_things_selftest.mjs"
+      - "mcp/p1_runtime_selftest.mjs"
       - "mcp/package.json"
       - ".github/workflows/p1-things.yml"
   workflow_dispatch:
@@ -29,7 +31,7 @@ permissions:
 jobs:
   p1-things:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout P1 branch
         uses: actions/checkout@v4
@@ -49,6 +51,7 @@ jobs:
           node --check mcp/p0_server.js
           node --check mcp/p1_server.js
           node --check mcp/p1_things_selftest.mjs
+          node --check mcp/p1_runtime_selftest.mjs
 
       - name: Instantiate P1 MCP server
         run: |
@@ -79,3 +82,8 @@ jobs:
         run: |
           cd mcp
           npm run test:experiment
+
+      - name: Run P1 authored THINGS runtime regression
+        run: |
+          cd mcp
+          node p1_runtime_selftest.mjs
