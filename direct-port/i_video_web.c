@@ -26,10 +26,49 @@ static byte web_rgba[SCREENWIDTH * SCREENHEIGHT * 4];
 static int graphics_ready;
 static int mouse_buttons;
 
+// Install a browser-native pointer-lock gesture on the game canvas.  This is
+// intentionally done from the platform layer instead of changing LinuxDOOM's
+// gameplay code.  A click captures the mouse; Esc releases it as usual.
+EM_JS(void, web_install_pointer_lock, (), {
+    const canvas = (typeof Module !== 'undefined' && Module.canvas)
+        ? Module.canvas
+        : document.getElementById('canvas');
+
+    if (!canvas || canvas.dataset.doomPointerLockInstalled === '1')
+        return;
+
+    canvas.dataset.doomPointerLockInstalled = '1';
+
+    const updateCursor = () => {
+        const locked = document.pointerLockElement === canvas;
+        canvas.style.cursor = locked ? 'none' : 'default';
+    };
+
+    canvas.addEventListener('click', () => {
+        canvas.focus();
+        if (document.pointerLockElement === canvas || !canvas.requestPointerLock)
+            return;
+
+        try {
+            const request = canvas.requestPointerLock();
+            if (request && typeof request.catch === 'function')
+                request.catch(err => console.warn('DOOM pointer lock failed:', err));
+        } catch (err) {
+            console.warn('DOOM pointer lock failed:', err);
+        }
+    });
+
+    document.addEventListener('pointerlockchange', updateCursor);
+    document.addEventListener('pointerlockerror', updateCursor);
+    updateCursor();
+});
+
 static int translate_key(SDL_Keycode key)
 {
     switch (key)
     {
+        // Keep the original arrow-key behavior: left/right rotate,
+        // up/down move forward/backward.
         case SDLK_LEFT:      return KEY_LEFTARROW;
         case SDLK_RIGHT:     return KEY_RIGHTARROW;
         case SDLK_UP:        return KEY_UPARROW;
@@ -63,11 +102,13 @@ static int translate_key(SDL_Keycode key)
         case SDLK_LALT:
         case SDLK_RALT:      return KEY_RALT;
 
-        // Browser-friendly aliases while preserving the original controls.
+        // Modern browser controls layered onto the original bindings.
+        // LinuxDOOM already binds ',' and '.' to dedicated strafe-left/right,
+        // so A/D can strafe without modifying G_BuildTiccmd.
         case SDLK_w:         return KEY_UPARROW;
         case SDLK_s:         return KEY_DOWNARROW;
-        case SDLK_a:         return KEY_LEFTARROW;
-        case SDLK_d:         return KEY_RIGHTARROW;
+        case SDLK_a:         return ',';
+        case SDLK_d:         return '.';
         case SDLK_j:         return KEY_RCTRL;
         case SDLK_e:         return ' ';
         default:
@@ -133,6 +174,7 @@ void I_InitGraphics(void)
 
     memset(web_palette, 0, sizeof(web_palette));
     memset(web_rgba, 0, sizeof(web_rgba));
+    web_install_pointer_lock();
     graphics_ready = 1;
 }
 
@@ -243,8 +285,16 @@ void I_StartTic(void)
             case SDL_MOUSEMOTION:
                 ev.type = ev_mouse;
                 ev.data1 = mouse_buttons;
-                ev.data2 = sdl.motion.xrel << 2;
-                ev.data3 = -(sdl.motion.yrel << 2);
+
+                // The previous browser adapter multiplied horizontal motion by
+                // four.  Use eight for roughly 2x turn sensitivity while still
+                // passing through LinuxDOOM's own mouseSensitivity scaling.
+                ev.data2 = sdl.motion.xrel * 8;
+
+                // Vanilla DOOM maps mouse Y to forward/back movement.  For a
+                // modern WASD + pointer-lock scheme, ignore vertical mouse
+                // movement instead of allowing accidental forward/back motion.
+                ev.data3 = 0;
                 D_PostEvent(&ev);
                 break;
             case SDL_QUIT:
