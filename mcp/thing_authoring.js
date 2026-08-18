@@ -86,7 +86,7 @@ function thingType(input = {}) {
     if (!entry) throw new Error(`Unknown catalog thing key: ${input.key}`);
     return entry.doomEdNum;
   }
-  const n = Math.trunc(Number(input.doomEdNum ?? input.type));
+  const n = Math.trunc(Number(input.doomEdNum));
   if (!Number.isFinite(n) || n < 1 || n > 32767) throw new Error('doomEdNum must be 1..32767');
   return n;
 }
@@ -174,7 +174,7 @@ function viewThing(thing, index) {
 }
 
 function normalizedThing(input = {}, existing = null) {
-  const doomEdNum = input.key != null || input.doomEdNum != null || input.type != null
+  const doomEdNum = input.key != null || input.doomEdNum != null
     ? thingType(input)
     : existing?.doomEdNum;
   if (!doomEdNum) throw new Error('Thing type is required');
@@ -204,7 +204,7 @@ function validateThings(workspace, base) {
     if (!Number.isInteger(thing.doomEdNum) || thing.doomEdNum < 1 || thing.doomEdNum > 32767) addError('THING_TYPE', `Thing ${index} has invalid DoomEd number ${thing.doomEdNum}`, { thing: index });
     if (!Number.isInteger(thing.flags) || thing.flags < 0 || thing.flags > 32767) addError('THING_FLAGS', `Thing ${index} has invalid flags ${thing.flags}`, { thing: index });
     if ((thing.flags & 7) === 0 && ![1, 2, 3, 4, 11].includes(thing.doomEdNum)) addWarning('THING_NO_SKILL', `Thing ${index} is disabled on every single-player skill`, { thing: index });
-    if (!BY_NUM.has(thing.doomEdNum)) addWarning('THING_UNKNOWN_TYPE', `Thing ${index} uses uncatalogued DoomEd number ${thing.doomEdNum}`, { thing: index, doomEdNum: thing.doomEdNum });
+    if (index >= workspace.originalCounts.things && !BY_NUM.has(thing.doomEdNum)) addWarning('THING_UNKNOWN_TYPE', `New thing ${index} uses uncatalogued DoomEd number ${thing.doomEdNum}`, { thing: index, doomEdNum: thing.doomEdNum });
     if ([1, 2, 3, 4, 11].includes(thing.doomEdNum)) startCounts.set(thing.doomEdNum, (startCounts.get(thing.doomEdNum) || 0) + 1);
   });
 
@@ -278,7 +278,7 @@ export function installThingAuthoring(GeometryWorkspace) {
     return viewThing(things[index], index);
   };
 
-  GeometryWorkspace.prototype.updateThing = function updateThing({ thing, ...changes } = {}) {
+  GeometryWorkspace.prototype.updateThing = function updateThing({ thing, type: _operation, map: _map, ...changes } = {}) {
     const things = ensureThings(this);
     const index = Math.trunc(Number(thing));
     if (!things[index]) throw new Error(`Unknown thing ${thing}`);
