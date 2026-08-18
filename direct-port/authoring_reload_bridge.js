@@ -29,6 +29,32 @@
     return name;
   }
 
+  // Emscripten SDL2's default assertion UI and its default stdin fallback both
+  // use window.prompt(). A modal prompt is unsafe while the localhost MCP bridge
+  // is synchronously waiting for a runtime reload call to return. Suppress it
+  // only around the reload operation, log the exact message for diagnosis, and
+  // restore the browser's original prompt immediately afterward.
+  function withoutInteractivePrompt(operation) {
+    const originalPrompt = window.prompt;
+    window.prompt = function doomMcpReloadPrompt(message, defaultValue) {
+      const text = String(message || '');
+      console.warn('DOOM MCP suppressed interactive prompt during PWAD reload:', text);
+
+      // SDL assertion dialog expects one of [a,r,i,A]. Ignore this occurrence so
+      // the engine can return control to MCP; the assertion text remains logged.
+      if (/Abort\/Retry\/Ignore\/AlwaysIgnore\?/i.test(text)) return 'i';
+
+      // Emscripten stdin fallback interprets null as EOF.
+      return null;
+    };
+
+    try {
+      return operation();
+    } finally {
+      window.prompt = originalPrompt;
+    }
+  }
+
   window.DoomControl.loadPwad = function loadPwad(filename, base64) {
     requireAuthoringRuntime();
     const bytes = decodeBase64(base64);
@@ -39,7 +65,9 @@
     const virtualPath = `/mcp_import_${Date.now()}_${safeName}`;
     Module.FS.writeFile(virtualPath, bytes);
 
-    const json = Module.ccall('doomctl_load_pwad_json', 'string', ['string'], [virtualPath]);
+    const json = withoutInteractivePrompt(() =>
+      Module.ccall('doomctl_load_pwad_json', 'string', ['string'], [virtualPath])
+    );
     const result = JSON.parse(json);
     if (!result.loaded) throw new Error(result.error || `PWAD load failed (${result.code || 'unknown'})`);
     return { ...result, filename: safeName, virtualPath, bytes: bytes.length };
@@ -47,7 +75,9 @@
 
   window.DoomControl.reloadCurrentMap = function reloadCurrentMap() {
     requireAuthoringRuntime();
-    const json = Module.ccall('doomctl_reload_current_map_json', 'string', [], []);
+    const json = withoutInteractivePrompt(() =>
+      Module.ccall('doomctl_reload_current_map_json', 'string', [], [])
+    );
     const result = JSON.parse(json);
     if (!result.reloaded) throw new Error(result.error || 'Map reload failed');
     return result;
