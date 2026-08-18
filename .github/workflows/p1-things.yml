@@ -1,0 +1,81 @@
+name: Validate DOOM MCP P1.1 THINGS authoring
+
+on:
+  push:
+    branches: ["p1-richer-authoring-nav"]
+    paths:
+      - "mcp/thing_authoring.js"
+      - "mcp/episode_workspace.js"
+      - "mcp/p0_server.js"
+      - "mcp/p1_server.js"
+      - "mcp/p1_things_selftest.mjs"
+      - "mcp/package.json"
+      - ".github/workflows/p1-things.yml"
+  pull_request:
+    branches: ["p0-episode-authoring"]
+    paths:
+      - "mcp/thing_authoring.js"
+      - "mcp/episode_workspace.js"
+      - "mcp/p0_server.js"
+      - "mcp/p1_server.js"
+      - "mcp/p1_things_selftest.mjs"
+      - "mcp/package.json"
+      - ".github/workflows/p1-things.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  p1-things:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout P1 branch
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install MCP dependencies
+        run: npm install --prefix mcp --ignore-scripts --no-audit --no-fund
+
+      - name: Syntax-check P1 modules
+        run: |
+          node --check mcp/thing_authoring.js
+          node --check mcp/episode_workspace.js
+          node --check mcp/p0_server.js
+          node --check mcp/p1_server.js
+          node --check mcp/p1_things_selftest.mjs
+
+      - name: Instantiate P1 MCP server
+        run: |
+          cd mcp
+          node --input-type=module -e "import('./p1_server.js').then(m => { const s=m.createMcpServer(); if(!s) process.exit(1); console.error('P1.1 MCP server import passed'); })"
+
+      - name: Run P0 transaction and nodebuilder regression
+        run: |
+          cd mcp
+          npm run test:p0
+
+      - name: Run P1.1 general THINGS tests
+        run: |
+          cd mcp
+          npm run test:p1
+
+      - name: Install Playwright Chromium
+        run: |
+          cd mcp
+          npx playwright install --with-deps chromium
+
+      - name: Run P0 real browser regression
+        run: |
+          cd mcp
+          node p0_browser_e2e.mjs
+
+      - name: Run P0 automated episode experiment regression
+        run: |
+          cd mcp
+          npm run test:experiment
