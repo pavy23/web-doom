@@ -7,8 +7,6 @@ import { chromium } from 'playwright';
 const DEFAULT_PLAY_URL = 'http://127.0.0.1:3777/';
 const MAP_RE = /^(?:E([1-9])M([1-9])|MAP(\d\d))$/;
 
-function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
-
 function normalizeMapName(value) {
   const map = String(value || '').trim().toUpperCase();
   if (!MAP_RE.test(map)) throw new Error(`Unsupported experiment map name: ${value}`);
@@ -55,8 +53,6 @@ async function launchChromium() {
   try {
     return await chromium.launch({ headless: true, args });
   } catch (firstError) {
-    // Local developer convenience: use installed Chrome when Playwright's managed
-    // Chromium has not been installed yet. CI installs managed Chromium explicitly.
     try {
       return await chromium.launch({ headless: true, channel: 'chrome', args });
     } catch {
@@ -88,6 +84,16 @@ async function waitForPlayableState(page, expected, timeout = 30000) {
   return page.evaluate(() => window.DoomControl.getState());
 }
 
+async function warpWithRuntime(page, mapName) {
+  const expected = mapWarpArgs(mapName);
+  const result = await page.evaluate(({ episode, map }) => Module.ccall(
+    'doomctl_warp', 'number', ['number', 'number'], [episode, map]
+  ), expected);
+  if (result !== 1) throw new Error(`LinuxDOOM rejected warp to ${mapName}`);
+  const state = await waitForPlayableState(page, expected, 30000);
+  return { state, expected };
+}
+
 async function coldBootCandidate(page, config, wadBase64) {
   await page.goto(config.playUrl || DEFAULT_PLAY_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
   await waitForRuntime(page);
@@ -107,18 +113,14 @@ async function coldBootCandidate(page, config, wadBase64) {
   await page.waitForSelector('#start.ready:not([disabled])', { timeout: 60000 });
   await page.click('#start');
 
-  const firstMap = mapWarpArgs(config.maps[0]);
-  const state = await waitForPlayableState(page, firstMap, 60000);
-  return { staging, state, coldBoot: await page.evaluate(() => window.DoomColdBoot || null) };
+  // Classic DOOM starts in its title/demo loop, not in a live map. Force the
+  // first requested map exactly like the existing browser E2E does.
+  const first = await warpWithRuntime(page, config.maps[0]);
+  return { staging, state: first.state, coldBoot: await page.evaluate(() => window.DoomColdBoot || null) };
 }
 
 async function warpTo(page, mapName) {
-  const expected = mapWarpArgs(mapName);
-  const result = await page.evaluate(({ episode, map }) => Module.ccall(
-    'doomctl_warp', 'number', ['number', 'number'], [episode, map]
-  ), expected);
-  if (result !== 1) throw new Error(`LinuxDOOM rejected warp to ${mapName}`);
-  return waitForPlayableState(page, expected, 30000);
+  return (await warpWithRuntime(page, mapName)).state;
 }
 
 async function runExactAction(page, action) {
