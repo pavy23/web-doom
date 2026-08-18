@@ -10,7 +10,7 @@ import {
 } from './geometry.js';
 import { rebuildVanillaNodes } from './nodebuilder.js';
 
-export const EPISODE_WORKSPACE_VERSION = '2.1.0-p0';
+export const EPISODE_WORKSPACE_VERSION = '2.2.0-p1.1';
 export const DEFAULT_EPISODE_MAPS = Object.freeze([
   'E1M1', 'E1M2', 'E1M3', 'E1M4', 'E1M5', 'E1M6', 'E1M7', 'E1M8'
 ]);
@@ -74,6 +74,7 @@ function validationView(validation) {
     ok: Boolean(validation?.ok),
     errors: validation?.errors || [],
     warnings: validation?.warnings || [],
+    issues: validation?.issues || null,
     topology: validation?.topology || null,
     summary: validation?.summary || null
   };
@@ -117,6 +118,18 @@ function applyEditToWorkspace(workspace, edit) {
       return workspace.addSidedef(edit);
     case 'add_linedef':
       return workspace.addLinedef(edit);
+    case 'thing_add':
+      if (typeof workspace.addThing !== 'function') throw new Error('P1 THINGS authoring layer is not installed');
+      return workspace.addThing(edit);
+    case 'thing_move':
+      if (typeof workspace.moveThing !== 'function') throw new Error('P1 THINGS authoring layer is not installed');
+      return workspace.moveThing(edit);
+    case 'thing_update':
+      if (typeof workspace.updateThing !== 'function') throw new Error('P1 THINGS authoring layer is not installed');
+      return workspace.updateThing(edit);
+    case 'thing_delete':
+      if (typeof workspace.deleteThing !== 'function') throw new Error('P1 THINGS authoring layer is not installed');
+      return workspace.deleteThing(edit);
     case 'undo':
       return workspace.undo();
     default:
@@ -211,7 +224,6 @@ export class EpisodeWorkspace {
       }
       return { transaction: this.summary().transaction, results };
     } catch (error) {
-      // Atomic semantics: any failed edit restores the entire map-set snapshot.
       const transactionId = this.transaction.id;
       this.rollbackTransaction();
       throw new Error(`Episode transaction ${transactionId} rolled back after edit failure: ${error?.message || error}`);
