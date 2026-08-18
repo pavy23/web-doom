@@ -9,7 +9,6 @@ const ML_TWOSIDED = 4;
 const PATCH_MARK = Symbol.for('web-doom.p0.full-topology-validator');
 
 function keyPoint(p) { return `${p.x},${p.y}`; }
-function edgeKey(a, b) { return a < b ? `${a}:${b}` : `${b}:${a}`; }
 function cross(a, b, c) { return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x); }
 function samePoint(a, b) { return a.x === b.x && a.y === b.y; }
 function between(v, a, b) { return v >= Math.min(a, b) && v <= Math.max(a, b); }
@@ -78,18 +77,18 @@ function changedSectors(workspace, touchedLines) {
   return touched;
 }
 
-function pushIssue(target, code, message, details = {}) {
-  target.push({ code, message, ...details });
+function addIssue(strings, issues, code, message, details = {}) {
+  strings.push(message);
+  issues.push({ code, message, ...details });
 }
 
 export function validateFullTopology(workspace, baseResult = null) {
   const base = baseResult || { ok: true, errors: [], warnings: [], summary: workspace.summary?.() };
-  const errors = (base.errors || []).map(message => typeof message === 'string'
-    ? { code: 'BASE_VALIDATION', message }
-    : message);
-  const warnings = (base.warnings || []).map(message => typeof message === 'string'
-    ? { code: 'BASE_WARNING', message }
-    : message);
+  // Keep errors/warnings as strings because v2 callers join() them when a build fails.
+  const errors = [...(base.errors || [])].map(String);
+  const warnings = [...(base.warnings || [])].map(String);
+  const errorIssues = errors.map(message => ({ code: 'BASE_VALIDATION', message }));
+  const warningIssues = warnings.map(message => ({ code: 'BASE_WARNING', message }));
 
   const g = workspace.geometry;
   const touchedVertices = changedVertices(workspace);
@@ -102,7 +101,7 @@ export function validateFullTopology(workspace, baseResult = null) {
     const key = keyPoint(vertex);
     const prior = points.get(key);
     if (prior != null && (index >= workspace.originalCounts.vertices || prior >= workspace.originalCounts.vertices)) {
-      pushIssue(errors, 'DUPLICATE_VERTEX', `Vertex ${index} duplicates vertex ${prior} at (${vertex.x}, ${vertex.y})`, { vertices: [prior, index] });
+      addIssue(errors, errorIssues, 'DUPLICATE_VERTEX', `Vertex ${index} duplicates vertex ${prior} at (${vertex.x}, ${vertex.y})`, { vertices: [prior, index] });
     } else if (prior == null) {
       points.set(key, index);
     }
@@ -117,7 +116,7 @@ export function validateFullTopology(workspace, baseResult = null) {
     const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
     const prior = edges.get(key);
     if (prior != null && (touchedLines.has(index) || touchedLines.has(prior))) {
-      pushIssue(errors, 'DUPLICATE_LINEDEF', `Linedef ${index} duplicates linedef ${prior}`, { linedefs: [prior, index] });
+      addIssue(errors, errorIssues, 'DUPLICATE_LINEDEF', `Linedef ${index} duplicates linedef ${prior}`, { linedefs: [prior, index] });
     } else if (prior == null) {
       edges.set(key, index);
     }
@@ -138,11 +137,11 @@ export function validateFullTopology(workspace, baseResult = null) {
 
       const sharesVertexId = li.v1 === lj.v1 || li.v1 === lj.v2 || li.v2 === lj.v1 || li.v2 === lj.v2;
       if (properIntersection(a, b, c, d)) {
-        pushIssue(errors, 'LINEDEF_CROSSING', `Linedef ${i} crosses linedef ${j}`, { linedefs: [i, j] });
+        addIssue(errors, errorIssues, 'LINEDEF_CROSSING', `Linedef ${i} crosses linedef ${j}`, { linedefs: [i, j] });
         continue;
       }
       if (collinearOverlap(a, b, c, d) && !sharesVertexId) {
-        pushIssue(errors, 'COLLINEAR_OVERLAP', `Linedef ${i} overlaps linedef ${j} without a shared vertex`, { linedefs: [i, j] });
+        addIssue(errors, errorIssues, 'COLLINEAR_OVERLAP', `Linedef ${i} overlaps linedef ${j} without a shared vertex`, { linedefs: [i, j] });
         continue;
       }
 
@@ -153,7 +152,7 @@ export function validateFullTopology(workspace, baseResult = null) {
       ];
       for (const [p, vertexId, s1, s2, otherLine] of cases) {
         if (pointOnSegmentInterior(p, s1, s2)) {
-          pushIssue(errors, 'T_JUNCTION', `Vertex ${vertexId} lies on the interior of linedef ${otherLine} without splitting it`, { vertex: vertexId, linedefs: [i, j] });
+          addIssue(errors, errorIssues, 'T_JUNCTION', `Vertex ${vertexId} lies on the interior of linedef ${otherLine} without splitting it`, { vertex: vertexId, linedefs: [i, j] });
           break;
         }
       }
@@ -168,13 +167,13 @@ export function validateFullTopology(workspace, baseResult = null) {
     if (line.left !== NO_SIDE && line.left < sideUse.length) sideUse[line.left]++;
   });
   for (let i = workspace.originalCounts.sidedefs; i < sideUse.length; i++) {
-    if (sideUse[i] === 0) pushIssue(errors, 'ORPHAN_SIDEDEF', `New sidedef ${i} is not referenced by any linedef`, { sidedef: i });
+    if (sideUse[i] === 0) addIssue(errors, errorIssues, 'ORPHAN_SIDEDEF', `New sidedef ${i} is not referenced by any linedef`, { sidedef: i });
   }
 
   const sectorUse = new Array(g.sectors.length).fill(0);
   g.sidedefs.forEach(side => { if (side.sector < sectorUse.length) sectorUse[side.sector]++; });
   for (let i = workspace.originalCounts.sectors; i < sectorUse.length; i++) {
-    if (sectorUse[i] === 0) pushIssue(errors, 'ORPHAN_SECTOR', `New sector ${i} has no sidedefs`, { sector: i });
+    if (sectorUse[i] === 0) addIssue(errors, errorIssues, 'ORPHAN_SECTOR', `New sector ${i} has no sidedefs`, { sector: i });
   }
 
   // Two-sided semantics and affected-sector boundary/manifold checks.
@@ -183,10 +182,10 @@ export function validateFullTopology(workspace, baseResult = null) {
     const hasRight = line.right !== NO_SIDE, hasLeft = line.left !== NO_SIDE;
     const flagTwoSided = Boolean(line.flags & ML_TWOSIDED);
     if (hasRight && hasLeft && !flagTwoSided) {
-      pushIssue(errors, 'TWOSIDED_FLAG_MISSING', `Linedef ${index} has two sidedefs but ML_TWOSIDED is not set`, { linedef: index });
+      addIssue(errors, errorIssues, 'TWOSIDED_FLAG_MISSING', `Linedef ${index} has two sidedefs but ML_TWOSIDED is not set`, { linedef: index });
     }
     if (!(hasRight && hasLeft) && flagTwoSided) {
-      pushIssue(errors, 'TWOSIDED_FLAG_ORPHAN', `Linedef ${index} has ML_TWOSIDED but does not have two sidedefs`, { linedef: index });
+      addIssue(errors, errorIssues, 'TWOSIDED_FLAG_ORPHAN', `Linedef ${index} has ML_TWOSIDED but does not have two sidedefs`, { linedef: index });
     }
   });
 
@@ -201,11 +200,11 @@ export function validateFullTopology(workspace, baseResult = null) {
       }
     });
     if (boundaryLines.length < 3) {
-      pushIssue(errors, 'SECTOR_TOO_FEW_EDGES', `Sector ${sector} has fewer than three boundary linedefs`, { sector, linedefs: boundaryLines });
+      addIssue(errors, errorIssues, 'SECTOR_TOO_FEW_EDGES', `Sector ${sector} has fewer than three boundary linedefs`, { sector, linedefs: boundaryLines });
       continue;
     }
     for (const [vertex, d] of degree) {
-      if (d !== 2) pushIssue(errors, 'NON_MANIFOLD_SECTOR_VERTEX', `Sector ${sector} boundary vertex ${vertex} has degree ${d}, expected 2`, { sector, vertex, degree: d });
+      if (d !== 2) addIssue(errors, errorIssues, 'NON_MANIFOLD_SECTOR_VERTEX', `Sector ${sector} boundary vertex ${vertex} has degree ${d}, expected 2`, { sector, vertex, degree: d });
     }
 
     // A sector boundary must not self-cross after an affected edit.
@@ -216,7 +215,7 @@ export function validateFullTopology(workspace, baseResult = null) {
         const ly = g.linedefs[boundaryLines[y]];
         if ([lx.v1, lx.v2].includes(ly.v1) || [lx.v1, lx.v2].includes(ly.v2)) continue;
         if (properIntersection(a, b, g.vertices[ly.v1], g.vertices[ly.v2])) {
-          pushIssue(errors, 'SECTOR_SELF_INTERSECTION', `Sector ${sector} boundary crosses between linedefs ${boundaryLines[x]} and ${boundaryLines[y]}`, { sector, linedefs: [boundaryLines[x], boundaryLines[y]] });
+          addIssue(errors, errorIssues, 'SECTOR_SELF_INTERSECTION', `Sector ${sector} boundary crosses between linedefs ${boundaryLines[x]} and ${boundaryLines[y]}`, { sector, linedefs: [boundaryLines[x], boundaryLines[y]] });
         }
       }
     }
@@ -230,13 +229,14 @@ export function validateFullTopology(workspace, baseResult = null) {
   }
   const legacyDuplicates = [...legacyPointCounts.values()].filter(count => count > 1).length;
   if (legacyDuplicates) {
-    pushIssue(warnings, 'LEGACY_DUPLICATE_VERTICES', `Baseline contains ${legacyDuplicates} duplicated vertex coordinates; preserved for vanilla compatibility`, { count: legacyDuplicates });
+    addIssue(warnings, warningIssues, 'LEGACY_DUPLICATE_VERTICES', `Baseline contains ${legacyDuplicates} duplicated vertex coordinates; preserved for vanilla compatibility`, { count: legacyDuplicates });
   }
 
   return {
     ok: errors.length === 0,
     errors,
     warnings,
+    issues: { errors: errorIssues, warnings: warningIssues },
     summary: base.summary || workspace.summary?.(),
     topology: {
       touchedVertices: [...touchedVertices].sort((a, b) => a - b),
