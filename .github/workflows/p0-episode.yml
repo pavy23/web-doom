@@ -11,6 +11,16 @@ on:
       - "mcp/p0_browser_e2e.mjs"
       - "mcp/package.json"
       - ".github/workflows/p0-episode.yml"
+  pull_request:
+    branches: ["direct-linuxdoom"]
+    paths:
+      - "mcp/topology_validator.js"
+      - "mcp/episode_workspace.js"
+      - "mcp/p0_server.js"
+      - "mcp/p0_selftest.mjs"
+      - "mcp/p0_browser_e2e.mjs"
+      - "mcp/package.json"
+      - ".github/workflows/p0-episode.yml"
   workflow_dispatch:
 
 permissions:
