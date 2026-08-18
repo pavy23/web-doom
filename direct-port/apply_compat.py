@@ -3,11 +3,13 @@
 
 The upstream 1997 gameplay/rendering code remains intact. Browser platform files are
 installed explicitly by CI; this script only resolves narrow modern-toolchain source
-collisions, restores DOS-era audio scaling, and injects the local-only v2 geometry
-bridge into the generated browser shell. Music adaptation is handled separately by
-import_vanilla_opl.py.
+collisions, restores DOS-era audio scaling, injects the local-only v2 geometry bridge,
+and (on GitHub Actions only) gates publishing on the real geometry/ZDBSP integration
+self-test. Music adaptation is handled separately by import_vanilla_opl.py.
 """
 from pathlib import Path
+import os
+import subprocess
 import sys
 
 if len(sys.argv) != 2:
@@ -15,6 +17,7 @@ if len(sys.argv) != 2:
 
 root = Path(sys.argv[1])
 script_dir = Path(__file__).resolve().parent
+repo_root = script_dir.parent
 
 # Emscripten's compat/string.h already declares `char *strupr(char *)`, while
 # LinuxDOOM 1.10 contains a local `void strupr(char *)`. Rename only Doom's
@@ -78,8 +81,23 @@ if "127.0.0.1:3781/geometry" not in s:
     s = s.replace(marker, injected + marker, 1)
 p.write_text(s)
 
+# The main direct-port workflow already executes this script before compiling.
+# On GitHub Actions, run the same real structural integration test used by the
+# dedicated v2 workflow. A publish commit therefore cannot be produced unless
+# a synthetic room can be built, passed through pinned/hash-verified ZDBSP WASM,
+# and returned with non-empty vanilla NODES/BLOCKMAP plus a correctly-sized REJECT.
+if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
+    selftest = repo_root / "mcp" / "geometry_selftest.mjs"
+    if not selftest.is_file():
+        raise SystemExit(f"geometry integration self-test missing: {selftest}")
+    node = os.environ.get("NODE_BINARY") or "node"
+    print("Running DOOM MCP v2 geometry/ZDBSP integration gate...")
+    subprocess.run([node, str(selftest)], cwd=str(selftest.parent), check=True)
+
 print("Applied LinuxDOOM/Emscripten compatibility edits:")
 print(" - w_wad.c: private strupr helper renamed to doom_strupr")
 print(" - d_main.c/m_menu.c: restored DOS 0..15 -> internal *8 audio scaling")
 print(" - shell.html: injected local-only MCP v2 geometry bridge (:3781)")
+if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
+    print(" - CI gate: structural room -> ZDBSP -> vanilla derived-lump self-test passed")
 print(" - music compatibility is prepared separately by import_vanilla_opl.py")
