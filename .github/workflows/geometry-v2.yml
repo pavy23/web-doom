@@ -1,0 +1,57 @@
+name: Validate DOOM MCP v2 geometry
+
+on:
+  push:
+    branches: ["direct-linuxdoom"]
+    paths:
+      - "mcp/geometry.js"
+      - "mcp/nodebuilder.js"
+      - "mcp/geometry_server.js"
+      - "mcp/geometry_selftest.mjs"
+      - "mcp/package.json"
+      - "direct-port/geometry_bridge.js"
+      - "direct-port/apply_compat.py"
+      - "direct-port/i_video_web.c"
+      - ".github/workflows/geometry-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  geometry:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install MCP dependencies
+        run: npm install --prefix mcp --ignore-scripts --no-audit --no-fund
+
+      - name: Syntax-check v2 modules
+        run: |
+          node --check mcp/geometry.js
+          node --check mcp/nodebuilder.js
+          node --check mcp/geometry_server.js
+          node --check mcp/geometry_selftest.mjs
+          node --check direct-port/geometry_bridge.js
+          python3 -m py_compile direct-port/apply_compat.py
+          grep -q "case SDLK_a:         return ','" direct-port/i_video_web.c
+          grep -q "case SDLK_d:         return '.'" direct-port/i_video_web.c
+          grep -q "sdl.motion.xrel \* 8" direct-port/i_video_web.c
+          grep -q "requestPointerLock" direct-port/i_video_web.c
+
+      - name: Instantiate full MCP v2 server
+        run: |
+          cd mcp
+          node --input-type=module -e "import('./geometry_server.js').then(m => { const s=m.createMcpServer(); if(!s) process.exit(1); console.error('MCP v2 server import passed'); })"
+
+      - name: Run geometry + ZDBSP WASM integration self-test
+        run: |
+          cd mcp
+          node geometry_selftest.mjs
