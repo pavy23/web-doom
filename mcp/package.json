@@ -1,16 +1,18 @@
 {
   "name": "web-doom-mcp",
-  "version": "2.1.0-p0.1",
+  "version": "2.2.0-p1.1",
   "private": true,
   "type": "module",
-  "description": "Local DOOM MCP v2.1 P0: full topology validation, atomic multi-map authoring, verified episode builds and automated browser regression experiments",
+  "description": "Local DOOM MCP P1.1: general THINGS authoring on top of P0 atomic multi-map authoring and automated browser experiments",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "start": "node p0_experiment_server.js",
+    "start": "node p1_server.js",
+    "start:p0": "node p0_experiment_server.js",
     "start:p0-core": "node p0_server.js",
     "start:v2": "node geometry_server.js",
+    "test:p1": "node p1_things_selftest.mjs",
     "test:p0": "node p0_selftest.mjs",
     "test:experiment": "node p0_experiment_selftest.mjs",
     "prepare-experiment": "playwright install chromium",
