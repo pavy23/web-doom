@@ -1,36 +1,27 @@
-# Web DOOM MCP — v1 Closed-loop AI Level Authoring
+# Web DOOM MCP — v1.1 Closed-loop Authoring + Live Cheats
 
 This directory contains the local MCP control plane for the direct LinuxDOOM WebAssembly port.
 
-Current MCP version: **1.0.0**.
+Current MCP version: **1.1.0**.
 
-v1.0 closes the first full authoring loop:
+v1.1 retains the complete v1.0 authoring loop and adds two live-session capabilities:
+
+- explicit DOOM cheat controls for debugging and navigation,
+- stronger desktop-browser audio diagnostics and recovery.
+
+Cheats and audio controls are **playtest-only**. They never enter the authoring ChangeSet and are never serialized into a PWAD.
 
 ```text
-AI design goal
-  ↓
-bounded semantic edits
-  ↓
-candidate PWAD checkpoint
-  ↓
-reload candidate as fresh baseline
-  ↓
-autonomous deterministic playtest
-  ↓
-telemetry score + final PNG
-  ↓
-AI vision rubric
-  ↓
-pass / fail + revision hints
-  ↓
-next bounded iteration or restore older candidate
-  ↓
-passing candidate
-  ↓
-final playable PWAD
+MCP-host AI
+   │
+   ├─ author / checkpoint / reload / evaluate
+   ├─ autonomous player input
+   ├─ live cheats
+   └─ audio diagnostics
+   │
+   ▼
+LinuxDOOM WebAssembly
 ```
-
-The MCP server does **not** embed another hidden LLM. The connected MCP-host AI remains responsible for interpreting the design goal and choosing each bounded edit plan. The v1 orchestrator enforces limits, checkpoints every iteration, runs deterministic trials, evaluates results and only finalizes an explicitly selected or passing candidate.
 
 ## Setup
 
@@ -45,7 +36,7 @@ npm install
 npm start
 ```
 
-`npm start` now launches `v1_server.js`.
+`npm start` launches **`cheat_server.js`**, which composes all v1.0 tools plus v1.1 cheat/audio tools.
 
 Open:
 
@@ -60,7 +51,8 @@ Local bridges:
 ```text
 127.0.0.1:3777/control       bounded authoring
 127.0.0.1:3778/playtest      vision / telemetry / exact-tic / agent input
-127.0.0.1:3779/orchestrate   v1 compositional session loop
+127.0.0.1:3779/orchestrate   closed-loop authoring sessions
+127.0.0.1:3780/cheats        live cheats + audio diagnostics
 ```
 
 Generic MCP host configuration:
@@ -68,230 +60,186 @@ Generic MCP host configuration:
 ```json
 {
   "command": "node",
-  "args": ["C:/absolute/path/to/web-doom/mcp/v1_server.js"]
+  "args": ["C:/absolute/path/to/web-doom/mcp/cheat_server.js"]
 }
 ```
 
-Do not run `npm start` separately if the MCP host is already launching the same `v1_server.js`, unless you deliberately use different local ports.
+If the MCP host launches `cheat_server.js`, do not also run `npm start` on the same ports.
 
-# v1.0 session tools
+# v1.1 live cheat tools
 
-## `doom_begin_design_session`
+## `doom_cheat_status`
 
-Starts a bounded design session and immediately checkpoints the current map as a baseline PWAD.
-
-Inputs include:
+Reads the live player state relevant to debugging:
 
 ```text
-goal                 structured v0.9 design goal
-maxIterations        1..8, default 5
-finalFilename        requested final PWAD name
-adoptPendingChanges  false by default
+god mode
+noclip
+health / armor
+weapons
+keys
+bullets / shells / cells / rockets
+active power-ups
+current episode / map
 ```
 
-If persistent authoring edits are already pending, the tool refuses to silently absorb them unless `adoptPendingChanges=true` is explicit.
+## `doom_set_god_mode`
 
-Example goal:
+Enable or disable the original-style `CF_GODMODE` player flag.
 
-```json
-{
-  "name": "opening_horror_encounter",
-  "description": "Tense, readable and survivable opening.",
-  "hard": {
-    "maxDeaths": 0,
-    "minFinalHealth": 20
-  },
-  "targets": {
-    "maxDamageTaken": 45,
-    "minVisitedSectors": 3,
-    "minDistanceUnits": 180,
-    "maxStuckActions": 1,
-    "minKills": 2,
-    "minScore": 0.75
-  },
-  "weights": {
-    "survivability": 0.35,
-    "traversal": 0.25,
-    "combat": 0.15,
-    "pacing": 0.10,
-    "visual": 0.15
-  },
-  "visualRubric": [
-    { "id": "atmosphere", "minScore": 0.75 },
-    { "id": "enemy_readability", "minScore": 0.65 },
-    { "id": "navigation_clarity", "minScore": 0.65 }
-  ]
-}
-```
-
-A baseline artifact such as this is written into `mcp/exports/`:
+Example natural-language request:
 
 ```text
-session-0001-baseline.wad
+무적 켜줘.
 ```
 
-## `doom_run_authoring_iteration`
+## `doom_set_noclip`
 
-Runs one complete candidate iteration.
-
-One call performs:
+Enable or disable the original-style `CF_NOCLIP` flag.
 
 ```text
-apply <= 12 bounded authoring edits
-  ↓
-export session-0001-iter-01.wad
-  ↓
-validate + reload that PWAD
-  ↓
-ChangeSet becomes zero
-  ↓
-restart map from candidate baseline
-  ↓
-run <= 16 deterministic input actions
-  ↓
-<= 700 actual P_Ticker world tics
-  ↓
-evaluate telemetry
-  ↓
-return score + failure reasons + revision hints + final PNG
+노클립 켜줘.
 ```
 
-Allowed persistent edit types are deliberately bounded:
+## `doom_give_arsenal`
+
+Gives the classic IDFA/IDKFA-style live loadout:
+
+- 200 armor,
+- all weapons,
+- max ammunition,
+- optionally all keys.
 
 ```text
-sector_light
-a spawn_enemy
-remove_nearest_enemy
-linedef_action
-wall_texture
-sector_flat
+무기, 탄약, 키 전부 줘.
 ```
 
-`spawn_enemy` is restricted to the existing Episode-1-safe allow-list. `linedef_action` uses the existing Vanilla-compatible door preset allow-list. Wall and flat names are still validated by the engine against loaded IWAD assets.
+`includeKeys=false` gives weapons/ammo/armor without the keys.
 
-Example conceptual iteration:
+## `doom_give_keys`
 
-```json
-{
-  "sessionId": "session-0001",
-  "rationale": "Opening is too bright and combat pressure is weak.",
-  "edits": [
-    { "type": "sector_light", "sector": 3, "light": 48 },
-    { "type": "spawn_enemy", "enemy": "imp", "count": 2, "distance": 192 }
-  ],
-  "actions": [
-    { "forward": 1, "tics": 30 },
-    { "turn": 0.4, "tics": 15 },
-    { "forward": 1, "attack": true, "tics": 45 },
-    { "use": true, "tics": 2 }
-  ]
-}
+Gives all available card/skull keys without changing weapons or ammo.
+
+## `doom_set_health_armor`
+
+Directly sets live health and armor within bounded values:
+
+```text
+health     1..200
+armor      0..200
+armorType  0..2
 ```
 
-The returned PNG is the actual SDL/Emscripten canvas after the candidate trial.
+## `doom_give_powerup`
 
-## `doom_review_design_iteration`
+Uses the original DOOM power state for one of:
 
-Attach AI-vision scores to the frame returned by an iteration.
+```text
+invulnerability
+berserk
+invisibility
+radiation
+allmap
+lightamp
+```
+
+## `doom_warp`
+
+Starts another valid map through LinuxDOOM `G_InitNew()` at the current skill.
+
+The public shareware IWAD supports:
+
+```text
+E1M1 .. E1M9
+```
 
 Example:
 
-```json
-{
-  "sessionId": "session-0001",
-  "iteration": 1,
-  "visualAssessment": {
-    "atmosphere": {
-      "score": 0.88,
-      "reason": "Strong dark hierarchy and distant silhouette tension."
-    },
-    "enemy_readability": {
-      "score": 0.58,
-      "reason": "The closest imp blends into the wall material."
-    },
-    "navigation_clarity": {
-      "score": 0.74,
-      "reason": "The intended exit remains distinguishable."
-    }
-  }
-}
+```text
+E1M5로 이동해.
 ```
 
-The same deterministic evaluator then recomputes pass/fail using both engine telemetry and the visual rubric.
+Warping is playtest-only but changes the current live map, so do not casually use it in the middle of an active authoring session whose goal assumes another map.
 
-## `doom_get_design_session`
+# Desktop browser audio recovery
 
-Returns the session goal and every candidate iteration, including:
+The modern Emscripten SDL2 WebAudio context can live at `Module.SDL2.audioContext`. v1.1 explicitly checks that context as well as legacy/global locations.
+
+The browser layer now:
+
+1. retries `AudioContext.resume()` after CLICK TO START,
+2. retries on pointer, keyboard and touch user gestures,
+3. retries when the tab becomes visible again,
+4. explicitly unpauses the SDL audio device/mixer,
+5. adds an on-screen **AUDIO** button for a guaranteed fresh browser user gesture.
+
+If a desktop browser is silent:
 
 ```text
-candidate filename
-edit plan
-applied edit results
-persistent ChangeSet counts
-trial id
-score
-pass/fail
-hard/target/visual failures
-revision hints
+1. CLICK TO START
+2. click AUDIO once
+3. confirm it changes to AUDIO ON
 ```
 
-Session state is currently process-memory only. Candidate and final PWAD files are persistent on disk.
+Then use the MCP diagnostics if necessary.
 
-## `doom_restore_design_candidate`
+## `doom_audio_status`
 
-Reload iteration `0` for the original session baseline, or any previously checkpointed iteration.
+Returns browser AudioContext state plus SDL/SDL_mixer state.
 
-This supports safe branching:
+Useful fields include:
 
 ```text
-iteration 1  score 72
-iteration 2  score 58  ← bad revision
-        ↓
-restore iteration 1
-        ↓
-try a different iteration 3 plan
+browser context state: suspended / running
+sample rate
+SDL audio initialized
+SDL_mixer open
+mixer frequency / channels / format
 ```
 
-Pending unexported edits are protected unless `discardChanges=true` is explicit.
+## `doom_audio_resume`
 
-## `doom_finalize_design_session`
+Attempts to resume the discovered browser audio context and unpause SDL audio.
 
-Selects either:
+Browser autoplay policy can require a real user gesture, so if the MCP call alone cannot unlock audio, click the on-screen **AUDIO** button once.
 
-- an explicit iteration, or
-- the highest-scoring passing iteration.
+# v1.0 closed-loop authoring retained
 
-The chosen checkpoint is restored and copied to the requested final PWAD filename.
-
-A failing candidate is rejected unless `force=true` is explicit.
-
-Example output artifact:
+The complete v1 loop remains available:
 
 ```text
-mcp/exports/horror_e1m1_final.wad
+design goal
+  ↓
+bounded semantic edits
+  ↓
+candidate PWAD checkpoint
+  ↓
+reload candidate as fresh baseline
+  ↓
+autonomous deterministic playtest
+  ↓
+telemetry + final PNG
+  ↓
+deterministic evaluation + optional AI vision rubric
+  ↓
+revision or restore previous candidate
+  ↓
+passing candidate
+  ↓
+final ordinary PWAD
 ```
 
-That file is an ordinary playable PWAD, not an MCP-specific runtime format.
+Main session tools:
 
-# Recommended v1 AI policy
+- `doom_orchestrator_status`
+- `doom_begin_design_session`
+- `doom_run_authoring_iteration`
+- `doom_review_design_iteration`
+- `doom_get_design_session`
+- `doom_restore_design_candidate`
+- `doom_finalize_design_session`
 
-Use this pattern rather than issuing one huge blind prompt:
-
-```text
-1. Inspect map state, sectors, enemies, linedefs and valid materials.
-2. Define a measurable design goal.
-3. doom_begin_design_session.
-4. Propose a small bounded edit plan that targets one or two failure dimensions.
-5. doom_run_authoring_iteration.
-6. Inspect returned PNG and telemetry.
-7. doom_review_design_iteration when visualRubric is present.
-8. If failed, use revisionHints and make another small iteration.
-9. If an iteration becomes worse, restore a better checkpoint.
-10. Stop on acceptance or the session iteration cap.
-11. doom_finalize_design_session.
-```
-
-The current hard limits are:
+Hard limits remain:
 
 ```text
 maximum design iterations       8
@@ -301,72 +249,9 @@ maximum trial world tics      700
 maximum one action            350 tics
 ```
 
-These limits exist to keep the MCP-host AI in a short inspect/act/evaluate loop rather than letting it perform uncontrolled long-running edits or playtests.
+Every authoring iteration produces a real local PWAD checkpoint under `mcp/exports/` before playtesting.
 
-# Revision hints
-
-`mcp/orchestrator.js` maps failed evaluation dimensions back to the bounded edit surface.
-
-Examples:
-
-```text
-survivability failure
-→ remove enemy pressure / improve lighting or contrast
-
-traversal or stuck failure
-→ inspect door linedef / lighting / wall or flat navigation cues
-
-combat goal failure
-→ revise encounter density while preserving survivability
-
-visual rubric failure
-→ sector light / wall texture / floor-ceiling flat
-```
-
-The hints do not edit the level themselves. The MCP-host AI decides the actual bounded edit call.
-
-# v0.9 evaluation retained
-
-The deterministic evaluator in `evaluator.js` still scores:
-
-- deaths
-- final/minimum health
-- damage taken
-- visited sectors
-- distance travelled
-- stuck movement actions
-- kills
-- elapsed time
-- optional AI-vision rubric criteria
-
-The evaluator does not call an LLM and does not mutate the level.
-
-Retained v0.9 tools:
-
-- `doom_run_design_trial`
-- `doom_evaluate_playtest`
-- `doom_get_trial_history`
-- `doom_compare_trials`
-
-# v0.8 autonomous input retained
-
-- `doom_run_input`
-- `doom_run_input_sequence`
-- `doom_agent_input_status`
-- `doom_cancel_agent_input`
-
-Input is applied through LinuxDOOM's real console-player `ticcmd_t` path and is consumed only by actual `P_Ticker()` world updates.
-
-# v0.7 observation retained
-
-- `doom_pause_playtest`
-- `doom_resume_playtest`
-- `doom_step_tics`
-- `doom_get_playtest_telemetry`
-- `doom_reset_playtest_metrics`
-- `doom_capture_frame`
-
-# Authoring surface retained
+# Lower-level authoring and playtest tools retained
 
 Inspection:
 
@@ -393,11 +278,29 @@ PWAD iteration:
 - `doom_load_pwad`
 - `doom_reload_current_map`
 
+Observation / simulation:
+
+- `doom_pause_playtest`
+- `doom_resume_playtest`
+- `doom_step_tics`
+- `doom_get_playtest_telemetry`
+- `doom_reset_playtest_metrics`
+- `doom_capture_frame`
+- `doom_run_input`
+- `doom_run_input_sequence`
+
+Evaluation:
+
+- `doom_run_design_trial`
+- `doom_evaluate_playtest`
+- `doom_get_trial_history`
+- `doom_compare_trials`
+
+Older debug helpers remain available as well, including `doom_heal`, `doom_give_ammo` and `doom_teleport`.
+
 # Persistence boundary
 
-v1.0 intentionally still edits **existing geometry semantics**, not arbitrary map topology.
-
-Persistent records:
+Persistent authoring is still intentionally limited to existing-geometry records:
 
 ```text
 THINGS
@@ -406,7 +309,7 @@ SIDEDEFS
 SECTORS
 ```
 
-Unchanged topology/BSP-derived records:
+The following topology/BSP-derived records remain unchanged:
 
 ```text
 VERTEXES
@@ -417,53 +320,15 @@ REJECT
 BLOCKMAP
 ```
 
-Arbitrary new-room geometry and node rebuilding remain outside this first v1 milestone.
+Live cheats, player movement, teleport, health/ammo manipulation, power-ups, god mode, noclip and map warp are **not** PWAD authoring operations.
 
-# Architecture
+# Recommended separation
 
-```text
-MCP-host AI
-   │ stdio
-   ▼
-v1_server.js
-   ├── all v0.1~0.9 tools
-   ├── bounded session state machine
-   ├── iteration checkpoint / restore / finalize
-   └── deterministic trial + evaluation composition
-        │
-        ├── :3777/control
-        ├── :3778/playtest
-        └── :3779/orchestrate
-                    │
-                    ▼
-                Browser
-                    │
-              DoomControl API
-                    │
-                    ▼
-                LinuxDOOM
-          G_Ticker → P_Ticker
-                    │
-                    ▼
-             ordinary PWAD files
-```
+Use cheats for:
 
-`orchestration_bridge.js` reuses the same explicit `DoomControl` methods that earlier versions expose. It does not provide arbitrary WASM-memory access.
+- manual debugging,
+- quickly reaching another room/map,
+- inspecting doors or materials,
+- isolating combat/navigation problems.
 
-# v1 completion boundary
-
-The first DOOM MCP project is considered functionally complete at v1.0 when this local round trip works in a real MCP-host session:
-
-```text
-design goal
-→ bounded edits
-→ candidate PWAD
-→ reload
-→ autonomous trial
-→ image + telemetry evaluation
-→ revision
-→ passing candidate
-→ final PWAD
-```
-
-The next research direction should focus less on adding more DOOM-specific knobs and more on generalizing this authoring/evaluation pattern to richer engines and content pipelines.
+Turn cheats off for automated difficulty evaluation. A candidate should pass its design goal under the intended normal player state, not because god mode or a full arsenal was active.
