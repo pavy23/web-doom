@@ -14,8 +14,6 @@
 #include "g_game.h"
 #include "i_system.h"
 
-#include <SDL.h>
-
 // Modern Emscripten defines true/false macros, so it must come after Doom's
 // historical boolean enum has already been parsed.
 #include <emscripten/emscripten.h>
@@ -24,32 +22,6 @@ int mb_used = 16;
 static double web_basetime_ms = -1.0;
 
 ticcmd_t emptycmd;
-
-static SDL_AssertState SDLCALL web_sdl_assertion_handler(const SDL_AssertData *data,
-                                                         void *userdata)
-{
-    (void)userdata;
-
-    // Emscripten SDL2's default browser assertion UI uses window.prompt() and
-    // waits for Abort/Retry/Ignore input. That is incompatible with MCP-driven
-    // runtime PWAD reloads: the JavaScript bridge is synchronously waiting for
-    // the engine call to return, so opening a modal prompt can deadlock the
-    // authoring round-trip. Keep assertions visible in the browser console,
-    // but never ask for interactive input.
-    fprintf(stderr,
-            "SDL ASSERT (auto-ignore): condition=%s file=%s line=%d function=%s trigger=%u\n",
-            data && data->condition ? data->condition : "(unknown)",
-            data && data->filename ? data->filename : "(unknown)",
-            data ? data->linenum : 0,
-            data && data->function ? data->function : "(unknown)",
-            data ? data->trigger_count : 0);
-    fflush(stderr);
-
-    // Tell SDL to ignore this assertion for the rest of the process. We log it
-    // above so the underlying condition can still be diagnosed without a modal
-    // browser UI interrupting the engine/MCP bridge.
-    return SDL_ASSERTION_ALWAYS_IGNORE;
-}
 
 void I_Tactile(int on, int off, int total)
 {
@@ -82,10 +54,6 @@ int I_GetTime(void)
 
 void I_Init(void)
 {
-    // Install the assertion policy before any SDL audio initialization can
-    // trigger an assertion. Browser builds have no interactive assertion UX.
-    SDL_SetAssertionHandler(web_sdl_assertion_handler, NULL);
-
     // LinuxDOOM 1.10's original Linux platform layer only initializes SFX
     // here because music was disabled on that target. The direct browser port
     // has a real OPL music backend, so initialize it explicitly after opening
