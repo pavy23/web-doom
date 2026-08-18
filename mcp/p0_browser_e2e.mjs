@@ -77,22 +77,25 @@ try {
     assert.equal(bridgeHealth[port].browserConnected, true, `bridge ${port} is not browser-connected`);
   }
 
-  // Exercise exported engine surfaces that back MCP playtest/geometry calls.
+  // Exercise the actual browser APIs serviced by the playtest/geometry sockets.
   const engineSmoke = await page.evaluate(() => ({
     state: window.DoomControl.getState(),
     sectors: window.DoomControl.getSectors(16),
-    geometryBridge: typeof window.DoomGeometryDispatch !== 'undefined',
-    playtestBridge: typeof window.DoomPlaytestDispatch !== 'undefined'
+    telemetry: window.DoomControl.getPlaytestTelemetry(),
+    geometryApi: typeof window.DoomControl.geometrySnapshot === 'function',
+    playtestBridge: typeof window.DoomPlaytestDispatch === 'function'
   }));
   assert.equal(engineSmoke.state.ready, true);
   assert.ok(Number(engineSmoke.sectors?.sectorCount || 0) > 0);
-  assert.equal(engineSmoke.geometryBridge, true);
+  assert.equal(engineSmoke.telemetry?.ready, true);
+  assert.equal(engineSmoke.geometryApi, true);
   assert.equal(engineSmoke.playtestBridge, true);
 
   console.error('P0 real-browser E2E passed:', JSON.stringify({
     map: `E${state.episode}M${state.map}`,
     bridges: Object.fromEntries(Object.entries(bridgeHealth).map(([port, value]) => [port, Boolean(value.browserConnected)])),
-    sectors: engineSmoke.sectors.sectorCount
+    sectors: engineSmoke.sectors.sectorCount,
+    worldTics: engineSmoke.telemetry.worldTics
   }));
 } finally {
   await browser.close();
