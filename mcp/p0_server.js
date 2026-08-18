@@ -12,7 +12,6 @@ import { startPlaytestBridge } from './playtest_server.js';
 import { startOrchestrationBridge } from './v1_server.js';
 import { startCheatBridge } from './cheat_server.js';
 
-// Install P0 safety before geometry_server creates or validates any workspace.
 installFullTopologyValidator(GeometryWorkspace);
 const geometryModule = await import('./geometry_server.js');
 
@@ -46,6 +45,12 @@ function getSession(id) {
   const session = sessions.get(String(id));
   if (!session) throw new Error(`Unknown episode session ${id}`);
   return session;
+}
+
+// P1+ layers compose the P0 server and extend the exact same map-set sessions.
+// Keep this accessor narrow instead of exposing the registry itself.
+export function getEpisodeSession(id) {
+  return getSession(id);
 }
 
 async function beginEpisodeSession({ maps } = {}) {
@@ -89,18 +94,19 @@ export function createMcpServer() {
 
   server.registerTool('doom_get_episode_session', {
     title: 'Inspect DOOM episode authoring session',
-    description: 'Read map-set revision, transaction state and per-map geometry summaries.',
+    description: 'Read map-set revision, transaction state and per-map geometry/THINGS summaries.',
     inputSchema: z.object({ sessionId: z.string() }), annotations: { readOnlyHint: true }
   }, async ({ sessionId }) => { try { return jsonResult(sessionView(getSession(sessionId))); } catch (error) { return toolError(error); } });
 
   server.registerTool('doom_get_episode_map', {
     title: 'Inspect one map in an episode session',
-    description: 'Read vertices, linedefs and sectors for one map in a multi-map episode workspace.',
+    description: 'Read vertices, linedefs, sectors and installed P1 THINGS data for one map in a multi-map episode workspace.',
     inputSchema: z.object({
       sessionId: z.string(), map: mapName,
       vertexLimit: z.number().int().min(1).max(4096).optional(),
       lineLimit: z.number().int().min(1).max(4096).optional(),
-      sectorLimit: z.number().int().min(1).max(1024).optional()
+      sectorLimit: z.number().int().min(1).max(1024).optional(),
+      thingLimit: z.number().int().min(1).max(4096).optional()
     }), annotations: { readOnlyHint: true }
   }, async ({ sessionId, map, ...limits }) => {
     try { return jsonResult(getSession(sessionId).workspace.inspectMap(map, limits)); }
@@ -109,7 +115,7 @@ export function createMcpServer() {
 
   server.registerTool('doom_validate_episode', {
     title: 'Validate every map in a DOOM episode workspace',
-    description: 'Run the P0 topology validator across the full map set. AI-created or moved topology is checked for crossings, overlaps, T-junctions, duplicate primitives, manifold boundaries and sidedef consistency.',
+    description: 'Run installed deterministic validators across the full map set, including P0 topology and P1 THINGS validation when enabled.',
     inputSchema: z.object({ sessionId: z.string() }), annotations: { readOnlyHint: true }
   }, async ({ sessionId }) => {
     try { return jsonResult(getSession(sessionId).workspace.validate()); }
@@ -128,7 +134,7 @@ export function createMcpServer() {
 
   server.registerTool('doom_apply_transaction_edits', {
     title: 'Apply atomic DOOM episode edits',
-    description: 'Apply up to 128 structural edits across any maps in the active transaction. Supported types: add_room, resize_room, delete_room, add_corridor, set_sector_heights, move_vertex, add_vertex, add_sector, add_sidedef, add_linedef and undo. Every edit must include map and type.',
+    description: 'Apply up to 128 edits across maps in the active transaction. P0 structural edit types remain supported; P1 adds thing_add, thing_move, thing_update and thing_delete when the THINGS authoring layer is installed.',
     inputSchema: z.object({ sessionId: z.string(), edits: z.array(genericEdit).min(1).max(128) }),
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false }
   }, async ({ sessionId, edits }) => {
@@ -147,7 +153,7 @@ export function createMcpServer() {
 
   server.registerTool('doom_commit_transaction', {
     title: 'Commit atomic DOOM episode transaction',
-    description: 'Commit the active transaction only if every touched map passes P0 topology validation. Invalid transactions stay open for inspection or rollback.',
+    description: 'Commit the active transaction only if every touched map passes installed deterministic validation. Invalid transactions stay open for inspection or rollback.',
     inputSchema: z.object({ sessionId: z.string() }), annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false }
   }, async ({ sessionId }) => {
     try { return jsonResult(getSession(sessionId).workspace.commitTransaction()); }
@@ -165,7 +171,7 @@ export function createMcpServer() {
 
   server.registerTool('doom_build_episode', {
     title: 'Build a verified multi-map DOOM episode PWAD',
-    description: 'Validate and rebuild every map in the session with pinned ZDBSP WASM, combine them into one PWAD and save it in the shared MCP exports directory. The resulting WAD can be loaded with doom_load_pwad and tested map-by-map with doom_warp.',
+    description: 'Validate and rebuild every map in the session with pinned ZDBSP WASM, combine them into one PWAD and save it in the shared MCP exports directory.',
     inputSchema: z.object({ sessionId: z.string(), filename: z.string().min(1).max(80).optional() }),
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true }
   }, async ({ sessionId, filename }) => {
@@ -182,7 +188,7 @@ export function createMcpServer() {
         bytes: candidate.bytes.length,
         revision: candidate.revision,
         maps: candidate.maps,
-        next: `Use doom_load_pwad with ${safe}, then doom_warp to E1M1..E1M8 for runtime playtest.`
+        next: `Use doom_load_pwad with ${safe}, then doom_warp to requested maps for runtime playtest.`
       });
     } catch (error) { return toolError(error); }
   });
@@ -237,5 +243,5 @@ if (isDirectExecution()) {
   startCheatBridge();
   geometryModule.startGeometryBridge();
   void serveStdio(createMcpServer);
-  console.error(`DOOM MCP ${VERSION}: P0 full topology + atomic E1M1-E1M8 episode authoring ready`);
+  console.error(`DOOM MCP ${VERSION}: P0 full topology + atomic episode authoring ready`);
 }
