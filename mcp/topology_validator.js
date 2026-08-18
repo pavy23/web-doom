@@ -12,14 +12,8 @@ function keyPoint(p) { return `${p.x},${p.y}`; }
 function cross(a, b, c) { return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x); }
 function samePoint(a, b) { return a.x === b.x && a.y === b.y; }
 function between(v, a, b) { return v >= Math.min(a, b) && v <= Math.max(a, b); }
-
-function pointOnSegment(p, a, b) {
-  return cross(a, b, p) === 0 && between(p.x, a.x, b.x) && between(p.y, a.y, b.y);
-}
-
-function pointOnSegmentInterior(p, a, b) {
-  return pointOnSegment(p, a, b) && !samePoint(p, a) && !samePoint(p, b);
-}
+function pointOnSegment(p, a, b) { return cross(a, b, p) === 0 && between(p.x, a.x, b.x) && between(p.y, a.y, b.y); }
+function pointOnSegmentInterior(p, a, b) { return pointOnSegment(p, a, b) && !samePoint(p, a) && !samePoint(p, b); }
 
 function properIntersection(a, b, c, d) {
   const c1 = cross(a, b, c), c2 = cross(a, b, d);
@@ -67,6 +61,10 @@ function changedSectors(workspace, touchedLines) {
   const g = workspace.geometry;
   const touched = new Set();
   for (let i = workspace.originalCounts.sectors; i < g.sectors.length; i++) touched.add(i);
+  for (const entry of workspace.history || []) {
+    const match = /^sector_heights:(\d+)$/.exec(String(entry?.label || ''));
+    if (match) touched.add(Number(match[1]));
+  }
   for (const lineIndex of touchedLines) {
     const line = g.linedefs[lineIndex];
     if (!line) continue;
@@ -82,13 +80,30 @@ function addIssue(strings, issues, code, message, details = {}) {
   issues.push({ code, message, ...details });
 }
 
+function importBaseResult(workspace, base, errors, warnings, errorIssues, warningIssues) {
+  for (const raw of base.errors || []) {
+    const message = String(raw);
+    const match = /^Sector (\d+) ceiling (-?\d+) is not above floor (-?\d+)$/.exec(message);
+    if (match && Number(match[2]) === Number(match[3])) {
+      const sector = Number(match[1]);
+      addIssue(
+        warnings,
+        warningIssues,
+        'ZERO_HEIGHT_SECTOR',
+        `${message}; zero-height sectors are valid vanilla Doom structures`,
+        { sector, legacy: sector < workspace.originalCounts.sectors }
+      );
+    } else {
+      addIssue(errors, errorIssues, 'BASE_VALIDATION', message);
+    }
+  }
+  for (const raw of base.warnings || []) addIssue(warnings, warningIssues, 'BASE_WARNING', String(raw));
+}
+
 export function validateFullTopology(workspace, baseResult = null) {
   const base = baseResult || { ok: true, errors: [], warnings: [], summary: workspace.summary?.() };
-  // Keep errors/warnings as strings because v2 callers join() them when a build fails.
-  const errors = [...(base.errors || [])].map(String);
-  const warnings = [...(base.warnings || [])].map(String);
-  const errorIssues = errors.map(message => ({ code: 'BASE_VALIDATION', message }));
-  const warningIssues = warnings.map(message => ({ code: 'BASE_WARNING', message }));
+  const errors = [], warnings = [], errorIssues = [], warningIssues = [];
+  importBaseResult(workspace, base, errors, warnings, errorIssues, warningIssues);
 
   const g = workspace.geometry;
   const touchedVertices = changedVertices(workspace);
@@ -102,9 +117,7 @@ export function validateFullTopology(workspace, baseResult = null) {
     const prior = points.get(key);
     if (prior != null && (index >= workspace.originalCounts.vertices || prior >= workspace.originalCounts.vertices)) {
       addIssue(errors, errorIssues, 'DUPLICATE_VERTEX', `Vertex ${index} duplicates vertex ${prior} at (${vertex.x}, ${vertex.y})`, { vertices: [prior, index] });
-    } else if (prior == null) {
-      points.set(key, index);
-    }
+    } else if (prior == null) points.set(key, index);
   });
 
   // Catch duplicate geometric edges created by AI edits even when vertex ids differ.
@@ -117,9 +130,7 @@ export function validateFullTopology(workspace, baseResult = null) {
     const prior = edges.get(key);
     if (prior != null && (touchedLines.has(index) || touchedLines.has(prior))) {
       addIssue(errors, errorIssues, 'DUPLICATE_LINEDEF', `Linedef ${index} duplicates linedef ${prior}`, { linedefs: [prior, index] });
-    } else if (prior == null) {
-      edges.set(key, index);
-    }
+    } else if (prior == null) edges.set(key, index);
   });
 
   // Full changed-geometry intersection pass. This fixes the v2 hole where moving
@@ -145,7 +156,6 @@ export function validateFullTopology(workspace, baseResult = null) {
         continue;
       }
 
-      // Coordinate-touch without shared vertex id is a T-junction / split-edge hazard.
       const cases = [
         [a, li.v1, c, d, j], [b, li.v2, c, d, j],
         [c, lj.v1, a, b, i], [d, lj.v2, a, b, i]
@@ -176,7 +186,6 @@ export function validateFullTopology(workspace, baseResult = null) {
     if (sectorUse[i] === 0) addIssue(errors, errorIssues, 'ORPHAN_SECTOR', `New sector ${i} has no sidedefs`, { sector: i });
   }
 
-  // Two-sided semantics and affected-sector boundary/manifold checks.
   g.linedefs.forEach((line, index) => {
     if (!touchedLines.has(index)) return;
     const hasRight = line.right !== NO_SIDE, hasLeft = line.left !== NO_SIDE;
@@ -207,7 +216,6 @@ export function validateFullTopology(workspace, baseResult = null) {
       if (d !== 2) addIssue(errors, errorIssues, 'NON_MANIFOLD_SECTOR_VERTEX', `Sector ${sector} boundary vertex ${vertex} has degree ${d}, expected 2`, { sector, vertex, degree: d });
     }
 
-    // A sector boundary must not self-cross after an affected edit.
     for (let x = 0; x < boundaryLines.length; x++) {
       const lx = g.linedefs[boundaryLines[x]];
       const a = g.vertices[lx.v1], b = g.vertices[lx.v2];
