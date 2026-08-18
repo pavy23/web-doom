@@ -1,6 +1,6 @@
-# Web DOOM — Direct LinuxDOOM + AI Level Authoring MCP v1
+# Web DOOM — Direct LinuxDOOM + AI Level Authoring MCP v1.1
 
-A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, extended with a local MCP system for bounded AI level authoring, autonomous deterministic playtesting, visual observation, explicit design-goal evaluation, candidate checkpointing and final PWAD delivery.
+A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, extended with a local MCP system for bounded AI level authoring, autonomous deterministic playtesting, visual observation, explicit design-goal evaluation, candidate checkpointing, final PWAD delivery, live debugging cheats and browser-audio diagnostics.
 
 The `/direct/` runtime starts from the original LinuxDOOM source. It does **not** use doomgeneric or Chocolate Doom as the game runtime.
 
@@ -11,11 +11,11 @@ The `/direct/` runtime starts from the original LinuxDOOM source. It does **not*
 
 Development branch: [`direct-linuxdoom`](https://github.com/pavy23/web-doom/tree/direct-linuxdoom)
 
-Current MCP version: **1.0.0**
+Current MCP version: **1.1.0**
 
 ## What this project became
 
-The project started as a browser-port experiment. v1.0 is now a small **AI-native game-content authoring, playtest and evaluation pipeline**.
+The project started as a browser-port experiment. It is now a small **AI-native game-content authoring, playtest and evaluation pipeline**.
 
 ```text
 AI design goal
@@ -23,44 +23,34 @@ AI design goal
 semantic inspection
       ↓
 bounded authoring plan
-actors / light / doors / materials
       ↓
-candidate PWAD checkpoint
-      ↓
-reload candidate as fresh baseline
+candidate PWAD checkpoint + reload
       ↓
 autonomous ticcmd playtest
       ↓
-exact P_Ticker world tics
-      ↓
 telemetry + PNG frame
       ↓
-deterministic evaluator
-+ optional AI vision rubric
+deterministic evaluator + optional AI vision rubric
       ↓
 PASS / FAIL + revision hints
       ↓
-next bounded revision
-or restore previous candidate
-      ↓
-passing candidate
+next bounded revision / restore older candidate
       ↓
 final ordinary PWAD
 ```
 
-The roles are intentionally separate:
+v1.1 also adds a deliberately separate **live debugging layer**:
 
-- **MCP-host AI** — interprets the design goal and chooses bounded edits
-- **MCP v1 orchestrator** — enforces iteration limits, checkpoints candidates, runs trials and finalizes artifacts
-- **LinuxDOOM** — real gameplay simulation and validator
-- **Evaluator** — explicit repeatable acceptance criteria
-- **PWAD** — persistent playable artifact
+```text
+god mode / noclip / arsenal / keys / power-ups / map warp
+browser AudioContext + SDL_mixer diagnostics/recovery
+```
 
-The server does not embed a hidden second LLM. The connected AI remains responsible for design reasoning; the orchestration layer provides a deterministic, bounded execution loop.
+Those controls are runtime-only and never enter a PWAD or authoring ChangeSet.
 
-# v1.0 — Closed-loop authoring sessions
+# v1.0 closed-loop authoring retained
 
-The main v1 tools are:
+Main session tools:
 
 - `doom_orchestrator_status`
 - `doom_begin_design_session`
@@ -70,97 +60,83 @@ The main v1 tools are:
 - `doom_restore_design_candidate`
 - `doom_finalize_design_session`
 
-A session starts by freezing the current map as a baseline PWAD. Every authoring iteration then:
+Each authoring iteration is bounded and produces a real `.wad` checkpoint before playtesting:
 
 ```text
 <= 12 semantic edits
-      ↓
-session-0001-iter-01.wad
-      ↓
-validate + reload
-      ↓
-ChangeSet reset
-      ↓
-restart from candidate baseline
-      ↓
-<= 16 autonomous actions
-<= 700 actual world tics
-      ↓
-telemetry evaluation
-      ↓
-final PNG
+→ candidate PWAD
+→ validate + reload
+→ ChangeSet reset
+→ <= 16 autonomous actions
+→ <= 700 actual P_Ticker world tics
+→ telemetry evaluation
+→ final PNG
 ```
 
-If a visual rubric is part of the goal, the MCP-host AI inspects that frame and attaches `0..1` scores with reasons using `doom_review_design_iteration`.
+A session is capped at 8 iterations. A previous checkpoint can be restored before trying another revision. Normal finalization chooses a passing candidate; forcing a failing candidate requires an explicit override.
 
-The session is capped at **8 iterations**. A worse iteration can be abandoned by restoring the baseline or any previous candidate PWAD. Finalization normally accepts only a passing candidate; selecting a failing candidate requires an explicit `force=true`.
+# v1.1 live cheat controls
 
-Candidate checkpoints and the final artifact are real `.wad` files stored under the MCP export directory.
+New MCP tools:
 
-Example artifact chain:
+- `doom_cheat_status`
+- `doom_set_god_mode`
+- `doom_set_noclip`
+- `doom_give_arsenal`
+- `doom_give_keys`
+- `doom_set_health_armor`
+- `doom_give_powerup`
+- `doom_warp`
+
+The implementation follows original LinuxDOOM player state rather than browser-keyboard emulation:
+
+- god mode uses `CF_GODMODE`,
+- noclip uses `CF_NOCLIP`,
+- the full arsenal mirrors the classic IDFA/IDKFA idea: 200 armor, all weapons, max ammo, optional keys,
+- power-ups use the original DOOM power state,
+- map warp starts a valid map through `G_InitNew()`.
+
+The public shareware IWAD supports `E1M1` through `E1M9` for warp testing.
+
+Examples for an MCP-host AI:
 
 ```text
-session-0001-baseline.wad
-session-0001-iter-01.wad   score 64
-session-0001-iter-02.wad   score 78
-session-0001-iter-03.wad   score 86 ✓
-horror_e1m1_final.wad
+무적 켜줘.
+노클립 켜줘.
+무기, 탄약, 키 전부 줘.
+체력 200, 아머 200으로 해줘.
+인벌너러빌리티 파워업 줘.
+E1M5로 워프해.
 ```
 
-# Design-goal evaluation
+Use cheats for manual debugging and exploration. Disable them for difficulty/quality evaluation when the design goal assumes a normal player state.
 
-The deterministic evaluator does not call an LLM.
+# Desktop browser audio recovery
+
+v1.1 strengthens audio startup for browsers where mobile audio works but desktop remains silent.
+
+Modern Emscripten SDL2 can keep its WebAudio context at `Module.SDL2.audioContext`. The previous launcher only retried a narrower legacy/global path. v1.1 now checks the actual SDL context plus fallback locations, retries after user gestures, and explicitly unpauses the SDL audio device/mixer.
+
+The game UI also gains an **AUDIO** button.
+
+If desktop audio is silent:
 
 ```text
-engine telemetry
-      +
-optional AI vision scores
-      ↓
-fixed goal + weights
-      ↓
-0..100 score
-pass/fail
-failure reasons
-revision hints
+CLICK TO START
+→ click AUDIO once
+→ confirm AUDIO ON
 ```
 
-Example goal:
+New diagnostics:
 
-```json
-{
-  "name": "opening_horror_encounter",
-  "hard": {
-    "maxDeaths": 0,
-    "minFinalHealth": 20
-  },
-  "targets": {
-    "maxDamageTaken": 45,
-    "minVisitedSectors": 3,
-    "minDistanceUnits": 180,
-    "maxStuckActions": 1,
-    "minKills": 2,
-    "minScore": 0.75
-  },
-  "visualRubric": [
-    { "id": "atmosphere", "minScore": 0.75 },
-    { "id": "enemy_readability", "minScore": 0.65 },
-    { "id": "navigation_clarity", "minScore": 0.65 }
-  ]
-}
-```
+- `doom_audio_status`
+- `doom_audio_resume`
 
-The evaluator measures deaths, final/minimum health, damage, traversal distance, sectors visited, stuck actions, kills and pacing. Visual criteria remain explicit and are not silently assumed to pass when a goal requires them.
+`doom_audio_status` reports browser AudioContext state plus SDL/SDL_mixer state. Browser autoplay policy can still require a real click, so the on-screen AUDIO button is the final explicit user-gesture fallback.
 
-Retained evaluation tools:
+# Authoring surface
 
-- `doom_run_design_trial`
-- `doom_evaluate_playtest`
-- `doom_get_trial_history`
-- `doom_compare_trials`
-
-# Current authoring surface
-
-## Semantic inspection
+Inspection:
 
 - `doom_get_state`
 - `doom_get_enemies`
@@ -170,7 +146,7 @@ Retained evaluation tools:
 - `doom_list_visual_assets`
 - `doom_get_changeset`
 
-## Persistent authoring
+Persistent authoring:
 
 - actor spawn/remove → `THINGS`
 - door/trigger special + tag → `LINEDEFS`
@@ -178,23 +154,14 @@ Retained evaluation tools:
 - sector lighting → `SECTORS`
 - floor/ceiling flats → `SECTORS`
 
-Key tools:
-
-- `doom_spawn_enemy`
-- `doom_remove_nearest_enemy`
-- `doom_set_sector_light`
-- `doom_set_linedef_action`
-- `doom_set_wall_texture`
-- `doom_set_sector_flat`
-
-## PWAD iteration
+PWAD iteration:
 
 - `doom_export_pwad`
 - `doom_list_exports`
 - `doom_load_pwad`
 - `doom_reload_current_map`
 
-# Playtest observation and agency
+# Playtest observation, agency and evaluation
 
 Observation:
 
@@ -212,57 +179,36 @@ Autonomous input:
 - `doom_run_input`
 - `doom_run_input_sequence`
 
-AI movement is not browser keyboard simulation. A bounded override is applied to the console player's real `ticcmd_t` after LinuxDOOM selects the command in `G_Ticker()` and before normal gameplay consumes it in `P_Ticker()`.
+Evaluation:
 
-```text
-forward  -1.0 .. +1.0
-strafe   -1.0 .. +1.0
-turn     -1.0 .. +1.0
-attack   false / true
-use      false / true
-tics     1 .. 350
-```
+- `doom_run_design_trial`
+- `doom_evaluate_playtest`
+- `doom_get_trial_history`
+- `doom_compare_trials`
 
-Input lifetime decreases only after actual world simulation tics, not browser render frames.
+AI movement is applied through LinuxDOOM's real console-player `ticcmd_t` path and is consumed by normal `P_Ticker()` gameplay simulation.
 
 # Architecture
 
 ```text
-id Software LinuxDOOM 1.10
-          │
-          ├── original gameplay / renderer / WAD / state
-          ├── browser i_video / i_system / i_sound / i_net
-          ├── doom_control.c        state / actor / sector / PWAD
-          ├── doom_linedefs.c       door + trigger authoring
-          ├── doom_visuals.c        wall + flat authoring
-          ├── doom_playtest.c       pause / exact tic / telemetry
-          ├── doom_agent_input.c    bounded ticcmd player agency
-          └── doom_reload.c         PWAD validation / runtime reload
-                    │
-                    ↓
-             Emscripten / WASM
-                    │
-                    ↓
-                  Browser
-          ┌─────────┼─────────┐
-          │         │         │
-  :3777/control :3778/playtest :3779/orchestrate
-          │         │         │
-          └─────────┼─────────┘
-                    ↓
-             mcp/v1_server.js
-          ┌─────────┴──────────┐
-          │                    │
- mcp/evaluator.js      mcp/orchestrator.js
-          │                    │
-          └─────────┬──────────┘
-                    ↓
-               stdio MCP host
+LinuxDOOM 1.10 + browser/WASM adapters
+                │
+                ▼
+              Browser
+   ┌────────────┼─────────────┬─────────────┐
+   │            │             │             │
+:3777/control :3778/playtest :3779/orchestrate :3780/cheats
+   │            │             │             │
+   └────────────┴──────┬──────┴─────────────┘
+                       ▼
+              mcp/cheat_server.js
+                       │
+              stdio MCP host / AI
 ```
 
-`orchestration_bridge.js` reuses the same explicit `DoomControl` functions as the earlier bridges. It does not expose arbitrary WASM memory.
+`cheat_server.js` composes all v1.0 authoring/playtest/orchestration tools and adds the v1.1 cheat/audio surface.
 
-The public GitHub Pages game does not connect to localhost during normal play. Local MCP bridges activate only when the page is loaded through the local MCP proxy.
+The public GitHub Pages game does not connect to localhost during ordinary public play. Local bridges activate only in the local MCP workflow.
 
 # Quick start
 
@@ -281,14 +227,14 @@ Then open:
 http://127.0.0.1:3777/
 ```
 
-Click **CLICK TO START**.
+Click **CLICK TO START**. If desktop audio remains silent, click **AUDIO** once.
 
 Generic MCP client configuration:
 
 ```json
 {
   "command": "node",
-  "args": ["C:/absolute/path/to/web-doom/mcp/v1_server.js"]
+  "args": ["C:/absolute/path/to/web-doom/mcp/cheat_server.js"]
 }
 ```
 
@@ -296,9 +242,7 @@ Detailed guide: [`mcp/README.md`](https://github.com/pavy23/web-doom/blob/direct
 
 # Persistence boundary
 
-The current project deliberately edits existing geometry semantics rather than pretending arbitrary geometry changes are safe.
-
-Persistent map patches:
+Persistent authored records remain limited to existing-geometry data:
 
 ```text
 THINGS
@@ -307,7 +251,7 @@ SIDEDEFS
 SECTORS
 ```
 
-Currently unchanged topology/BSP data:
+Topology/BSP-derived data remains unchanged:
 
 ```text
 VERTEXES
@@ -318,13 +262,13 @@ REJECT
 BLOCKMAP
 ```
 
-Arbitrary new-room geometry remains outside this first v1 milestone until a real node/blockmap rebuild pipeline is introduced.
+God mode, noclip, arsenal/ammo/keys, health/armor changes, power-ups, map warp, player movement and audio state are live-session controls only.
 
-# Audio
+# Audio path
 
 Sound effects use direct DMX type-3 decoding through SDL2_mixer.
 
-Music uses a Vanilla/DMX-compatible OPL register path with IWAD `GENMIDI` instrumentation and Nuked OPL3 v1.8 running in OPL2-compatible mode. The required OPL/MIDI subsystem is imported from pinned Chocolate Doom revision `410d96855b5df5410ff591a90efeafa889119224`; Chocolate Doom is not the game runtime.
+Music uses a Vanilla/DMX-compatible OPL register path with IWAD `GENMIDI` instrumentation and Nuked OPL3 v1.8 running in OPL2-compatible mode. The OPL/MIDI subsystem is imported from pinned Chocolate Doom revision `410d96855b5df5410ff591a90efeafa889119224`; Chocolate Doom is not the game runtime.
 
 LinuxDOOM baseline:
 
@@ -336,20 +280,3 @@ Public shareware IWAD:
 - MD5: `5f4eb849b1af12887dec04a2a12e5e62`
 
 Commercial DOOM / DOOM II IWADs are not distributed by this repository.
-
-# v1 completion boundary
-
-This first DOOM MCP track is considered functionally complete when the following local round trip succeeds in a real MCP-host session:
-
-```text
-design goal
-→ bounded edit plan
-→ candidate PWAD checkpoint/reload
-→ autonomous deterministic playtest
-→ telemetry + frame evaluation
-→ bounded revision / restore
-→ passing candidate
-→ final PWAD
-```
-
-The next research direction is less about adding more DOOM-specific controls and more about generalizing this pattern to richer content engines and production pipelines.
