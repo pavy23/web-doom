@@ -1,14 +1,15 @@
 {
   "name": "web-doom-mcp",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "Local MCP closed-loop DOOM authoring orchestrator with autonomous playtest/vision, deterministic evaluation, PWAD checkpointing, live cheats and browser audio diagnostics",
+  "description": "Local DOOM MCP v2: closed-loop level authoring, autonomous playtest/evaluation, live cheats/audio diagnostics and validated structural geometry authoring with ZDBSP node rebuilds",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "start": "node cheat_server.js"
+    "start": "node geometry_server.js",
+    "prepare-geometry": "node --input-type=module -e \"import('./nodebuilder.js').then(m => m.prepareNodeBuilder()).then(s => console.log(JSON.stringify(s, null, 2)))\""
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
