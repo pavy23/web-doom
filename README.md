@@ -1,6 +1,6 @@
-# Web DOOM — Direct LinuxDOOM + AI Authoring MCP v2
+# Web DOOM — Direct LinuxDOOM + AI Authoring MCP v2.1 P0
 
-A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, extended into an AI-native level authoring, autonomous playtest/evaluation and now **structural geometry authoring** sandbox.
+A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, extended into an AI-native level-authoring, structural-geometry, deterministic playtest/evaluation and multi-map experiment sandbox.
 
 The `/direct/` runtime uses the original LinuxDOOM gameplay/rendering/WAD code with repository-owned browser platform adapters. Chocolate Doom is used only for the pinned Vanilla/DMX-compatible OPL music subsystem, not as the game runtime.
 
@@ -8,54 +8,175 @@ The `/direct/` runtime uses the original LinuxDOOM gameplay/rendering/WAD code w
 
 - Direct build: https://pavy23.github.io/web-doom/direct/
 - Earlier doomgeneric comparison build: https://pavy23.github.io/web-doom/
-- Development branch: `direct-linuxdoom`
+- Stable direct-port development branch: `direct-linuxdoom`
+- P0 development branch: `p0-episode-authoring`
 
-Current MCP version: **2.0.0**
+Current MCP version on the P0 branch: **2.1.0-p0.1**
 
-## What v2 adds
+## P0 status — complete
 
-Earlier versions already supported:
-
-```text
-actors / enemies
-sector lighting
-wall / floor / ceiling materials
-door + trigger behavior
-PWAD export / reload
-PNG vision + telemetry
-exact-tic simulation
-autonomous ticcmd player input
-design-goal evaluation
-bounded closed-loop revisions
-live cheats + audio diagnostics
-```
-
-v2 adds structural map editing:
+P0 adds the reliability layer required before expanding the AI authoring surface further.
 
 ```text
-AI geometry request
+AI edit request
       ↓
-Doom Geometry IR
-VERTEXES / LINEDEFS / SIDEDEFS / SECTORS
+selected map set
+E1M3 only / E1M1+E1M4 / E1M1..E1M8 / MAP##
       ↓
-deterministic structural validation
+atomic transaction
       ↓
-pinned + hash-verified ZDBSP WASM
+full changed-topology validation
       ↓
-SEGS / SSECTORS / NODES / BLOCKMAP / REJECT rebuild
+pinned + hash-verified ZDBSP WASM per map
       ↓
-verified candidate PWAD
+verified multi-map PWAD
       ↓
-LinuxDOOM reload
+structural cold boot in LinuxDOOM
       ↓
-AI playtest / vision / evaluation
+exact-tic browser experiment
       ↓
-revision, rollback or final WAD
+telemetry + PNG evidence + PASS/FAIL report
 ```
 
-The AI never writes BSP nodes directly. Structural edits must pass validation and a deterministic node-builder pass before the running game can load them.
+P0 consists of four main pieces:
 
-## v2 geometry tools
+1. **Full topology validation** — detects AI-introduced crossings, collinear overlap, T-junctions, duplicate geometry, orphan primitives, two-sided linedef inconsistencies and affected-sector manifold/self-intersection failures. Moving a legacy vertex is included in the changed-geometry pass.
+2. **Atomic multi-map transactions** — the complete selected map set is snapshotted before mutation. If any edit fails, earlier edits in other maps are rolled back too.
+3. **Multi-map build pipeline** — each selected map is independently validated and rebuilt through pinned ZDBSP, then packaged into one PWAD.
+4. **Automated browser experiment runner** — a dedicated headless Chromium cold-boots the candidate, warps through requested maps, executes exact world tics, captures telemetry/PNG evidence and writes a PASS/FAIL report.
+
+Vanilla zero-height sectors (`floor == ceiling`) are preserved as valid Doom map structures. Actual inverted sectors remain invalid.
+
+## Selected-map and full-episode authoring
+
+The P0 map-set layer is **not limited to the whole episode**.
+
+Single map:
+
+```json
+{
+  "maps": ["E1M3"]
+}
+```
+
+Selected maps:
+
+```json
+{
+  "maps": ["E1M1", "E1M4", "E1M7"]
+}
+```
+
+Whole Episode 1:
+
+```json
+{
+  "maps": ["E1M1", "E1M2", "E1M3", "E1M4", "E1M5", "E1M6", "E1M7", "E1M8"]
+}
+```
+
+If `maps` is omitted by the automated experiment runner, it defaults to **E1M1 through E1M8**.
+
+The map-name layer also accepts `MAP##`, keeping the same transaction/build architecture usable for later DOOM II-style and multiplayer map-set generation. A requested map must currently exist in the source/candidate WAD; generating a completely new map marker from an empty map is future work.
+
+## P0 episode MCP tools
+
+Map-set/session tools:
+
+- `doom_p0_status`
+- `doom_begin_episode_session`
+- `doom_get_episode_session`
+- `doom_get_episode_map`
+- `doom_validate_episode`
+
+Atomic transaction tools:
+
+- `doom_begin_transaction`
+- `doom_apply_transaction_edits`
+- `doom_validate_transaction`
+- `doom_commit_transaction`
+- `doom_rollback_transaction`
+
+Episode build/restore tools:
+
+- `doom_build_episode`
+- `doom_restore_episode_baseline`
+- `doom_restore_episode_candidate`
+- `doom_finalize_episode`
+
+Automated experiment tools:
+
+- `doom_run_episode_experiment`
+- `doom_get_episode_experiment_report`
+
+The transaction edit surface currently composes structural operations such as room/corridor creation, sector-height edits, vertex movement and low-level geometry primitives across any selected maps.
+
+## Automated episode experiment runner
+
+`doom_run_episode_experiment` can test either a newly built candidate or an already exported PWAD.
+
+Minimal full-episode pipeline smoke test:
+
+```json
+{
+  "autoEditProfile": "safe-height-nudge"
+}
+```
+
+The `safe-height-nudge` profile deliberately changes one ordinary sector in every requested map. It exists only to prove the complete mutate → validate → build → boot → test pipeline and is **not** a level-design policy.
+
+Test only one map:
+
+```json
+{
+  "maps": ["E1M3"],
+  "autoEditProfile": "safe-height-nudge"
+}
+```
+
+Regression-test an existing episode PWAD:
+
+```json
+{
+  "candidateFilename": "episode1-ai.wad",
+  "maps": ["E1M1", "E1M2", "E1M3"]
+}
+```
+
+Custom deterministic action plans can be supplied per map:
+
+```json
+{
+  "maps": ["E1M1", "E1M2"],
+  "candidateFilename": "episode1-ai.wad",
+  "actionsByMap": {
+    "E1M1": [
+      { "forward": 0.7, "tics": 35 },
+      { "turn": 0.4, "tics": 18 }
+    ],
+    "E1M2": [
+      { "forward": 0.5, "attack": true, "tics": 50 }
+    ]
+  }
+}
+```
+
+Experiment evidence is written under:
+
+```text
+mcp/exports/experiments/<experiment-id>/
+  config.json
+  report.json
+  E1M1.png
+  E1M2.png
+  ...
+```
+
+Default PASS/FAIL checks cover runtime/map readiness, exact world-tic advancement, player survival/health, visited sectors and valid PNG capture. Per-map expectations can additionally set `maxDeaths`, `minHealth`, `minDistanceUnits` and `minVisitedSectors`.
+
+Detailed runner guide: `mcp/P0_EXPERIMENT_RUNNER.md`.
+
+## v2 structural geometry tools retained by P0
 
 Semantic operations:
 
@@ -86,11 +207,44 @@ Session / validation:
 - `doom_geometry_restore_candidate`
 - `doom_geometry_finalize`
 
-A structural build writes a real candidate `.wad` under `mcp/exports/`, rebuilds derived Doom map lumps, verifies them and can immediately reload the candidate into LinuxDOOM.
+The AI never writes BSP nodes directly. Structural edits must pass deterministic validation and a node-builder pass before LinuxDOOM loads them.
+
+## Retained authoring and playtest capabilities
+
+Earlier MCP layers remain available beneath P0:
+
+```text
+actors / enemies
+sector lighting
+wall / floor / ceiling materials
+door + trigger behavior
+PWAD export / reload
+PNG vision + telemetry
+exact-tic simulation
+autonomous ticcmd player input
+design-goal evaluation
+bounded closed-loop revisions
+live cheats + audio diagnostics
+```
+
+Closed-loop design sessions remain available:
+
+```text
+design goal
+→ bounded semantic edits
+→ candidate PWAD
+→ autonomous exact-tic playtest
+→ PNG + telemetry
+→ deterministic evaluation + optional AI vision rubric
+→ revise / restore
+→ final PWAD
+```
+
+Runtime-only debugging tools include god mode, noclip, full arsenal/ammo/keys, health/armor, power-ups, map warp and browser/SDL audio diagnostics. These cheats are not serialized into authored PWADs.
 
 ## Node builder
 
-v2 uses immutable artifacts from `seanmorris/zdbsp-wasm` commit:
+Structural authoring uses immutable artifacts from `seanmorris/zdbsp-wasm` commit:
 
 ```text
 acc45bf6b2232a75bdbb0b6295822e72e13dfeec
@@ -106,28 +260,7 @@ The vanilla-compatible node build uses:
 --map=E#M#
 ```
 
-so the candidate gets ordinary Doom nodes/blockmap and a full-sized zero `REJECT` table rather than a ZDoom-only empty representation.
-
-## Modern browser controls
-
-The direct browser platform now defaults to a more modern FPS scheme while preserving the original arrow-key behavior:
-
-```text
-W / S          forward / backward
-A / D          strafe left / right
-Left / Right   rotate
-Up / Down      forward / backward
-Mouse X        horizontal turn, about 2x previous browser sensitivity
-Mouse Y        ignored
-Click canvas   pointer lock + hide cursor
-Esc            release pointer lock
-Ctrl / J       fire
-Space / E      use / open
-Shift          run
-1..7           weapon selection
-```
-
-A/D reuse LinuxDOOM's original dedicated strafe bindings; movement physics were not replaced.
+Each map gets ordinary Doom nodes/blockmap and a full-sized zero `REJECT` table rather than a ZDoom-only empty representation.
 
 ## Architecture
 
@@ -144,27 +277,39 @@ control playtest orchestrate cheats geometry
  │      │        │        │        │
  └──────┴────────┴────┬───┴────────┘
                      ▼
-            mcp/geometry_server.js
+            P0 MCP composition
+        p0_experiment_server.js
                      │
+       ┌─────────────┴──────────────┐
+       ▼                            ▼
+EpisodeWorkspace             headless Chromium
+transactions                 experiment runner
+validation                    exact-tic QA
+ZDBSP × selected maps         PNG + telemetry
+       └─────────────┬──────────────┘
+                     ▼
                   stdio MCP
                      │
           Grok / Claude / Codex / etc.
 ```
 
-The public Pages game behaves normally. Local MCP WebSockets activate only when the game is opened through the local MCP proxy.
+The public Pages game behaves normally. Local MCP WebSockets activate only when the game is opened through the local MCP proxy or by the automated experiment runner.
 
-## Quick start
+## Quick start — P0
 
 ```bash
 git clone https://github.com/pavy23/web-doom.git
 cd web-doom
-git checkout direct-linuxdoom
+git checkout p0-episode-authoring
 cd mcp
 npm install
+npm run prepare-experiment
 npm start
 ```
 
-Open:
+`prepare-experiment` installs Playwright Chromium for the automated runner. The runner can also fall back to an installed Chrome where supported.
+
+Open for interactive MCP work:
 
 ```text
 http://127.0.0.1:3777/
@@ -177,43 +322,59 @@ Generic MCP host configuration:
 ```json
 {
   "command": "node",
-  "args": ["C:/absolute/path/to/web-doom/mcp/geometry_server.js"]
+  "args": ["C:/absolute/path/to/web-doom/mcp/p0_experiment_server.js"]
 }
 ```
 
-For Grok Build, point the MCP entry at `mcp/geometry_server.js` rather than the older `cheat_server.js`.
-
-Detailed guide: `mcp/README.md` on the `direct-linuxdoom` branch.
-
-## Example geometry experiment
+Available entry points:
 
 ```text
-현재 E1M1에서 geometry session을 시작해.
-geometry를 조사해서 바깥으로 안전하게 확장 가능한 one-sided wall 하나를 찾아.
-그 벽에 깊이 192의 새 방을 추가해.
-validation을 실행해.
-geom_e1m1_v1.wad로 build하고 apply해.
-새 방으로 직접 이동해서 화면/telemetry로 playtest해.
-필요하면 조명, texture, 적을 추가해.
-마지막으로 geom_e1m1_final.wad로 finalize해.
+npm start                 P0 + automated experiment runner
+npm run start:p0-core     P0 authoring without experiment runner
+npm run start:v2          previous v2 geometry server
 ```
 
-## Retained v1 capabilities
-
-Closed-loop design sessions remain available:
+## Example: edit one map only
 
 ```text
-design goal
-→ bounded semantic edits
-→ candidate PWAD
-→ autonomous exact-tic playtest
-→ PNG + telemetry
-→ deterministic evaluation + optional AI vision rubric
-→ revise / restore
-→ final PWAD
+E1M3만 대상으로 episode authoring session을 시작해.
+현재 geometry를 조사하고 기존 흐름을 해치지 않는 새 공간을 하나 추가해.
+transaction으로 처리하고 topology validation을 통과시켜.
+E1M3만 포함한 candidate를 build한 뒤 automated experiment로 cold-boot하고
+exact-tic smoke test와 PNG/telemetry 결과를 확인해.
 ```
 
-Runtime-only debugging tools also remain available: god mode, noclip, full arsenal/ammo/keys, health/armor, power-ups, map warp and browser/SDL audio diagnostics. These cheats are not serialized into authored PWADs.
+## Example: modify the whole episode
+
+```text
+E1M1부터 E1M8까지 하나의 episode workspace로 열어.
+각 맵을 조사하고 서로 다른 작은 구조 변경을 적용해.
+모든 변경을 하나의 atomic transaction으로 처리해.
+전체 topology validation 후 각 맵을 ZDBSP로 rebuild하고 하나의 PWAD로 묶어.
+그 candidate를 automated episode experiment로 E1M1~E1M8 순회 테스트해.
+맵별 PNG, telemetry, PASS/FAIL을 보고해.
+```
+
+## Modern browser controls
+
+The direct browser platform defaults to a modern FPS scheme while preserving original arrow-key behavior:
+
+```text
+W / S          forward / backward
+A / D          strafe left / right
+Left / Right   rotate
+Up / Down      forward / backward
+Mouse X        horizontal turn
+Mouse Y        ignored
+Click canvas   pointer lock + hide cursor
+Esc            release pointer lock
+Ctrl / J       fire
+Space / E      use / open
+Shift          run
+1..7           weapon selection
+```
+
+A/D reuse LinuxDOOM's original dedicated strafe bindings; movement physics were not replaced.
 
 ## Audio
 
@@ -238,10 +399,41 @@ Public shareware IWAD:
 
 Commercial DOOM / DOOM II IWADs are not distributed by this repository.
 
+## CI / P0 completion gate
+
+P0 has three automated validation layers:
+
+1. `p0_selftest.mjs` — validates E1M1~E1M8, cross-map atomic rollback/commit and rebuilds all eight maps through the real pinned ZDBSP pipeline.
+2. `p0_browser_e2e.mjs` — launches the real browser/WASM runtime and verifies the five local bridges on ports 3777~3781.
+3. `p0_experiment_selftest.mjs` — builds an eight-map candidate, cold-boots it in Chromium, explicitly warps through E1M1~E1M8, advances exact world tics, captures PNG evidence and requires every map report to pass.
+
+The final P0 logic CI completed successfully before this documentation update.
+
 ## Current geometry boundary
 
-Supported v2 topology work is deliberately bounded: room extrusion, straight corridor connection and low-level Doom primitives with validation. Arbitrary free-form polygon generation, automatic obstacle-routing corridors, and arbitrary deletion/merging of legacy sectors are not yet treated as safe semantic operations.
+Supported safe semantic topology remains deliberately bounded: room extrusion, straight corridor connection and low-level Doom primitives. Arbitrary free-form polygon generation, automatic obstacle-routing corridors, arbitrary deletion/merging of legacy sectors, stairs/lifts as semantic primitives and general navigation are not yet treated as safe high-level operations.
 
-The governing rule is simple:
+The governing rule remains:
 
 > **AI proposes topology; deterministic validation + node building decides whether it is loadable.**
+
+## Roadmap
+
+### P0 — reliability foundation ✅
+
+- full changed-topology validator
+- atomic selected-map / multi-map transactions
+- E1M1~E1M8 map-set build support
+- selected-map authoring support
+- real browser/WASM E2E
+- automated episode experiment runner
+
+### P1 — richer level authoring + autonomous QA
+
+Planned next scope:
+
+- **General THINGS authoring** — players starts, monsters, health, armor, ammo, weapons, keys, barrels and Doom thing flags instead of enemy-only convenience tools.
+- **Richer semantic geometry** — stairs, lifts, doors, polygon rooms and safer sector split/merge primitives.
+- **Navigation graph + autonomous agent** — build map connectivity/navigation data and let the agent verify reachability, traverse authored spaces, collect keys, operate doors and attempt exits without a manually supplied movement script.
+
+This P1 layer is also the intended foundation for future **AI-generated multiplayer/deathmatch maps**, where spawn fairness, weapon/item distribution, line-of-sight and travel-distance evaluation can be added on top of the same map-set transaction/build/experiment pipeline.
