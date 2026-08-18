@@ -1,0 +1,106 @@
+name: Validate DOOM MCP P1.3 navigation agent
+
+on:
+  push:
+    branches: ["p1-navigation-agent"]
+    paths:
+      - "mcp/navigation_graph.js"
+      - "mcp/navigation_browser_agent.mjs"
+      - "mcp/p1_navigation_server.js"
+      - "mcp/p1_navigation_selftest.mjs"
+      - "mcp/p1_navigation_runtime_selftest.mjs"
+      - "mcp/package.json"
+      - ".github/workflows/p1-navigation.yml"
+  pull_request:
+    branches: ["p1-semantic-geometry"]
+    paths:
+      - "mcp/navigation_graph.js"
+      - "mcp/navigation_browser_agent.mjs"
+      - "mcp/p1_navigation_server.js"
+      - "mcp/p1_navigation_selftest.mjs"
+      - "mcp/p1_navigation_runtime_selftest.mjs"
+      - "mcp/package.json"
+      - ".github/workflows/p1-navigation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  p1-navigation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout P1.3 branch
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install MCP dependencies
+        run: npm install --prefix mcp --ignore-scripts --no-audit --no-fund
+
+      - name: Syntax-check P1.3 modules
+        run: |
+          node --check mcp/navigation_graph.js
+          node --check mcp/navigation_browser_agent.mjs
+          node --check mcp/p1_navigation_server.js
+          node --check mcp/p1_navigation_selftest.mjs
+          node --check mcp/p1_navigation_runtime_selftest.mjs
+
+      - name: Instantiate P1.3 MCP server
+        run: |
+          cd mcp
+          node --input-type=module -e "import('./p1_navigation_server.js').then(m => { const s=m.createMcpServer(); if(!s) process.exit(1); console.error('P1.3 MCP server import passed'); })"
+
+      - name: Run P1.3 static navigation graph tests
+        run: |
+          cd mcp
+          npm run test:p1:navigation
+
+      - name: Run P0 transaction and nodebuilder regression
+        run: |
+          cd mcp
+          npm run test:p0
+
+      - name: Run P1.1 THINGS regression
+        run: |
+          cd mcp
+          npm run test:p1
+
+      - name: Run P1.2 semantic geometry tests
+        run: |
+          cd mcp
+          npm run test:p1:semantic
+
+      - name: Install Playwright Chromium
+        run: |
+          cd mcp
+          npx playwright install --with-deps chromium
+
+      - name: Run P0 real browser regression
+        run: |
+          cd mcp
+          node p0_browser_e2e.mjs
+
+      - name: Run P0 automated episode experiment regression
+        run: |
+          cd mcp
+          npm run test:experiment
+
+      - name: Run P1.1 authored THINGS runtime regression
+        run: |
+          cd mcp
+          node p1_runtime_selftest.mjs
+
+      - name: Run P1.2 semantic runtime regression
+        run: |
+          cd mcp
+          npm run test:p1:semantic:runtime
+
+      - name: Run P1.3 authored-space autonomous navigation regression
+        run: |
+          cd mcp
+          npm run test:p1:navigation:runtime
