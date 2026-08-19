@@ -227,22 +227,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf /tmp/p22-runtime-cache
-          python3 -m http.server 8000 --bind 127.0.0.1 --directory /tmp/id-doom/linuxdoom-1.10 >/tmp/p22-runtime-http.log 2>&1 &
+          rm -rf /tmp/p22-runtime-cache /tmp/p22-http-root
+          mkdir -p /tmp/p22-http-root
+          SRC=/tmp/id-doom/linuxdoom-1.10
+          cp "$SRC/webdoom.html" /tmp/p22-http-root/index.html
+          cp "$SRC/webdoom.js" /tmp/p22-http-root/webdoom.js
+          cp "$SRC/webdoom.wasm" /tmp/p22-http-root/webdoom.wasm
+          cp "$SRC/webdoom.data" /tmp/p22-http-root/webdoom.data
+          cp direct-port/opl_music.js /tmp/p22-http-root/opl_music.js
+          test -s /tmp/p22-http-root/index.html
+          test -s /tmp/p22-http-root/webdoom.js
+          test -s /tmp/p22-http-root/webdoom.wasm
+          test -s /tmp/p22-http-root/webdoom.data
+          python3 -m http.server 8000 --bind 127.0.0.1 --directory /tmp/p22-http-root >/tmp/p22-runtime-http.log 2>&1 &
           echo $! >/tmp/p22-runtime-http.pid
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8000/webdoom.html >/dev/null; then
+            if curl -fsS http://127.0.0.1:8000/index.html >/dev/null; then
               break
             fi
             sleep 1
           done
+          curl -fsS http://127.0.0.1:8000/index.html >/dev/null
           curl -fsS http://127.0.0.1:8000/webdoom.js >/dev/null
+          curl -fsS http://127.0.0.1:8000/webdoom.wasm >/dev/null
+          curl -fsS http://127.0.0.1:8000/webdoom.data >/dev/null
 
       - name: Run four-player local bot LinuxDOOM acceptance
         timeout-minutes: 12
         shell: bash
         env:
-          DOOM_MCP_UPSTREAM: http://127.0.0.1:8000/webdoom.html
+          DOOM_MCP_UPSTREAM: http://127.0.0.1:8000/
           DOOM_MCP_GAME_DIR: /tmp/p22-runtime-cache
           DOOM_P22_BOT_TICS: "700"
         run: |
@@ -254,7 +268,7 @@ jobs:
         timeout-minutes: 8
         shell: bash
         env:
-          DOOM_MCP_UPSTREAM: http://127.0.0.1:8000/webdoom.html
+          DOOM_MCP_UPSTREAM: http://127.0.0.1:8000/
           DOOM_MCP_GAME_DIR: /tmp/p22-runtime-cache
         run: |
           set -euo pipefail
