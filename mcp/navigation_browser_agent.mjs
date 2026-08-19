@@ -15,12 +15,6 @@ function mapWarpArgs(mapName) {
   if (match[1]) return { episode: Number(match[1]), map: Number(match[2]) };
   return { episode: 1, map: Number(match[3]) };
 }
-function mapBootArgs(mapName) {
-  const match = MAP_RE.exec(String(mapName || '').toUpperCase());
-  if (!match) throw new Error(`Unsupported map name: ${mapName}`);
-  if (match[1]) return ['-warp', String(Number(match[1])), String(Number(match[2]))];
-  return ['-warp', String(Number(match[3]))];
-}
 function headingDegrees(from, to) {
   let angle = Math.atan2(Number(to.y) - Number(from.y), Number(to.x) - Number(from.x)) * 180 / Math.PI;
   if (angle < 0) angle += 360;
@@ -71,9 +65,6 @@ async function coldBootSnapshot(page, expectedFilename) {
     } catch (error) {
       staged = { error: String(error?.message || error) };
     }
-    let state = null;
-    try { state = window.DoomControl?.getState?.() || null; }
-    catch (error) { state = { error: String(error?.message || error) }; }
     return {
       expectedFilename: filename,
       url: location.href,
@@ -84,7 +75,6 @@ async function coldBootSnapshot(page, expectedFilename) {
       modulePresent: typeof Module !== 'undefined',
       ccallPresent: typeof Module !== 'undefined' && typeof Module.ccall === 'function',
       doomControlPresent: Boolean(window.DoomControl),
-      state,
       coldBoot: window.DoomColdBoot ? {
         candidate: window.DoomColdBoot.candidate || null,
         prepared: Boolean(window.DoomColdBoot.prepared),
@@ -133,18 +123,6 @@ async function warp(page, mapName) {
   if (result !== 1) throw new Error(`LinuxDOOM rejected warp to ${mapName}`);
   return waitForPlayable(page, expected);
 }
-async function currentMapOrWarp(page, mapName, preferCurrentMap = false) {
-  const expected = mapWarpArgs(mapName);
-  if (preferCurrentMap) {
-    try {
-      return await waitForPlayable(page, expected, 15000);
-    } catch {
-      // Fall through to the established warp path when the cold-booted runtime
-      // did not already land on the requested map.
-    }
-  }
-  return warp(page, mapName);
-}
 async function coldBoot(page, config, wadBase64) {
   await page.goto(config.playUrl || DEFAULT_PLAY_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
   await waitForRuntime(page);
@@ -157,20 +135,8 @@ async function coldBoot(page, config, wadBase64) {
   await waitForRuntime(page);
   await waitForColdBoot(page, config.filename, Number(config.coldBootTimeoutMs || DEFAULT_COLD_BOOT_TIMEOUT_MS));
   await page.waitForSelector('#start.ready:not([disabled])', { timeout: 30000 });
-
-  if (config.bootDirectToMap === true) {
-    const bootArgs = mapBootArgs(config.map);
-    await page.evaluate(args => {
-      const originalCallMain = Module.callMain.bind(Module);
-      Module.callMain = () => originalCallMain(args);
-    }, bootArgs);
-  }
-
   await page.click('#start');
-  if (config.bootDirectToMap === true) {
-    return waitForPlayable(page, mapWarpArgs(config.map), 45000);
-  }
-  return currentMapOrWarp(page, config.map, config.preferCurrentMap === true);
+  return warp(page, config.map);
 }
 async function exactInput(page, command) {
   const tics = Math.max(1, Math.min(12, Math.trunc(command.tics || 1)));
@@ -262,8 +228,6 @@ export async function runNavigationBrowserTrial(input) {
     maxTicsPerEdge: 210,
     captureFrame: true,
     keys: [],
-    preferCurrentMap: false,
-    bootDirectToMap: false,
     coldBootTimeoutMs: DEFAULT_COLD_BOOT_TIMEOUT_MS,
     ...input
   };
