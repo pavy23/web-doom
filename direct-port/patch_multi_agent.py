@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Upgrade the existing P1 console-agent G_Ticker hook to P2.2 per-player input.
+"""Upgrade LinuxDOOM for P2.2 independent local-player bot control.
 
-Run after direct-port/patch_agent_input.py. It keeps the same point in G_Ticker
-(after net/demo command selection and before gameplay consumption) but applies
-an independent local ticcmd override to every playeringame[] slot.
-
-Browser launcher patching and the live local-bot pre-js scheduler are wired by
-the dedicated P2.2 build path, not by this source patch.
+Run after direct-port/patch_agent_input.py. It preserves the proven P1 hook
+location while applying an independent ticcmd override to every playeringame[]
+slot. It also keeps Vanilla deathmatch respawn semantics for P2.2 local
+multi-player sessions even though they deliberately keep netgame=false and use
+only one network node.
 """
 
 from pathlib import Path
@@ -44,8 +43,28 @@ def main() -> None:
             raise SystemExit("existing P1 console-agent call block not found in g_game.c")
         text = text.replace(old_call, new_call, 1)
 
+    old_reborn = (
+        "void G_DoReborn (int playernum) \n"
+        "{ \n"
+        "    int                             i; \n"
+        "\t \n"
+        "    if (!netgame)\n"
+    )
+    new_reborn = (
+        "extern int doomctl_is_local_multiplayer(void);\n\n"
+        "void G_DoReborn (int playernum) \n"
+        "{ \n"
+        "    int                             i; \n"
+        "\t \n"
+        "    if (!netgame && !doomctl_is_local_multiplayer())\n"
+    )
+    if new_reborn not in text:
+        if old_reborn not in text:
+            raise SystemExit("Vanilla G_DoReborn single-player branch not found in g_game.c")
+        text = text.replace(old_reborn, new_reborn, 1)
+
     path.write_text(text, encoding="utf-8")
-    print("Patched G_Ticker for P2.2 independent local-player bot ticcmds")
+    print("Patched G_Ticker for P2.2 per-player ticcmds and local deathmatch rebirth")
 
 
 if __name__ == "__main__":
