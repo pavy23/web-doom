@@ -123,6 +123,18 @@ async function warp(page, mapName) {
   if (result !== 1) throw new Error(`LinuxDOOM rejected warp to ${mapName}`);
   return waitForPlayable(page, expected);
 }
+async function currentMapOrWarp(page, mapName, preferCurrentMap = false) {
+  const expected = mapWarpArgs(mapName);
+  if (preferCurrentMap) {
+    try {
+      return await waitForPlayable(page, expected, 15000);
+    } catch {
+      // Fall through to the established warp path when the cold-booted runtime
+      // did not already land on the requested map.
+    }
+  }
+  return warp(page, mapName);
+}
 async function coldBoot(page, config, wadBase64) {
   await page.goto(config.playUrl || DEFAULT_PLAY_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
   await waitForRuntime(page);
@@ -136,7 +148,7 @@ async function coldBoot(page, config, wadBase64) {
   await waitForColdBoot(page, config.filename, Number(config.coldBootTimeoutMs || DEFAULT_COLD_BOOT_TIMEOUT_MS));
   await page.waitForSelector('#start.ready:not([disabled])', { timeout: 30000 });
   await page.click('#start');
-  return warp(page, config.map);
+  return currentMapOrWarp(page, config.map, config.preferCurrentMap === true);
 }
 async function exactInput(page, command) {
   const tics = Math.max(1, Math.min(12, Math.trunc(command.tics || 1)));
