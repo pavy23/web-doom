@@ -1,6 +1,6 @@
-# Web DOOM — Direct LinuxDOOM + AI Authoring MCP P1.4
+# Web DOOM — Direct LinuxDOOM + AI Authoring MCP P2.0
 
-A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, extended into an AI-native DOOM authoring, deterministic validation, autonomous QA and conservative self-repair sandbox.
+A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, extended into an AI-native DOOM authoring, deterministic validation, autonomous QA, conservative self-repair and now **source-free level generation** sandbox.
 
 The `/direct/` runtime uses original LinuxDOOM gameplay/rendering/WAD code with repository-owned browser platform adapters. Chocolate Doom is used only for the pinned Vanilla/DMX-compatible OPL music subsystem, not as the game runtime.
 
@@ -8,9 +8,10 @@ The `/direct/` runtime uses original LinuxDOOM gameplay/rendering/WAD code with 
 
 - Direct build: https://pavy23.github.io/web-doom/direct/
 - Earlier doomgeneric comparison build: https://pavy23.github.io/web-doom/
-- Main development line after P1 consolidation: `main`
+- Stable P0→P1.4 baseline: `main`
+- P2.0 development branch: `p2-blank-map-generation`
 
-Current MCP version: **2.5.0-p1.4**
+Current MCP version on the P2.0 branch: **2.6.0-p2.0**
 
 ## What is complete
 
@@ -20,66 +21,118 @@ P1.1  ✅ General THINGS authoring
 P1.2  ✅ Semantic geometry authoring
 P1.3  ✅ Navigation graph + autonomous QA
 P1.4  ✅ Diagnose → repair → rebuild → replay closed loop
+P2.0  ✅ Source-free blank-map generation
 ```
 
-The full pipeline is now:
+The full pipeline can now start without an existing Doom level:
 
 ```text
-natural-language authoring request
-        ↓
+no legacy map
+      ↓
+canonical E#M# / MAP## marker + classic map lumps
+      ↓
+runtime-safe generated seed
+      ↓
 P0 atomic transaction
-        ↓
-THINGS + semantic geometry edits
-        ↓
+      ↓
+P1.1 THINGS + P1.2 semantic geometry
+      ↓
 deterministic topology / placement validation
-        ↓
+      ↓
 pinned ZDBSP rebuild
-        ↓
-navigation graph + progression analysis
-        ↓
-real LinuxDOOM / Chromium runtime
-        ↓
+      ↓
+P1.3 navigation graph + progression analysis
+      ↓
+real LinuxDOOM / Chromium
+      ↓
 autonomous exact-tic playtest
-        ↓
+      ↓
 P1.4 diagnosis + conservative repair when needed
-        ↓
+      ↓
 rebuild + cold boot + autonomous replay
-        ↓
+      ↓
 PASS / rollback / manual-repair-required
 ```
 
 The AI does not write BSP nodes directly. Structural edits must pass deterministic validation and the pinned node-builder pipeline before LinuxDOOM loads them.
 
+## P2.0 — source-free blank-map generation
+
+P2.0 removes the previous requirement that the source WAD already contain the map being authored.
+
+A new map begins with the canonical sequence:
+
+```text
+<MAP MARKER>
+THINGS
+LINEDEFS
+SIDEDEFS
+VERTEXES
+SEGS
+SSECTORS
+NODES
+SECTORS
+REJECT
+BLOCKMAP
+```
+
+The geometry and THINGS are generated directly. `SEGS`, `SSECTORS`, `NODES`, `REJECT` and `BLOCKMAP` start as derived data and are rebuilt by pinned ZDBSP.
+
+### Runtime-safe generated seed
+
+The default seed is deliberately small but uses **two connected sectors**, not one:
+
+- rectangular footprint split into left/right sectors
+- six outer one-sided walls
+- one two-sided internal portal
+- Player 1 start in sector 0
+- optional S1 exit wall (`special 11`)
+- default wall: `STARTAN3`
+- default floor: `FLOOR4_8`
+- default ceiling: `CEIL3_5`
+- default vertical clearance: 128 map units
+
+Those material defaults are verified against the supported shareware E1M1 runtime baseline.
+
+The two-sector seed is intentional. A single convex sector can cause ZDBSP to emit a zero-byte `NODES` lump; the generated two-sector seed produces a real Vanilla BSP node and has been verified in LinuxDOOM.
+
+All seed primitives are marked **AI-authored** by setting the generated workspace's legacy boundary to zero. This means P1.4 can repair generated geometry with legacy repair still disabled.
+
+### P2.0 MCP tools
+
+- `doom_p2_blank_map_status`
+- `doom_create_blank_map_session`
+- `doom_get_blank_map_session`
+- `doom_get_blank_map`
+- `doom_begin_blank_transaction`
+- `doom_apply_blank_edits`
+- `doom_validate_blank_transaction`
+- `doom_commit_blank_transaction`
+- `doom_rollback_blank_transaction`
+- `doom_validate_blank_map`
+- `doom_build_blank_level`
+- `doom_diagnose_blank_navigation`
+- `doom_run_blank_auto_repair`
+- `doom_run_blank_navigation_trial`
+
+The P2 server composes P1.4, so the existing P0/P1 tool surface remains available too.
+
 ## P0 — reliable atomic authoring
 
-P0 provides the reliability layer for selected-map and multi-map authoring:
+P0 provides the reliability layer beneath every later phase:
 
-- E1M1..E1M8 and selected map-set workspaces
+- selected-map and multi-map workspaces
 - atomic begin/apply/validate/commit/rollback transactions
 - duplicate/crossing/overlap/T-junction/manifold validation
-- cross-map rollback on any failed edit
+- cross-map rollback on failed edits
 - pinned and hash-verified ZDBSP rebuilds
 - candidate restore/finalize support
 - real Chromium cold-boot regression
-- automated exact-tic episode experiment runner with PNG + telemetry evidence
-
-Core tools include:
-
-- `doom_begin_episode_session`
-- `doom_begin_transaction`
-- `doom_apply_transaction_edits`
-- `doom_validate_transaction`
-- `doom_commit_transaction`
-- `doom_rollback_transaction`
-- `doom_build_episode`
-- `doom_finalize_episode`
-- `doom_run_episode_experiment`
+- exact-tic episode experiment runner with PNG + telemetry evidence
 
 ## P1.1 — General THINGS authoring
 
-P1.1 adds real classic 10-byte DOOM THINGS editing instead of enemy-only convenience calls.
-
-Supported categories include:
+P1.1 edits real classic 10-byte DOOM THINGS:
 
 - Player 1–4 starts and deathmatch starts
 - monsters
@@ -89,21 +142,11 @@ Supported categories include:
 - powerups and barrels
 - numeric DoomEd fallback
 
-Operations:
-
-- list
-- add
-- move
-- update
-- delete
-
-Newly authored monsters, starts and barrels are also checked for invalid placement such as wall/void/solid-decoration overlap.
+Persistent add/move/update/delete operations participate in P0 atomic transactions and authored actor placement checks.
 
 ## P1.2 — Semantic geometry
 
-P1.2 adds safer high-level geometry authoring on top of the raw Doom geometry IR.
-
-Semantic operations include:
+High-level authoring operations include:
 
 - convex polygon room extrusion
 - staircases
@@ -112,30 +155,13 @@ Semantic operations include:
 - ordered sector-boundary inspection
 - safe simple-sector split
 
-Every edit still flows through P0 validation and pinned ZDBSP before runtime use.
+Generated P2 maps use this exact same semantic layer rather than a separate level generator.
 
 ## P1.3 — Navigation graph + autonomous QA
 
-P1.3 turns authored geometry into a machine-readable gameplay graph.
+P1.3 derives gameplay connectivity directly from Doom geometry and classifies portals as walk/drop/door/lift/blocked.
 
-Navigation edges are classified as:
-
-- walk
-- drop
-- door
-- lift
-- blocked
-
-The planner understands:
-
-- Player 1 start
-- blue/yellow/red keys
-- keyed doors
-- step-up and vertical-clearance constraints
-- exit linedefs
-- progressive reachability as keys are acquired
-
-The browser agent uses deterministic exact-tic input and can rotate, move, use doors, recover from stalls and prove that a real LinuxDOOM player can reach an authored target sector.
+The planner understands Player 1 start, key acquisition, keyed doors, step/clearance limits and exits. The browser agent then verifies the planned path in real LinuxDOOM using deterministic exact-tic input.
 
 Core tools:
 
@@ -144,49 +170,38 @@ Core tools:
 - `doom_analyze_exit_progression`
 - `doom_run_navigation_trial`
 
-## P1.4 — conservative auto-repair closed loop
+## P1.4 — conservative auto-repair
 
-P1.4 diagnoses navigation failures, proposes bounded repairs, applies them through P0 atomic transactions, rebuilds the WAD and verifies the result in real LinuxDOOM.
+P1.4 can diagnose and conservatively repair bounded gameplay failures such as:
 
-Core tools:
-
-- `doom_p1_auto_repair_status`
-- `doom_diagnose_navigation`
-- `doom_plan_auto_repair`
-- `doom_run_auto_repair_loop`
-
-Supported repair classes include:
-
-- missing/inaccessible key repair
-- authored portal `ML_BLOCKING` repair
-- authored sector step/clearance repair
+- missing/inaccessible keys
+- authored portal `ML_BLOCKING`
+- authored sector step/clearance defects
 - safe authored exit insertion
 
-Safety rules:
+Repairs run through P0 atomic validation, rebuild with ZDBSP and can be verified by autonomous LinuxDOOM replay. Legacy Vanilla geometry remains protected unless explicitly enabled.
 
-- legacy Vanilla geometry is protected by default
-- repair batches and iterations are bounded
-- gameplay key repair can be disabled
-- ambiguous disconnected geometry is not rewritten automatically
-- unsupported cases return `manual_repair_required`
-- runtime verification failure restores the pre-repair state by default
+## P2.0 acceptance proof
 
-The final P1.4 runtime regression proves:
+The final source-free regression proves:
 
 ```text
-real E1M1
-→ author a new polygon room
-→ deliberately block its authored portal
-→ diagnose BLOCKED_PORTAL_FLAG
-→ plan repair_clear_blocking
-→ apply inside a P0 atomic transaction
-→ validate
-→ rebuild with ZDBSP
-→ cold-boot LinuxDOOM
+no legacy E1M1 source
+→ generate runtime-safe two-sector E1M1
+→ validate seed
+→ P1.2 adds a new polygon room
+→ deliberately block the authored portal
+→ P1.4 diagnoses BLOCKED_PORTAL_FLAG
+→ plan + apply repair_clear_blocking
+→ atomic validation + commit
+→ pinned ZDBSP rebuild
+→ LinuxDOOM standard runtime warp
 → autonomous exact-tic navigation
-→ enter the repaired authored sector
+→ enter generated target sector
 → PASS
 ```
+
+CI additionally validates SEG/SSECTOR/NODE/BLOCKMAP references and separately proves the untouched generated seed itself boots in LinuxDOOM.
 
 ## Architecture
 
@@ -203,29 +218,28 @@ control playtest orchestrate cheats geometry
  │      │        │        │        │
  └──────┴────────┴────┬───┴────────┘
                      ▼
-            P1.4 MCP composition
-      p1_auto_repair_server.js
+              P2.0 MCP server
+          p2_blank_server.js
                      │
-      ┌──────────────┼──────────────┐
-      ▼              ▼              ▼
-EpisodeWorkspace  Navigation     Browser agent
-transactions      graph          exact-tic QA
-validation        progression    replay
-ZDBSP             diagnosis
-      └──────────────┼──────────────┘
+       ┌─────────────┼──────────────┐
+       ▼             ▼              ▼
+ Blank-map seed   P0/P1 stack    Browser agent
+ + workspace      validation     exact-tic QA
+                  navigation     replay
+                  auto-repair
+       └─────────────┼──────────────┘
                      ▼
                   stdio MCP
                      │
           Grok / Claude / Codex / etc.
 ```
 
-The public Pages game behaves normally. Local MCP WebSockets activate only when the game is opened through the local MCP proxy or by automated browser tests.
-
-## Quick start
+## Quick start — P2.0
 
 ```bash
 git clone https://github.com/pavy23/web-doom.git
 cd web-doom
+git checkout p2-blank-map-generation
 cd mcp
 npm install
 npx playwright install chromium
@@ -235,7 +249,13 @@ npm start
 `npm start` launches:
 
 ```text
-node p1_auto_repair_server.js
+node p2_blank_server.js
+```
+
+The previous complete P1.4 entry point remains available:
+
+```bash
+npm run start:p1.4
 ```
 
 For interactive browser work open:
@@ -249,21 +269,27 @@ Generic MCP host configuration:
 ```json
 {
   "command": "node",
-  "args": ["C:/absolute/path/to/web-doom/mcp/p1_auto_repair_server.js"]
+  "args": ["C:/absolute/path/to/web-doom/mcp/p2_blank_server.js"]
 }
 ```
 
 For Grok CLI:
 
 ```powershell
-grok mcp add --scope project doom-p14 -- node D:\web-doom\mcp\p1_auto_repair_server.js
+grok mcp add --scope project doom-p20 -- node D:\web-doom\mcp\p2_blank_server.js
 ```
-
-Use the P1.4 entry point for normal testing. `geometry_server.js` is a lower-level geometry layer and does not expose the complete P1.4 tool set.
 
 ## Useful test commands
 
-Static regressions:
+P2-specific:
+
+```bash
+npm run test:p2
+npm run test:p2:seed-runtime
+npm run test:p2:runtime
+```
+
+Stacked regressions:
 
 ```bash
 npm run test:p0
@@ -271,20 +297,13 @@ npm run test:p1
 npm run test:p1:semantic
 npm run test:p1:navigation
 npm run test:p1:auto-repair
-```
-
-Runtime regressions:
-
-```bash
-node p0_browser_e2e.mjs
 npm run test:experiment
-node p1_runtime_selftest.mjs
 npm run test:p1:semantic:runtime
 npm run test:p1:navigation:runtime
 npm run test:p1:auto-repair:runtime
 ```
 
-The final P1.4 GitHub Actions gate runs on Node 24 and requires all of the above static and runtime layers to pass.
+The P2 GitHub Actions gate runs on Node 24 and retains the complete P0→P1.4 static/runtime suite in addition to the P2 seed and full source-free regressions.
 
 ## Node builder
 
@@ -295,14 +314,6 @@ acc45bf6b2232a75bdbb0b6295822e72e13dfeec
 ```
 
 The wrapper and WASM binary are cached under `mcp/.cache/zdbsp/` and checked against their exact Git blob SHA before execution.
-
-The Vanilla-compatible node build uses:
-
-```text
---zero-reject
---no-prune
---map=E#M#
-```
 
 ## Runtime baseline
 
@@ -325,51 +336,45 @@ Public shareware IWAD:
 
 Commercial DOOM / DOOM II IWADs are not distributed by this repository.
 
+## Online multiplayer direction
+
+Online multiplayer is **feasible**, but it is intentionally separate from P2.0 map generation.
+
+The browser platform currently uses a deliberately single-player `direct-port/i_net_web.c` shim: `netgame=false`, one player/node, and no real `I_NetCmd()` transport. The LinuxDOOM game/network layer above that platform boundary remains available.
+
+Recommended sequence:
+
+```text
+P2.0  source-free maps                    ✅
+P2.1  game-design evaluator               ⏭️
+P2.2  deathmatch map generation/fairness
+P3.0  browser online multiplayer transport
+```
+
+The first P3 prototype should use a **WebSocket relay** between two browser clients because it is easier to instrument, synchronize and reproduce than a peer-to-peer implementation. WebRTC DataChannel can be evaluated afterward.
+
+A sensible first online acceptance target is: two browser clients load the same generated deathmatch PWAD, exchange LinuxDOOM tic packets through the relay, and remain synchronized for a bounded match interval.
+
 ## Current boundary
 
-P1.4 is deliberately conservative. It can author and validate rich modifications to existing maps and can repair a bounded set of navigation/progression faults, but it does **not** yet generate a whole level from an empty map marker.
+P2.0 can generate a valid source-free map, safely extend it, populate it with THINGS, diagnose navigation faults, repair bounded failures, rebuild it and prove traversal in real LinuxDOOM.
+
+It does **not yet** take a high-level brief such as “make me a balanced 10-minute E1-style level” and autonomously optimize pacing, combat/resource economy and fun. That is the purpose of P2.1 and later P2 work.
 
 The governing rule remains:
 
-> **AI proposes authoring and repair actions; deterministic validation, node building and real runtime QA decide whether the result is accepted.**
+> **AI proposes generation, authoring and repair actions; deterministic validation, node building and real runtime QA decide whether the result is accepted.**
 
 ## Roadmap
 
-### P0 — reliability foundation ✅
-
-- full changed-topology validator
-- atomic selected-map / multi-map transactions
-- deterministic node rebuild
-- browser/WASM regression and episode experiment runner
-
+### P0 — Reliability foundation ✅
 ### P1.1 — General THINGS ✅
-
-- starts, monsters, weapons, ammo, health, armor, keys, powerups and props
-- real serialization and placement checks
-
 ### P1.2 — Semantic geometry ✅
-
-- polygon rooms
-- stairs
-- doors
-- lifts
-- safe sector split
-
 ### P1.3 — Navigation + autonomous QA ✅
-
-- sector/portal navigation graph
-- keyed progression analysis
-- autonomous exact-tic runtime traversal
-
 ### P1.4 — Auto-repair closed loop ✅
+### P2.0 — Source-free blank-map generation ✅
+### P2.1 — Game-design evaluator ⏭️
+### P2.2 — Multiplayer / deathmatch map generator
+### P3.0 — Online multiplayer transport
 
-- navigation failure diagnosis
-- conservative bounded repair
-- atomic validation/rebuild
-- LinuxDOOM replay verification and rollback
-
-### P2.0 — Blank-map generation ⏭️
-
-Next target: create a valid new `E1M1` / `MAP01` from no legacy map baseline, then feed it through the proven P0→P1.4 validation, navigation, repair and runtime-QA pipeline.
-
-Later P2 work can add game-design evaluation and multiplayer/deathmatch generation on top of the same infrastructure.
+See `mcp/P2_BLANK_MAP.md`, `mcp/P2_STATUS.md` and `.github/P2_MULTIPLAYER_ROADMAP.md` for the current P2 design and acceptance details.
