@@ -90,6 +90,15 @@ void I_NetCmd(void)
     doomcom->remotenode = -1;
 }
 
+// Used only by the P2.2 G_DoReborn compatibility patch. Vanilla G_DoReborn
+// treats netgame=false as single-player and reloads the whole level on death.
+// Local P2.2 arenas intentionally keep netgame=false to avoid remote-node
+// synchronization, but still need normal per-player deathmatch respawns.
+int doomctl_is_local_multiplayer(void)
+{
+    return doomctl_local_players > 1;
+}
+
 EMSCRIPTEN_KEEPALIVE
 int doomctl_get_local_player_capacity(void)
 {
