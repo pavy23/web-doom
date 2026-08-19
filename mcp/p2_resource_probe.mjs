@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,10 +27,14 @@ for (const line of workspace.geometry.linedefs) {
   if (wallTextures.length >= 16) break;
 }
 
+const seedDefaults = { wallTexture: 'STARTAN3', floorFlat: 'FLOOR4_8', ceilingFlat: 'CEIL3_5' };
+assert.ok(flats.includes(`${seedDefaults.floorFlat}/${seedDefaults.ceilingFlat}`), 'P2 seed flat pair must be used by shareware E1M1');
+assert.ok(wallTextures.includes(seedDefaults.wallTexture), 'P2 seed wall texture must be used by shareware E1M1');
+
 console.log('P2 shareware material probe:', JSON.stringify({
-  seedDefaults: { wallTexture: 'STARTAN3', floorFlat: 'FLOOR0_1', ceilingFlat: 'CEIL1_1' },
+  seedDefaults,
   e1m1FlatPairs: flats,
   e1m1WallTextures: wallTextures,
-  defaultFlatPairAppearsInE1M1: flats.includes('FLOOR0_1/CEIL1_1'),
-  defaultWallAppearsInE1M1: wallTextures.includes('STARTAN3')
+  defaultFlatPairAppearsInE1M1: true,
+  defaultWallAppearsInE1M1: true
 }));
