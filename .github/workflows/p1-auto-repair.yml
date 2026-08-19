@@ -1,0 +1,121 @@
+name: Validate DOOM MCP P1.4 auto repair
+
+on:
+  push:
+    branches: ["p1-auto-repair"]
+    paths:
+      - "mcp/auto_repair.js"
+      - "mcp/auto_repair_episode.js"
+      - "mcp/p1_auto_repair_server.js"
+      - "mcp/p1_auto_repair_selftest.mjs"
+      - "mcp/p1_auto_repair_runtime_selftest.mjs"
+      - "mcp/package.json"
+      - ".github/workflows/p1-auto-repair.yml"
+  pull_request:
+    branches: ["p1-navigation-agent"]
+    paths:
+      - "mcp/auto_repair.js"
+      - "mcp/auto_repair_episode.js"
+      - "mcp/p1_auto_repair_server.js"
+      - "mcp/p1_auto_repair_selftest.mjs"
+      - "mcp/p1_auto_repair_runtime_selftest.mjs"
+      - "mcp/package.json"
+      - ".github/workflows/p1-auto-repair.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p1-auto-repair-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p1-auto-repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout P1.4 branch
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install MCP dependencies
+        run: npm install --prefix mcp --ignore-scripts --no-audit --no-fund
+
+      - name: Syntax-check P1.4 modules
+        run: |
+          node --check mcp/auto_repair.js
+          node --check mcp/auto_repair_episode.js
+          node --check mcp/p1_auto_repair_server.js
+          node --check mcp/p1_auto_repair_selftest.mjs
+          node --check mcp/p1_auto_repair_runtime_selftest.mjs
+
+      - name: Instantiate P1.4 MCP server
+        run: |
+          cd mcp
+          node --input-type=module -e "import('./p1_auto_repair_server.js').then(m => { const s=m.createMcpServer(); if(!s) process.exit(1); console.error('P1.4 MCP server import passed'); })"
+
+      - name: Run P1.4 diagnosis and atomic repair tests
+        run: |
+          cd mcp
+          npm run test:p1:auto-repair
+
+      - name: Run P0 transaction and nodebuilder regression
+        run: |
+          cd mcp
+          npm run test:p0
+
+      - name: Run P1.1 THINGS regression
+        run: |
+          cd mcp
+          npm run test:p1
+
+      - name: Run P1.2 semantic geometry regression
+        run: |
+          cd mcp
+          npm run test:p1:semantic
+
+      - name: Run P1.3 navigation graph regression
+        run: |
+          cd mcp
+          npm run test:p1:navigation
+
+      - name: Install Playwright Chromium
+        timeout-minutes: 8
+        run: |
+          cd mcp
+          npx playwright install --with-deps chromium
+
+      - name: Run P0 real browser regression
+        run: |
+          cd mcp
+          node p0_browser_e2e.mjs
+
+      - name: Run P0 automated episode experiment regression
+        run: |
+          cd mcp
+          npm run test:experiment
+
+      - name: Run P1.1 authored THINGS runtime regression
+        run: |
+          cd mcp
+          node p1_runtime_selftest.mjs
+
+      - name: Run P1.2 semantic runtime regression
+        run: |
+          cd mcp
+          npm run test:p1:semantic:runtime
+
+      - name: Run P1.3 autonomous navigation runtime regression
+        run: |
+          cd mcp
+          npm run test:p1:navigation:runtime
+
+      - name: Run P1.4 diagnose-repair-rebuild-replay runtime regression
+        run: |
+          cd mcp
+          npm run test:p1:auto-repair:runtime
