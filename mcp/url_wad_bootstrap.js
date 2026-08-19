@@ -7,6 +7,27 @@
   const cleaned = raw.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^\.+/, '');
   const name = !cleaned ? '' : (cleaned.toLowerCase().endsWith('.wad') ? cleaned : `${cleaned}.wad`);
 
+  // The public P2.2 page introduced a dual launcher (`#playClassic` and
+  // `#playAi`), while the older P0/P1/P2 browser harnesses intentionally use
+  // the long-standing `#start.ready:not([disabled])` contract. Local MCP proxy
+  // pages install this compatibility alias before webdoom.js starts. The
+  // element object held by the public launcher remains the same; only its DOM
+  // id and ready class are mirrored for old automation. The public GitHub Pages
+  // page itself is untouched by this local-only bootstrap.
+  function installLegacyClassicStartAlias() {
+    const classic = document.getElementById('playClassic');
+    if (!classic || document.getElementById('start')) return;
+
+    classic.id = 'start';
+    const syncReady = () => {
+      if (classic.disabled) classic.classList.remove('ready');
+      else classic.classList.add('ready');
+    };
+    syncReady();
+    const observer = new MutationObserver(syncReady);
+    observer.observe(classic, { attributes: true, attributeFilter: ['disabled'] });
+  }
+
   function loadEngine() {
     const script = document.createElement('script');
     script.src = 'webdoom.js';
@@ -64,6 +85,8 @@
     setStatus(`Candidate staged: ${name}`);
     loadEngine();
   }
+
+  installLegacyClassicStartAlias();
 
   if (!name) {
     loadEngine();

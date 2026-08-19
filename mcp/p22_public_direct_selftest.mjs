@@ -17,7 +17,8 @@ async function waitRuntime(page) {
   await page.waitForFunction(() => {
     return typeof Module !== 'undefined'
       && typeof Module.ccall === 'function'
-      && document.getElementById('playClassic')?.disabled === false
+      && document.getElementById('start')?.disabled === false
+      && document.getElementById('start')?.classList?.contains('ready')
       && document.getElementById('playAi')?.disabled === false;
   }, null, { timeout: 120_000 });
 }
@@ -27,9 +28,9 @@ try {
   attachDiagnostics(classic, 'classic');
   await classic.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 120_000 });
   await waitRuntime(classic);
-  assert.equal(await classic.locator('#playClassic').textContent(), 'PLAY CLASSIC DOOM');
+  assert.equal(await classic.locator('#start').textContent(), 'PLAY CLASSIC DOOM');
   assert.equal(await classic.locator('#playAi').textContent(), 'PLAY AI DEATHMATCH');
-  await classic.locator('#playClassic').click();
+  await classic.locator('#start').click();
   await classic.waitForFunction(() => window.DoomPublicLauncher?.mode === 'classic', null, { timeout: 30_000 });
   const classicState = await classic.evaluate(() => ({
     launcher: window.DoomPublicLauncher,
@@ -64,7 +65,27 @@ try {
   await ai.waitForFunction(() => {
     const status = window.DoomLocalBots?.status?.();
     return Array.isArray(status?.decisions)
-      && status.decisions.slice(1, 4).reduce((sum, value) => sum + Number(value || 0), 0) > 0;
+      && status.decisions.slice(1, 4).every(value => Number(value) > 0);
+  }, null, { timeout: 30_000 });
+
+  // Public/live acceptance must prove more than movement. Every AI slot must
+  // acquire a visible opponent and emit a real BT_ATTACK command. This catches
+  // regressions where bots orbit forever without engaging.
+  await ai.waitForFunction(() => {
+    const status = window.DoomLocalBots?.status?.();
+    return Array.isArray(status?.visibleDecisions)
+      && Array.isArray(status?.attacks)
+      && status.visibleDecisions.slice(1, 4).every(value => Number(value) > 0)
+      && status.attacks.slice(1, 4).every(value => Number(value) > 0);
+  }, null, { timeout: 30_000 });
+
+  // A visible attack command is necessary but not sufficient. Require the live
+  // unpaused match to produce real gameplay consequences under LinuxDOOM rules:
+  // at least one damaged player or a non-zero frag count.
+  await ai.waitForFunction(() => {
+    const status = window.DoomLocalBots?.status?.();
+    const players = status?.players?.players;
+    return Array.isArray(players) && players.some(row => Number(row.health) < 100 || Number(row.frags) !== 0);
   }, null, { timeout: 30_000 });
 
   const aiState = await ai.evaluate(() => {
@@ -83,7 +104,10 @@ try {
   assert.equal(Boolean(aiState.humanOverride.active), false, JSON.stringify(aiState.humanOverride));
   assert.deepEqual(aiState.status.botPlayers.map(row => row.skill), ['easy', 'normal', 'hard']);
   assert.ok(aiState.status.decisions.slice(1, 4).every(value => Number(value) > 0), JSON.stringify(aiState.status));
+  assert.ok(aiState.status.visibleDecisions.slice(1, 4).every(value => Number(value) > 0), JSON.stringify(aiState.status));
+  assert.ok(aiState.status.attacks.slice(1, 4).every(value => Number(value) > 0), JSON.stringify(aiState.status));
   assert.ok(aiState.status.players.players.length >= 4, JSON.stringify(aiState.status.players));
+  assert.ok(aiState.status.players.players.some(row => Number(row.health) < 100 || Number(row.frags) !== 0), JSON.stringify(aiState.status.players));
 
   console.error('P2.2 public /direct/ launcher acceptance passed:', JSON.stringify({
     classic: { capacity: classicState.capacity, mode: classicState.launcher.mode },
@@ -93,6 +117,8 @@ try {
       demoWad: aiState.launcher.demoWad,
       botSkills: aiState.status.botPlayers.map(row => row.skill),
       decisions: aiState.status.decisions,
+      visibleDecisions: aiState.status.visibleDecisions,
+      attacks: aiState.status.attacks,
       players: aiState.status.players.players.map(row => ({ player: row.player, health: row.health, frags: row.frags, x: row.x, y: row.y }))
     }
   }));

@@ -6,6 +6,10 @@ remains compatible with local MCP workflows. AI Deathmatch fetches the bundled
 p22-demo.wad, writes it into the fresh Emscripten FS, stages it as the boot PWAD,
 then starts four local LinuxDOOM player slots with Players 2-4 controlled by the
 P2.2 live bot scheduler.
+
+The Classic button deliberately keeps the legacy DOM id/class contract
+`#start.ready:not([disabled])`. Existing P0/P1/P2 browser QA therefore continues
+to select Classic mode without knowing about the new public dual launcher.
 """
 
 from pathlib import Path
@@ -21,7 +25,7 @@ def main() -> None:
 
     old_button = '<button id="start" type="button" disabled>CLICK TO START</button>'
     new_buttons = '''<div id="launchChoices" aria-label="Game mode">
-              <button id="playClassic" class="launchChoice" type="button" disabled>PLAY CLASSIC DOOM</button>
+              <button id="start" class="launchChoice" type="button" disabled>PLAY CLASSIC DOOM</button>
               <button id="playAi" class="launchChoice" type="button" disabled>PLAY AI DEATHMATCH</button>
             </div>'''
     if new_buttons not in text:
@@ -45,7 +49,7 @@ def main() -> None:
     old_ref = "    const startButton = document.getElementById('start');\n"
     new_ref = (
         "    const launchChoices = document.getElementById('launchChoices');\n"
-        "    const playClassicButton = document.getElementById('playClassic');\n"
+        "    const playClassicButton = document.getElementById('start');\n"
         "    const playAiButton = document.getElementById('playAi');\n"
     )
     if new_ref not in text:
@@ -54,7 +58,7 @@ def main() -> None:
         text = text.replace(old_ref, new_ref, 1)
 
     old_ready = '''      startButton.disabled = false;\n      startButton.classList.add('ready');\n      audioNote.classList.add('ready');'''
-    new_ready = '''      playClassicButton.disabled = false;\n      playAiButton.disabled = false;\n      launchChoices.classList.add('ready');\n      audioNote.textContent = 'Classic runs the original shareware campaign. AI Deathmatch loads the generated P2.2 arena with three local AI players.';\n      audioNote.classList.add('ready');'''
+    new_ready = '''      playClassicButton.disabled = false;\n      playClassicButton.classList.add('ready');\n      playAiButton.disabled = false;\n      launchChoices.classList.add('ready');\n      audioNote.textContent = 'Classic runs the original shareware campaign. AI Deathmatch loads the generated P2.2 arena with three local AI players.';\n      audioNote.classList.add('ready');'''
     if new_ready not in text:
         if old_ready not in text:
             raise SystemExit("showReady block not found")
@@ -153,6 +157,8 @@ def main() -> None:
     required = [
         "PLAY CLASSIC DOOM",
         "PLAY AI DEATHMATCH",
+        'id="start" class="launchChoice"',
+        "playClassicButton.classList.add('ready')",
         "stagePublicDeathmatchWad",
         "doomctl_set_boot_pwad_path",
         "PUBLIC_P22_BOTS = ['easy', 'normal', 'hard']",
@@ -163,7 +169,7 @@ def main() -> None:
         raise SystemExit(f"public P2.2 launcher patch incomplete: {missing}")
 
     path.write_text(text, encoding="utf-8")
-    print("Patched shell.html with PLAY CLASSIC DOOM / PLAY AI DEATHMATCH public launcher")
+    print("Patched shell.html with PLAY CLASSIC DOOM / PLAY AI DEATHMATCH public launcher + legacy #start compatibility")
 
 
 if __name__ == "__main__":
