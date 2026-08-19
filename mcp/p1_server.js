@@ -4,6 +4,7 @@ import * as z from 'zod/v4';
 
 import { GeometryWorkspace } from './geometry.js';
 import { installThingAuthoring, listThingCatalog, THING_AUTHORING_VERSION } from './thing_authoring.js';
+import { diagnoseThingPlacement, THING_PLACEMENT_VERSION } from './thing_placement.js';
 import { installSemanticGeometry, SEMANTIC_GEOMETRY_VERSION } from './semantic_geometry.js';
 
 // P0 composition installs topology validation. P1 patches extend the same
@@ -164,6 +165,18 @@ export function createMcpServer() {
   }, async ({ sessionId, map, thing }) => {
     try { return jsonResult(applyEpisodeEdit(sessionId, map, { type: 'thing_delete', thing })); }
     catch (error) { return toolError(error); }
+  });
+
+  server.registerTool('doom_diagnose_thing_placement', {
+    title: 'Diagnose stuck or overlapping DOOM things',
+    description: 'Check monsters, player starts and barrels for void/pillar placement, solid-wall overlap, solid-decoration overlap and insufficient sector height. Newly authored actors fail transaction validation; baseline hits are warnings.',
+    inputSchema: z.object({ sessionId: z.string(), map: mapName }),
+    annotations: { readOnlyHint: true }
+  }, async ({ sessionId, map }) => {
+    try {
+      const { workspace, map: normalized } = workspaceFor(sessionId, map);
+      return jsonResult({ sessionId, map: normalized, placementVersion: THING_PLACEMENT_VERSION, ...diagnoseThingPlacement(workspace) });
+    } catch (error) { return toolError(error); }
   });
 
   server.registerTool('doom_get_sector_boundary', {

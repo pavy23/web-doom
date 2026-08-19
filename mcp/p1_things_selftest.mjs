@@ -110,3 +110,26 @@ assert.equal(thingsFor(candidate.bytes, 'E1M1'), baseline1.length + 1);
 assert.equal(thingsFor(candidate.bytes, 'E1M2'), baseline2.length);
 for (const entry of candidate.maps) assert.equal(entry.inspected.ok, true, JSON.stringify(entry.inspected));
 console.error('P1.1 THINGS serialization + ZDBSP build passed:', candidate.bytes.length, 'bytes');
+
+const baselinePlacement = new EpisodeWorkspace(source, ['E1M1'], 'doom1.wad').validate();
+assert.equal(baselinePlacement.ok, true, JSON.stringify(baselinePlacement.issues?.errors || baselinePlacement.errors));
+console.error('P1.1 baseline E1M1 still validates with placement checks');
+
+const stuckEpisode = new EpisodeWorkspace(source, ['E1M1'], 'doom1.wad');
+stuckEpisode.beginTransaction('stuck baron in tech pillar');
+stuckEpisode.applyEdits([{ type: 'thing_add', map: 'E1M1', key: 'baron_of_hell', x: 288, y: -3360, angle: 0 }]);
+const stuckValidation = stuckEpisode.validate({ touchedOnly: true });
+assert.equal(stuckValidation.ok, false, JSON.stringify(stuckValidation));
+assert.ok(
+  (stuckValidation.maps?.[0]?.issues?.errors || []).some(row => row.code === 'THING_OVERLAPS_SOLID' || row.code === 'THING_UNLOCATABLE' || row.code === 'THING_OVERLAPS_WALL'),
+  JSON.stringify(stuckValidation.maps?.[0]?.issues || stuckValidation)
+);
+stuckEpisode.rollbackTransaction();
+console.error('P1.1 stuck-in-pillar baron is rejected before commit');
+
+stuckEpisode.beginTransaction('baron in clear corridor');
+stuckEpisode.applyEdits([{ type: 'thing_add', map: 'E1M1', key: 'baron_of_hell', x: 384, y: -3232, angle: 0 }]);
+const clearValidation = stuckEpisode.validate({ touchedOnly: true });
+assert.equal(clearValidation.ok, true, JSON.stringify(clearValidation));
+assert.equal(stuckEpisode.commitTransaction().committed, true);
+console.error('P1.1 clear-corridor baron placement passed');

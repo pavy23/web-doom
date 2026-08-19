@@ -5,6 +5,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import * as z from 'zod/v4';
 
 import { startBridge as startAuthoringBridge } from './server.js';
+import { bindHttp } from './http_bind.js';
 import { startPlaytestBridge } from './playtest_server.js';
 import { createMcpServer as createV1Server, startOrchestrationBridge } from './v1_server.js';
 
@@ -111,8 +112,10 @@ export function startCheatBridge() {
     });
   });
 
-  httpServer.listen(PORT, HOST, () => {
-    console.error(`DOOM MCP: cheat/audio bridge at ws://${HOST}:${PORT}/cheats`);
+  bindHttp(httpServer, {
+    host: HOST,
+    port: PORT,
+    label: `cheat/audio bridge at ws://${HOST}:${PORT}/cheats`
   });
   return httpServer;
 }

@@ -8,12 +8,27 @@ import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { WebSocket, WebSocketServer } from 'ws';
 import * as z from 'zod/v4';
 
+import { bindHttp } from './http_bind.js';
+
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.DOOM_MCP_PORT || 3777);
 const UPSTREAM = new URL(process.env.DOOM_MCP_UPSTREAM || 'https://pavy23.github.io/web-doom/direct/');
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const EXPORT_DIR = path.resolve(process.env.DOOM_MCP_EXPORT_DIR || path.join(MODULE_DIR, 'exports'));
+const GAME_CACHE_DIR = path.resolve(process.env.DOOM_MCP_GAME_DIR || path.join(MODULE_DIR, '.cache', 'direct-runtime'));
+const REPO_DIRECT_DIR = path.resolve(MODULE_DIR, '..', 'direct');
+const GAME_ASSETS = ['index.html', 'webdoom.js', 'webdoom.wasm', 'webdoom.data', 'opl_music.js'];
+const GAME_MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.wasm': 'application/wasm',
+  '.data': 'application/octet-stream',
+  '.txt': 'text/plain; charset=utf-8',
+  '.wad': 'application/octet-stream'
+};
+const URL_WAD_BOOTSTRAP = 'url-wad-bootstrap.js';
 const VERSION = '0.6.0';
+let gameCachePromise = null;
 
 let browserSocket = null;
 let nextRequestId = 1;
@@ -67,37 +82,175 @@ function rejectAllPending(reason) {
   }
 }
 
-async function proxyPublishedGame(req, res) {
+function normalizeGamePath(pathname) {
+  let relative = String(pathname || '/');
+  if (relative.startsWith('/web-doom/direct/')) relative = relative.slice('/web-doom/direct'.length);
+  if (relative === '/' || relative === '') return 'index.html';
+  return relative.replace(/^\/+/, '');
+}
+
+function gameFilePath(root, pathname) {
+  const relative = normalizeGamePath(pathname);
+  if (!relative || path.isAbsolute(relative) || relative.includes('\0') || relative.split(/[\\/]/).includes('..')) return null;
+  const resolved = path.resolve(root, relative);
+  const rootResolved = path.resolve(root);
+  if (resolved !== rootResolved && !resolved.startsWith(`${rootResolved}${path.sep}`)) return null;
+  return resolved;
+}
+
+async function directoryHasIndex(dir) {
+  try {
+    await stat(path.join(dir, 'index.html'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveGameRoot() {
+  if (await directoryHasIndex(GAME_CACHE_DIR)) return GAME_CACHE_DIR;
+  if (await directoryHasIndex(REPO_DIRECT_DIR)) return REPO_DIRECT_DIR;
+  return null;
+}
+
+export async function prepareGameCache() {
+  await mkdir(GAME_CACHE_DIR, { recursive: true });
+  const cached = [];
+  for (const file of GAME_ASSETS) {
+    const dest = path.join(GAME_CACHE_DIR, file);
+    try {
+      const info = await stat(dest);
+      if (info.size > 0) {
+        cached.push({ file, bytes: info.size, cached: true });
+        continue;
+      }
+    } catch {}
+    const upstreamUrl = new URL(file, UPSTREAM);
+    const response = await fetch(upstreamUrl, {
+      redirect: 'follow',
+      cache: 'no-store',
+      headers: { 'user-agent': `web-doom-mcp/${VERSION}` }
+    });
+    if (!response.ok) throw new Error(`Failed to cache ${file} from ${upstreamUrl.href}: HTTP ${response.status}`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (!bytes.length) throw new Error(`Cached ${file} from ${upstreamUrl.href} was empty`);
+    await writeFile(dest, bytes);
+    cached.push({ file, bytes: bytes.length, cached: false });
+    console.error(`DOOM MCP: cached published game asset ${file} (${bytes.length} bytes)`);
+  }
+  return { dir: GAME_CACHE_DIR, files: cached };
+}
+
+function ensureGameCache() {
+  if (!gameCachePromise) {
+    gameCachePromise = prepareGameCache().catch(error => {
+      console.error(`DOOM MCP: local game cache unavailable: ${error?.message || error}`);
+      return null;
+    });
+  }
+  return gameCachePromise;
+}
+
+async function proxyPublishedGame(req, res, requestUrl) {
+  const relative = normalizeGamePath(requestUrl.pathname);
+  const upstreamUrl = new URL(relative, UPSTREAM);
+  upstreamUrl.search = requestUrl.search;
+  const upstreamResponse = await fetch(upstreamUrl, {
+    redirect: 'follow',
+    cache: 'no-store',
+    headers: { 'user-agent': `web-doom-mcp/${VERSION}` }
+  });
+  res.statusCode = upstreamResponse.status;
+  const contentType = upstreamResponse.headers.get('content-type');
+  if (contentType) res.setHeader('content-type', contentType);
+  res.setHeader('cache-control', 'no-store');
+  if (!upstreamResponse.body) { res.end(); return; }
+  Readable.fromWeb(upstreamResponse.body).pipe(res);
+}
+
+function safeExportFilename(raw) {
+  const cleaned = String(raw || '').replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^\.+/, '');
+  if (!cleaned.toLowerCase().endsWith('.wad')) return '';
+  return cleaned;
+}
+
+function injectUrlWadBootstrap(html) {
+  if (html.includes(URL_WAD_BOOTSTRAP)) return html;
+  const tag = `<script src=${URL_WAD_BOOTSTRAP}></script>`;
+  if (html.includes('<script async src=webdoom.js></script>')) {
+    return html.replace('<script async src=webdoom.js></script>', tag);
+  }
+  if (html.includes('<script async src="webdoom.js"></script>')) {
+    return html.replace('<script async src="webdoom.js"></script>', tag);
+  }
+  if (html.includes('</body>')) return html.replace('</body>', `${tag}</body>`);
+  return `${html}${tag}`;
+}
+
+async function sendBytes(res, bytes, contentType) {
+  res.writeHead(200, { 'content-type': contentType, 'cache-control': 'no-store' });
+  res.end(bytes);
+}
+
+async function handleGameRequest(req, res) {
   try {
     const requestUrl = new URL(req.url || '/', `http://${HOST}:${PORT}`);
+    if (requestUrl.pathname === `/${URL_WAD_BOOTSTRAP}`) {
+      const bytes = await readFile(path.join(MODULE_DIR, 'url_wad_bootstrap.js'));
+      await sendBytes(res, bytes, 'text/javascript; charset=utf-8');
+      return;
+    }
+    if (requestUrl.pathname.startsWith('/exports/')) {
+      const name = safeExportFilename(path.posix.basename(requestUrl.pathname));
+      if (!name) {
+        res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+        res.end('PWAD not found');
+        return;
+      }
+      try {
+        const bytes = await readFile(path.join(EXPORT_DIR, name));
+        await sendBytes(res, bytes, 'application/octet-stream');
+        return;
+      } catch {
+        res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(`PWAD not found: ${name}`);
+        return;
+      }
+    }
     if (requestUrl.pathname === '/health') {
+      const cache = await ensureGameCache();
+      const gameRoot = await resolveGameRoot();
       const body = JSON.stringify({
         ok: true,
         version: VERSION,
         browserConnected: Boolean(bridgeConnected()),
         playUrl: `http://${HOST}:${PORT}/`,
         upstream: UPSTREAM.href,
-        exportDir: EXPORT_DIR
+        exportDir: EXPORT_DIR,
+        gameRoot,
+        gameSource: gameRoot ? (gameRoot === GAME_CACHE_DIR ? 'cache' : 'local') : 'proxy',
+        cache
       });
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       res.end(body);
       return;
     }
 
-    const relative = requestUrl.pathname === '/' ? '' : requestUrl.pathname.replace(/^\//, '');
-    const upstreamUrl = new URL(relative, UPSTREAM);
-    upstreamUrl.search = requestUrl.search;
-    const upstreamResponse = await fetch(upstreamUrl, {
-      redirect: 'follow',
-      cache: 'no-store',
-      headers: { 'user-agent': `web-doom-mcp/${VERSION}` }
-    });
-    res.statusCode = upstreamResponse.status;
-    const contentType = upstreamResponse.headers.get('content-type');
-    if (contentType) res.setHeader('content-type', contentType);
-    res.setHeader('cache-control', 'no-store');
-    if (!upstreamResponse.body) { res.end(); return; }
-    Readable.fromWeb(upstreamResponse.body).pipe(res);
+    await ensureGameCache();
+    const gameRoot = await resolveGameRoot();
+    const localPath = gameRoot ? gameFilePath(gameRoot, requestUrl.pathname) : null;
+    if (localPath) {
+      try {
+        let bytes = await readFile(localPath);
+        const ext = path.extname(localPath);
+        if (ext === '.html') {
+          bytes = Buffer.from(injectUrlWadBootstrap(bytes.toString('utf8')), 'utf8');
+        }
+        await sendBytes(res, bytes, GAME_MIME[ext] || 'application/octet-stream');
+        return;
+      } catch {}
+    }
+    await proxyPublishedGame(req, res, requestUrl);
   } catch (error) {
     res.statusCode = 502;
     res.setHeader('content-type', 'text/plain; charset=utf-8');
@@ -107,7 +260,7 @@ async function proxyPublishedGame(req, res) {
 
 export function startBridge() {
   if (httpServer) return httpServer;
-  httpServer = http.createServer(proxyPublishedGame);
+  httpServer = http.createServer(handleGameRequest);
   wss = new WebSocketServer({ noServer: true });
   httpServer.on('upgrade', (req, socket, head) => {
     let pathname = '/';
@@ -137,10 +290,13 @@ export function startBridge() {
       console.error('DOOM MCP: browser bridge disconnected');
     });
   });
-  httpServer.listen(PORT, HOST, () => {
-    console.error(`DOOM MCP: local game bridge at http://${HOST}:${PORT}/`);
-    console.error(`DOOM MCP: PWAD exports at ${EXPORT_DIR}`);
+  bindHttp(httpServer, {
+    host: HOST,
+    port: PORT,
+    label: `local game bridge at http://${HOST}:${PORT}/`
   });
+  console.error(`DOOM MCP: PWAD exports at ${EXPORT_DIR}`);
+  void ensureGameCache();
   return httpServer;
 }
 

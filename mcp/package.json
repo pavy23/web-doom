@@ -24,7 +24,8 @@
     "test:p0": "node p0_selftest.mjs",
     "test:experiment": "node p0_experiment_selftest.mjs",
     "prepare-experiment": "playwright install chromium",
-    "prepare-geometry": "node --input-type=module -e \"import('./nodebuilder.js').then(m => m.prepareNodeBuilder()).then(s => console.log(JSON.stringify(s, null, 2)))\""
+    "prepare-geometry": "node --input-type=module -e \"import('./nodebuilder.js').then(m => m.prepareNodeBuilder()).then(s => console.log(JSON.stringify(s, null, 2)))\"",
+    "prepare-game": "node --input-type=module -e \"import('./server.js').then(m => m.prepareGameCache()).then(s => console.log(JSON.stringify(s, null, 2)))\""
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",

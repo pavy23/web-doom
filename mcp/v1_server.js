@@ -5,6 +5,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import * as z from 'zod/v4';
 
 import { startBridge as startAuthoringBridge } from './server.js';
+import { bindHttp } from './http_bind.js';
 import { createMcpServer as createV09Server, startPlaytestBridge } from './playtest_server.js';
 import { evaluateTrial, normalizeGoal, summarizeTrial } from './evaluator.js';
 import {
@@ -162,8 +163,10 @@ export function startOrchestrationBridge() {
     });
   });
 
-  orchestrationHttpServer.listen(ORCHESTRATION_PORT, HOST, () => {
-    console.error(`DOOM MCP: v1 orchestration bridge at ws://${HOST}:${ORCHESTRATION_PORT}/orchestrate`);
+  bindHttp(orchestrationHttpServer, {
+    host: HOST,
+    port: ORCHESTRATION_PORT,
+    label: `v1 orchestration bridge at ws://${HOST}:${ORCHESTRATION_PORT}/orchestrate`
   });
   return orchestrationHttpServer;
 }

@@ -6,6 +6,7 @@ import * as z from 'zod/v4';
 
 import { createMcpServer as createAuthoringServer, startBridge as startAuthoringBridge } from './server.js';
 import { evaluateTrial, normalizeGoal, summarizeTrial } from './evaluator.js';
+import { bindHttp } from './http_bind.js';
 
 const HOST = '127.0.0.1';
 const PLAYTEST_PORT = 3778;
@@ -139,8 +140,10 @@ export function startPlaytestBridge() {
     });
   });
 
-  playtestHttpServer.listen(PLAYTEST_PORT, HOST, () => {
-    console.error(`DOOM MCP: playtest/vision/agent/evaluation bridge at ws://${HOST}:${PLAYTEST_PORT}/playtest`);
+  bindHttp(playtestHttpServer, {
+    host: HOST,
+    port: PLAYTEST_PORT,
+    label: `playtest/vision/agent/evaluation bridge at ws://${HOST}:${PLAYTEST_PORT}/playtest`
   });
   return playtestHttpServer;
 }

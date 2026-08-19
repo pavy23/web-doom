@@ -428,7 +428,15 @@ export class GeometryWorkspace {
     const errors = [], warnings = [];
     const g = this.geometry;
     g.vertices.forEach((v, i) => { try { clampInt16(v.x, `vertex ${i}.x`); clampInt16(v.y, `vertex ${i}.y`); } catch (e) { errors.push(e.message); } });
-    g.sectors.forEach((s, i) => { if (s.ceiling <= s.floor) errors.push(`Sector ${i} ceiling ${s.ceiling} is not above floor ${s.floor}`); });
+    g.sectors.forEach((s, i) => {
+      // Vanilla closed doors are stored with ceiling == floor. Only new sectors
+      // must have a walkable height; original inverted sectors are still errors.
+      if (i >= this.originalCounts.sectors) {
+        if (s.ceiling <= s.floor) errors.push(`Sector ${i} ceiling ${s.ceiling} is not above floor ${s.floor}`);
+      } else if (s.ceiling < s.floor) {
+        errors.push(`Sector ${i} ceiling ${s.ceiling} is below floor ${s.floor}`);
+      }
+    });
     g.sidedefs.forEach((s, i) => { if (!g.sectors[s.sector]) errors.push(`Sidedef ${i} references missing sector ${s.sector}`); });
     g.linedefs.forEach((l, i) => {
       if (!g.vertices[l.v1] || !g.vertices[l.v2]) errors.push(`Linedef ${i} references missing vertex`);

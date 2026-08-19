@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { MAP_LUMP_ORDER, parseWad, writeWad } from './geometry.js';
+import { diagnoseThingPlacement } from './thing_placement.js';
 
 export const THING_AUTHORING_VERSION = '2.2.0-p1.1';
 const PATCH_MARK = Symbol.for('web-doom.p1.general-things');
@@ -213,6 +214,21 @@ function validateThings(workspace, base) {
     if (count > 1) addWarning('DUPLICATE_PLAYER_START', `Map has ${count} Player ${type} starts`, { doomEdNum: type, count });
   }
   if (!(startCounts.get(1) || 0)) addWarning('PLAYER1_START_MISSING', 'Map has no Player 1 start; single-player launch may be unusable');
+
+  const placement = diagnoseThingPlacement(workspace);
+  for (const issue of placement.issues) {
+    const details = {
+      thing: issue.thing,
+      doomEdNum: issue.doomEdNum,
+      x: issue.x,
+      y: issue.y,
+      sector: issue.sector,
+      line: issue.line,
+      otherThing: issue.otherThing
+    };
+    if (issue.severity === 'error') addError(issue.code, issue.message, details);
+    else addWarning(issue.code, issue.message, details);
+  }
 
   return { ...base, ok: errors.length === 0, errors, warnings, issues: { errors: errorIssues, warnings: warningIssues } };
 }

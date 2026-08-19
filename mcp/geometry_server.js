@@ -7,6 +7,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import * as z from 'zod/v4';
 
 import { startBridge as startAuthoringBridge } from './server.js';
+import { bindHttp } from './http_bind.js';
 import { startPlaytestBridge } from './playtest_server.js';
 import { startOrchestrationBridge } from './v1_server.js';
 import { createMcpServer as createV11Server, startCheatBridge } from './cheat_server.js';
@@ -78,7 +79,11 @@ export function startGeometryBridge() {
     ws.on('message', raw => { try { const msg = JSON.parse(String(raw)); if (!settle(msg) && msg?.event) console.error(`DOOM MCP: ${msg.event}`); } catch {} });
     ws.on('close', () => { if (browserSocket === ws) browserSocket = null; rejectAll('DOOM geometry browser disconnected'); });
   });
-  httpServer.listen(PORT, HOST, () => console.error(`DOOM MCP: geometry bridge at ws://${HOST}:${PORT}/geometry`));
+  bindHttp(httpServer, {
+    host: HOST,
+    port: PORT,
+    label: `geometry bridge at ws://${HOST}:${PORT}/geometry`
+  });
   return httpServer;
 }
 
