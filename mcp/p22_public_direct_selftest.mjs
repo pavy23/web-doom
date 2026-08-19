@@ -35,6 +35,14 @@ async function waitAiReady(page) {
   }, null, { timeout: 60_000 });
 }
 
+async function setNightmareBots(page) {
+  await page.evaluate(() => {
+    window.DoomLocalBots.setSkill(1, 'nightmare');
+    window.DoomLocalBots.setSkill(2, 'nightmare');
+    window.DoomLocalBots.setSkill(3, 'nightmare');
+  });
+}
+
 try {
   const classic = await browser.newPage();
   attachDiagnostics(classic, 'classic');
@@ -56,7 +64,8 @@ try {
 
   // Time-limit ties must not pick an arbitrary winner. Force a one-second
   // regulation window with an unreachable frag limit, then verify the public
-  // controller enters sudden death while the match remains live.
+  // controller enters sudden death while the match remains live. The engine
+  // state and HUD update on separate timers, so wait for both explicitly.
   const sudden = await browser.newPage();
   attachDiagnostics(sudden, 'sudden');
   await sudden.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 120_000 });
@@ -65,6 +74,7 @@ try {
   await sudden.locator('#playAi').click();
   await waitAiReady(sudden);
   await sudden.waitForFunction(() => window.DoomLocalBots?.status?.().match?.phase === 'sudden_death', null, { timeout: 15_000 });
+  await sudden.waitForFunction(() => /SUDDEN DEATH/.test(String(document.getElementById('matchRule')?.textContent || '')), null, { timeout: 5_000 });
   const suddenState = await sudden.evaluate(() => ({
     match: window.DoomLocalBots.status().match,
     rule: document.getElementById('matchRule')?.textContent,
@@ -74,6 +84,49 @@ try {
   assert.match(String(suddenState.rule), /SUDDEN DEATH/);
   assert.equal(Boolean(suddenState.endVisible), false);
   await sudden.close();
+
+  // Respawn presentation acceptance: keep the match alive, let nightmare bots
+  // produce a real frag, catch the dead player while PST_DEAD is observable,
+  // then verify that the slot remains down for roughly the engine-enforced
+  // 45-tic window before returning to PST_LIVE. RAF sampling may observe the
+  // death a couple of tics after the exact transition, so >=42 is the runtime
+  // lower bound while the compiled bridge itself is pinned to 45.
+  const respawn = await browser.newPage();
+  attachDiagnostics(respawn, 'respawn');
+  await respawn.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 120_000 });
+  await waitRuntime(respawn);
+  await respawn.evaluate(() => window.DoomLocalBots.configureMatch({ fragLimit: 99, timeLimitSeconds: 120 }));
+  await respawn.locator('#playAi').click();
+  await waitAiReady(respawn);
+  await setNightmareBots(respawn);
+  await respawn.waitForFunction(() => {
+    const status = window.DoomLocalBots?.status?.();
+    return Array.isArray(status?.attacks) && status.attacks.slice(1, 4).every(value => Number(value) > 0);
+  }, null, { timeout: 30_000 });
+  await respawn.waitForFunction(() => {
+    const players = window.DoomLocalBots?.status?.().players?.players;
+    return Array.isArray(players) && players.some(row => Number(row.state) === 1 && !Boolean(row.live));
+  }, null, { timeout: 90_000, polling: 'raf' });
+  const deathSample = await respawn.evaluate(() => {
+    const state = window.DoomLocalBots.status().players;
+    const victim = state.players.find(row => Number(row.state) === 1 && !Boolean(row.live));
+    return { player: Number(victim.player), gametic: Number(state.gametic), health: Number(victim.health), frags: Number(victim.frags) };
+  });
+  await respawn.waitForFunction(player => {
+    const state = window.DoomLocalBots?.status?.().players;
+    const victim = state?.players?.find(row => Number(row.player) === Number(player));
+    return Boolean(victim?.live);
+  }, deathSample.player, { timeout: 10_000, polling: 'raf' });
+  const reviveSample = await respawn.evaluate(player => {
+    const state = window.DoomLocalBots.status().players;
+    const victim = state.players.find(row => Number(row.player) === Number(player));
+    return { player: Number(player), gametic: Number(state.gametic), health: Number(victim.health), live: Boolean(victim.live) };
+  }, deathSample.player);
+  const observedDeadTics = reviveSample.gametic - deathSample.gametic;
+  assert.ok(observedDeadTics >= 42, JSON.stringify({ deathSample, reviveSample, observedDeadTics }));
+  assert.equal(reviveSample.live, true);
+  assert.ok(reviveSample.health > 0, JSON.stringify(reviveSample));
+  await respawn.close();
 
   const ai = await browser.newPage();
   attachDiagnostics(ai, 'ai');
@@ -92,11 +145,7 @@ try {
   await waitAiReady(ai);
 
   // Speed up the acceptance fight while preserving Player 1 as human-only.
-  await ai.evaluate(() => {
-    window.DoomLocalBots.setSkill(1, 'nightmare');
-    window.DoomLocalBots.setSkill(2, 'nightmare');
-    window.DoomLocalBots.setSkill(3, 'nightmare');
-  });
+  await setNightmareBots(ai);
 
   await ai.waitForFunction(() => {
     const status = window.DoomLocalBots?.status?.();
@@ -170,6 +219,7 @@ try {
   console.error('P2.2 public /direct/ launcher + match-rules acceptance passed:', JSON.stringify({
     classic: { capacity: classicState.capacity, mode: classicState.launcher.mode },
     suddenDeath: suddenState.match,
+    respawn: { deathSample, reviveSample, observedDeadTics },
     ai: {
       capacity: aiState.capacity,
       winner: aiState.status.match.winner,
