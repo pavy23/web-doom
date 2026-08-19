@@ -16,6 +16,7 @@
     "start:p0-core": "node p0_server.js",
     "start:v2": "node geometry_server.js",
     "test:p2": "node p2_blank_map_selftest.mjs",
+    "test:p2:seed-runtime": "node p2_seed_runtime_selftest.mjs",
     "test:p2:runtime": "node p2_blank_map_runtime_selftest.mjs",
     "test:p1": "node p1_things_selftest.mjs",
     "test:p1:semantic": "node p1_semantic_selftest.mjs",
