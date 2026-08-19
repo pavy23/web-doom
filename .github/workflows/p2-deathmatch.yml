@@ -208,7 +208,8 @@ jobs:
           grep -q "doomctl_apply_player_agent_ticcmd(i, cmd)" g_game.c
           grep -q "doomctl_get_local_player_capacity" i_net.c
 
-          emmake make -f Makefile.web webdoom.html
+          P22_EXPORTS='-sEXPORTED_FUNCTIONS=_main,_doomctl_queue_player_input,_doomctl_cancel_player_input,_doomctl_get_player_input_status_json,_doomctl_get_players_json,_doomctl_get_player_perception_json,_doomctl_get_local_player_capacity'
+          emmake make -f Makefile.web webdoom.html EXTRA_EMFLAGS="$P22_EXPORTS"
           test -s webdoom.html
           test -s webdoom.js
           test -s webdoom.wasm
