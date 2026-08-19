@@ -34,6 +34,27 @@
   let lastError = null;
   let startedAt = null;
 
+  const requestedFragLimit = Number(params.get('p22FragLimit'));
+  const requestedTimeLimit = Number(params.get('p22TimeLimit'));
+  let matchConfig = {
+    fragLimit: Number.isFinite(requestedFragLimit) && requestedFragLimit > 0 ? Math.max(1, Math.min(99, Math.trunc(requestedFragLimit))) : 10,
+    timeLimitSeconds: Number.isFinite(requestedTimeLimit) && requestedTimeLimit > 0 ? Math.max(1, Math.min(3600, Math.trunc(requestedTimeLimit))) : 300
+  };
+  let match = freshMatchState();
+
+  function freshMatchState() {
+    return {
+      phase: 'idle',
+      startedAtMs: null,
+      finishedAtMs: null,
+      winner: null,
+      reason: null,
+      finalScores: null,
+      suddenDeathContenders: [],
+      suddenDeathBaseline: null
+    };
+  }
+
   function warpArgs(map) {
     const episode = /^E([1-9])M([1-9])$/.exec(map);
     if (episode) return ['-warp', String(Number(episode[1])), String(Number(episode[2]))];
@@ -77,9 +98,6 @@
     const fireCone = Math.max(aim * 1.65, distance < 192 ? 15 : 7);
     const dodgeSign = ((Math.floor(gametic / 35) + player) % 2) ? 1 : -1;
 
-    // Do not combine full forward + strafe + turn while badly misaligned. That
-    // produces the circular "hamster wheel" behavior seen in the first public
-    // demo. First acquire the target, then move while maintaining aim.
     if (absDelta > 34) {
       return {
         player,
@@ -140,11 +158,121 @@
       ['number', 'number', 'number', 'number', 'number', 'number', 'number'],
       [command.player, command.forward, command.strafe, command.turn, command.attack ? 1 : 0, command.use ? 1 : 0, command.tics]);
   }
+  function cancelBotInputs() {
+    if (!moduleRef) return;
+    for (let player = 1; player <= 3; player++) {
+      try { ccall('doomctl_cancel_player_input', 'number', ['number'], [player]); } catch {}
+    }
+  }
+  function scoresFromState(state) {
+    const scores = [0, 0, 0, 0];
+    for (const row of state?.players || []) {
+      const slot = Number(row.player);
+      if (slot >= 0 && slot < scores.length) scores[slot] = Number(row.frags || 0);
+    }
+    return scores;
+  }
+  function topPlayers(scores, candidates = [0, 1, 2, 3]) {
+    const best = Math.max(...candidates.map(slot => Number(scores[slot] || 0)));
+    return candidates.filter(slot => Number(scores[slot] || 0) === best);
+  }
+  function enterSuddenDeath(scores, contenders) {
+    match.phase = 'sudden_death';
+    match.suddenDeathContenders = [...contenders];
+    match.suddenDeathBaseline = [...scores];
+    console.log(`P2.2 sudden death: ${contenders.map(slot => `P${slot + 1}`).join(', ')}`);
+  }
+  function finishMatch(winner, reason, scores) {
+    if (match.phase === 'finished') return;
+    match.phase = 'finished';
+    match.winner = Number(winner);
+    match.reason = String(reason);
+    match.finalScores = [...scores];
+    match.finishedAtMs = Date.now();
+    cancelBotInputs();
+    try {
+      if (globalThis.DoomControl && typeof globalThis.DoomControl.setPlaytestPaused === 'function') {
+        globalThis.DoomControl.setPlaytestPaused(true);
+      }
+    } catch (error) {
+      console.warn('P2.2 match pause failed:', error);
+    }
+    console.log(`P2.2 match finished: P${match.winner + 1} wins by ${match.reason}`);
+  }
+  function updateMatch(state, nowMs = Date.now()) {
+    if (!skills.length || !state?.ready || !Array.isArray(state.players) || state.players.length < 2) return;
+    const scores = scoresFromState(state);
+    if (match.phase === 'idle') {
+      match.phase = 'running';
+      match.startedAtMs = nowMs;
+    }
+    if (match.phase === 'finished') return;
+
+    if (match.phase === 'running') {
+      const leaders = topPlayers(scores);
+      const bestScore = Number(scores[leaders[0]] || 0);
+      if (bestScore >= matchConfig.fragLimit) {
+        if (leaders.length === 1) finishMatch(leaders[0], 'frag_limit', scores);
+        else enterSuddenDeath(scores, leaders);
+        return;
+      }
+
+      const elapsedSeconds = Math.max(0, (nowMs - Number(match.startedAtMs || nowMs)) / 1000);
+      if (elapsedSeconds >= matchConfig.timeLimitSeconds) {
+        if (leaders.length === 1) finishMatch(leaders[0], 'time_limit', scores);
+        else enterSuddenDeath(scores, leaders);
+        return;
+      }
+    }
+
+    if (match.phase === 'sudden_death') {
+      const contenders = match.suddenDeathContenders.length ? match.suddenDeathContenders : topPlayers(scores);
+      const leaders = topPlayers(scores, contenders);
+      const baseline = match.suddenDeathBaseline || scores;
+      const changed = contenders.some(slot => Number(scores[slot] || 0) !== Number(baseline[slot] || 0));
+      if (changed && leaders.length === 1) finishMatch(leaders[0], 'sudden_death', scores);
+    }
+  }
+  function matchStatus(nowMs = Date.now()) {
+    let scores = match.finalScores ? [...match.finalScores] : [0, 0, 0, 0];
+    try {
+      if (moduleRef && !match.finalScores) scores = scoresFromState(playersState());
+    } catch {}
+    let remainingSeconds = matchConfig.timeLimitSeconds;
+    if (match.startedAtMs) {
+      remainingSeconds = Math.max(0, Math.ceil(matchConfig.timeLimitSeconds - (nowMs - match.startedAtMs) / 1000));
+    }
+    return {
+      config: { ...matchConfig },
+      phase: match.phase,
+      startedAt: match.startedAtMs ? new Date(match.startedAtMs).toISOString() : null,
+      finishedAt: match.finishedAtMs ? new Date(match.finishedAtMs).toISOString() : null,
+      remainingSeconds,
+      scores,
+      winner: match.winner,
+      reason: match.reason,
+      suddenDeathContenders: [...match.suddenDeathContenders]
+    };
+  }
+  function configureMatch(options = {}) {
+    if (match.phase === 'running' || match.phase === 'sudden_death') {
+      throw new Error('Cannot reconfigure an active P2.2 match');
+    }
+    const fragLimit = options.fragLimit === undefined ? matchConfig.fragLimit : Number(options.fragLimit);
+    const timeLimitSeconds = options.timeLimitSeconds === undefined ? matchConfig.timeLimitSeconds : Number(options.timeLimitSeconds);
+    if (!Number.isFinite(fragLimit) || fragLimit < 1 || fragLimit > 99) throw new Error('fragLimit must be 1..99');
+    if (!Number.isFinite(timeLimitSeconds) || timeLimitSeconds < 1 || timeLimitSeconds > 3600) throw new Error('timeLimitSeconds must be 1..3600');
+    matchConfig = { fragLimit: Math.trunc(fragLimit), timeLimitSeconds: Math.trunc(timeLimitSeconds) };
+    match = freshMatchState();
+    return matchStatus();
+  }
   function tick() {
     if (!moduleRef || !skills.length) return;
     try {
       const state = playersState();
       if (!state?.ready || !Array.isArray(state.players) || state.players.length < 4) return;
+      updateMatch(state);
+      if (match.phase === 'finished') return;
       const gametic = Number(state.gametic || 0);
       for (let slot = 1; slot <= 3; slot++) {
         const status = inputStatus(slot);
@@ -167,6 +295,7 @@
     moduleRef = module || moduleRef || globalThis.Module;
     if (!skills.length || timer) return Boolean(timer);
     startedAt = new Date().toISOString();
+    match = freshMatchState();
     timer = setInterval(tick, 28);
     console.log(`P2.2 live bots started: P2=${skills[0]}, P3=${skills[1]}, P4=${skills[2]}`);
     return true;
@@ -174,11 +303,7 @@
   function stop() {
     if (timer) clearInterval(timer);
     timer = null;
-    if (moduleRef) {
-      for (let player = 1; player <= 3; player++) {
-        try { ccall('doomctl_cancel_player_input', 'number', ['number'], [player]); } catch {}
-      }
-    }
+    cancelBotInputs();
     return true;
   }
   function setSkill(player, skill) {
@@ -203,12 +328,13 @@
       attacks: [...attacks],
       startedAt,
       lastError,
-      players
+      players,
+      match: matchStatus()
     };
   }
 
   globalThis.DoomLocalBots = {
-    version: '2.8.1-p2.2-combat',
+    version: '2.9.0-p2.2-match',
     presets: PRESETS,
     enabled: () => Boolean(skills.length),
     bootArgs: () => skills.length ? ['-deathmatch', ...warpArgs(mapName), '-localplayers', '4'] : [],
@@ -216,6 +342,8 @@
     start,
     stop,
     status,
-    setSkill
+    setSkill,
+    configureMatch,
+    matchStatus
   };
 })();
