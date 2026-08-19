@@ -17,7 +17,8 @@ async function waitRuntime(page) {
   await page.waitForFunction(() => {
     return typeof Module !== 'undefined'
       && typeof Module.ccall === 'function'
-      && document.getElementById('playClassic')?.disabled === false
+      && document.getElementById('start')?.disabled === false
+      && document.getElementById('start')?.classList?.contains('ready')
       && document.getElementById('playAi')?.disabled === false;
   }, null, { timeout: 120_000 });
 }
@@ -27,9 +28,9 @@ try {
   attachDiagnostics(classic, 'classic');
   await classic.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 120_000 });
   await waitRuntime(classic);
-  assert.equal(await classic.locator('#playClassic').textContent(), 'PLAY CLASSIC DOOM');
+  assert.equal(await classic.locator('#start').textContent(), 'PLAY CLASSIC DOOM');
   assert.equal(await classic.locator('#playAi').textContent(), 'PLAY AI DEATHMATCH');
-  await classic.locator('#playClassic').click();
+  await classic.locator('#start').click();
   await classic.waitForFunction(() => window.DoomPublicLauncher?.mode === 'classic', null, { timeout: 30_000 });
   const classicState = await classic.evaluate(() => ({
     launcher: window.DoomPublicLauncher,
