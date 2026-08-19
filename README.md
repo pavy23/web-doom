@@ -1,37 +1,36 @@
 # Web DOOM — Direct LinuxDOOM + AI Authoring MCP P2.2
 
-A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, extended into an AI-native DOOM authoring, deterministic validation, autonomous QA, conservative self-repair, source-free level generation, game-design evaluation, **deathmatch generation and configurable local AI-player bots** sandbox.
+A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, extended into an AI-native DOOM authoring sandbox with deterministic validation, autonomous QA, conservative self-repair, source-free level generation, game-design evaluation, deathmatch generation, and configurable local AI-player bots.
 
 The `/direct/` runtime uses original LinuxDOOM gameplay/rendering/WAD code with repository-owned browser platform adapters. Chocolate Doom is used only for the pinned Vanilla/DMX-compatible OPL music subsystem, not as the game runtime.
 
 ## Project state
 
+**`main` now contains the complete P0 → P2.2 stack.**
+
 - Public direct build: https://pavy23.github.io/web-doom/direct/
 - Earlier doomgeneric comparison build: https://pavy23.github.io/web-doom/
-- Stable P0→P1.4 baseline: `main`
-- P2.0 source-free generation: `p2-blank-map-generation`
-- P2.1 game-design evaluation: `p2-game-design-evaluator`
-- P2.2 deathmatch + local bots: `p2-deathmatch-bots`
+- Current source branch: `main`
+- Current MCP version: **2.8.0-p2.2**
+- Next milestone: **P3.0 online browser multiplayer transport**
 
-Current MCP version on the P2.2 branch: **2.8.0-p2.2**
-
-> The public `/direct/` deployment is still the stable single-player runtime. P2.2's bot-capable LinuxDOOM/WASM is built branch-locally or in CI until the P2 line is later consolidated and published.
+> The repository source is consolidated through P2.2, but the public `/direct/` deployment is still the stable single-player build. The P2.2 bot-capable LinuxDOOM/WASM runtime is currently built locally or in CI with the provided build helpers.
 
 ## Completed milestones
 
-```text
-P0    ✅ Reliable atomic episode authoring
-P1.1  ✅ General THINGS authoring
-P1.2  ✅ Semantic geometry authoring
-P1.3  ✅ Navigation graph + autonomous QA
-P1.4  ✅ Diagnose → repair → rebuild → replay closed loop
-P2.0  ✅ Source-free blank-map generation
-P2.1  ✅ Deterministic game-design evaluator
-P2.2  ✅ Deathmatch generation + fairness + local AI players
-P3.0  ⏭️ Online browser multiplayer transport
-```
+| Milestone | Status | Capability |
+|---|---|---|
+| P0 | ✅ | Reliable atomic episode authoring |
+| P1.1 | ✅ | General THINGS authoring |
+| P1.2 | ✅ | Semantic geometry authoring |
+| P1.3 | ✅ | Navigation graph + autonomous QA |
+| P1.4 | ✅ | Diagnose → repair → rebuild → replay closed loop |
+| P2.0 | ✅ | Source-free blank-map generation |
+| P2.1 | ✅ | Deterministic game-design evaluator |
+| P2.2 | ✅ | Deathmatch generation + fairness + local AI players |
+| P3.0 | ⏭️ | Online browser multiplayer transport |
 
-The current pipeline can begin from no legacy level at all:
+The full pipeline can begin from **no legacy level at all**:
 
 ```text
 high-level authoring request
@@ -70,47 +69,28 @@ The accepted default deathmatch seed uses an **octagonal ring + contested center
 - 8 ring sectors + 1 center sector
 - 8 DoomEd 11 deathmatch starts
 - real Player 1–4 starts
-- 8 independent navigation loops
+- multiple independent navigation loops
 - equal radial shotgun + shell access from every spawn
 - central rocket launcher as a high-value contested pickup
 - health / armor around center approaches
 - shareware-safe `STARTAN3 / FLOOR4_8 / CEIL3_5` materials
 
-The design principle is:
+Design principle:
 
 > **Basic survival access is symmetric; high-value control remains competitive.**
 
-### P2.2 fairness metrics
+### Deterministic fairness evaluation
 
-The deterministic evaluator scores:
+P2.2 scores multiplayer maps using repeatable proxies for:
 
-- spawn distance
-- spawn→weapon access
+- pairwise spawn distance
+- spawn → weapon access
 - immediate route choice
 - initial line-of-sight exposure
 - high-value pickup access equity
 - topology / loop quality
 
-The accepted balanced seed scored:
-
-```text
-Overall              84.67 (B)
-Spawn distance       78.78
-Weapon access        99.82
-Route choice        100.00
-Initial exposure      6.25
-High-value equity    99.95
-Topology             100.00
-
-Deathmatch starts        8
-Independent loops        8
-Nearest-weapon CV    0.001
-High-value-item CV   0.000
-```
-
-The arena is intentionally visually open at this checkpoint, so `SPAWN_EXPOSURE_HIGH` is still reported rather than hidden.
-
-An intentionally biased candidate — one clustered spawn plus a rocket launcher moved toward another spawn — fell to **48.2 (F)**. Restoring the balanced version produced a **+36.47** fairness delta.
+The accepted balanced seed scores **84.67 / B**. An intentionally biased comparison candidate falls to **48.2 / F**, allowing AI-driven before/after balancing without relying on subjective labels alone.
 
 ## Real local AI players
 
@@ -131,7 +111,7 @@ LinuxDOOM G_Ticker
  deterministic bot policy
 ```
 
-The P2.2 platform mode deliberately remains one process / one network node:
+P2.2 deliberately keeps this as one browser process / one network node:
 
 ```text
 netgame = false
@@ -139,37 +119,29 @@ numnodes = 1
 numplayers = 1..4
 ```
 
-This keeps remote packet synchronization out of P2.2 while enabling true local multiplayer semantics. A narrow compatibility patch preserves the original per-player deathmatch respawn path instead of reloading the whole level when a local player dies.
+That isolates local multiplayer/gameplay semantics from remote network synchronization, which is reserved for P3.0.
 
-### Bot difficulty
+### Supported local modes
 
-Built-in presets:
+- **1 human + 3 AI bots**
+- **4 AI bots** for repeatable automated balance trials
+- per-bot difficulty selection
+- live bot difficulty changes from the browser console
 
-| Skill | Reaction tics | Aim tolerance | Behavior |
+### Bot difficulty presets
+
+| Skill | Reaction tics | Aim tolerance | Character |
 |---|---:|---:|---|
-| Easy | 10 | 20° | slow reaction, low aggression/dodge |
+| Easy | 10 | 20° | slow reaction, lower aggression/dodge |
 | Normal | 5 | 11° | balanced baseline |
 | Hard | 3 | 6° | fast, aggressive, stronger dodge |
 | Nightmare | 1 | 2.5° | near-every-tic decisions and tight aim |
 
-Difficulty also changes movement, turn gain, strafe, aggression, item bias and dodge behavior.
+Difficulty also changes movement, turn gain, strafe, aggression, item bias, and dodge behavior.
 
-### Four-bot acceptance
+### Human + three bots
 
-A 700-exact-tic LinuxDOOM match ran four different policies simultaneously:
-
-```text
-Player 1 Easy       74 decisions /  3 attacks /  834 movement / 0 frags
-Player 2 Normal    141 decisions / 23 attacks / 1524 movement / 0 frags
-Player 3 Hard      234 decisions /  7 attacks / 4752 movement / 2 frags
-Player 4 Nightmare 700 decisions / 13 attacks / 5314 movement / 1 frag
-```
-
-Real damage and real frags were observed under the original LinuxDOOM gameplay rules.
-
-### Player 1 human + three bots
-
-P2.2 also supports an interactive browser mode:
+Interactive mode keeps Player 1 on the normal browser input path while Players 2–4 receive independent AI ticcmd streams:
 
 ```text
 Player 1  human keyboard / mouse
@@ -178,18 +150,9 @@ Player 3  configurable bot
 Player 4  configurable bot
 ```
 
-CI verifies that the Player 1 autonomous-agent override remains inactive while browser keyboard input is sent, and that Players 2–4 independently receive live bot decisions.
+CI verifies that the Player 1 bot override remains inactive while Players 2–4 receive live bot decisions. Separate four-bot runtime acceptance also confirms real movement, combat, damage, deathmatch respawn, and frags under the original LinuxDOOM gameplay rules.
 
-Accepted short-run example:
-
-```text
-Player 2 Easy        14 bot decisions
-Player 3 Hard        37 bot decisions
-Player 4 Nightmare  110 bot decisions
-Player 1 agent override: false
-```
-
-Live controls are also exposed in the browser console:
+Live controls:
 
 ```js
 DoomLocalBots.status()
@@ -199,15 +162,33 @@ DoomLocalBots.stop()
 DoomLocalBots.start()
 ```
 
-## P2.2 MCP entry point
+## MCP entry point
+
+The consolidated main entry point is:
 
 ```text
 mcp/p2_human_bot_server.js
 ```
 
-`npm start` on the P2.2 branch launches this full server. Earlier milestones remain available through `start:p2.1`, `start:p2.0`, `start:p1.4`, and the lower-level scripts.
+From `mcp/`:
 
-Important P2.2 tools:
+```bash
+npm start
+```
+
+Earlier milestones remain individually launchable:
+
+```text
+npm run start:p2.2-core
+npm run start:p2.1
+npm run start:p2.0
+npm run start:p1.4
+npm run start:p1.3
+npm run start:p1.2
+npm run start:p0
+```
+
+Important P2.2 tools include:
 
 - `doom_p2_deathmatch_status`
 - `doom_get_deathmatch_policy`
@@ -226,15 +207,16 @@ Important P2.2 tools:
 - `doom_run_local_bot_deathmatch`
 - `doom_prepare_human_bot_arena`
 
-All P0→P2.1 tools remain composed underneath the P2.2 entry point.
+All P0 → P2.1 tools are composed underneath the P2.2 server.
 
-## Windows + Grok quick start for P2.2
+## Windows + WSL quick start
 
-The bot-capable runtime should be prepared once from the P2.2 branch. The provided PowerShell wrapper uses WSL because the pinned LinuxDOOM/Emscripten build is Linux-based.
+The P2.2 bot-capable runtime is built with the provided PowerShell wrapper. WSL is used because the pinned LinuxDOOM/Emscripten build pipeline is Linux-based.
 
 ```powershell
 cd D:\web-doom
-git switch p2-deathmatch-bots
+
+git switch main
 git pull
 
 .\direct-port\prepare_p22_runtime.ps1
@@ -244,7 +226,7 @@ npm install
 npm start
 ```
 
-The wrapper writes the local bot-capable runtime to:
+The wrapper writes the bot-capable runtime to:
 
 ```text
 mcp/.cache/p22-runtime
@@ -252,24 +234,24 @@ mcp/.cache/p22-runtime
 
 and sets `DOOM_MCP_GAME_DIR` for the current PowerShell session.
 
-Register the final MCP server in Grok:
+### Grok MCP registration example
 
 ```powershell
 grok mcp add --scope project doom-p22 -- node D:\web-doom\mcp\p2_human_bot_server.js
 ```
 
-A typical interactive flow is:
+Typical interactive flow:
 
-1. call `doom_create_deathmatch_arena` and export e.g. `arena.wad`;
-2. inspect or iterate with the P2.2 fairness tools;
-3. call `doom_prepare_human_bot_arena` with e.g. `easy`, `hard`, `nightmare`;
+1. call `doom_create_deathmatch_arena` and export a WAD;
+2. inspect or iterate with the fairness tools;
+3. call `doom_prepare_human_bot_arena` with three bot skills, for example `easy`, `hard`, `nightmare`;
 4. open the returned localhost URL;
 5. click **CLICK TO START**;
 6. play normally as Player 1 against the three AI player slots.
 
-For automated map balancing, use `doom_run_local_bot_deathmatch` in `all_bots` mode.
+For automated balancing, use `doom_run_local_bot_deathmatch` in `all_bots` mode.
 
-## Earlier reliability layers
+## Reliability layers
 
 ### P0 — atomic authoring
 
@@ -281,7 +263,7 @@ For automated map balancing, use `doom_run_local_bot_deathmatch` in `all_bots` m
 
 ### P1.1 — General THINGS
 
-- Player starts / deathmatch starts
+- player starts / deathmatch starts
 - monsters
 - weapons / ammo
 - health / armor
@@ -317,15 +299,16 @@ For automated map balancing, use `doom_run_local_bot_deathmatch` in `all_bots` m
 - canonical map marker + classic map lumps from zero
 - runtime-safe generated seed
 - generated geometry treated as AI-authored
-- P0→P1.4 reuse on newly generated maps
+- P0 → P1.4 reuse on newly generated maps
 
 ### P2.1 — Game-design evaluator
 
 - deterministic reachability / progression / topology / combat / resource / pacing proxies
-- balanced / combat / exploration profiles
-- structured issues and before/after comparison
+- `balanced`, `combat`, `exploration` profiles
+- structured issue codes
+- exact-policy before/after comparison
 
-Reference P2.1 acceptance:
+Reference acceptance:
 
 ```text
 Under-supported Cyberdemon candidate  70.3 (C), resources 12.25
@@ -335,24 +318,9 @@ Delta                                +13.2
 
 ## Test commands
 
-P2-specific static tests:
+Run from `mcp/`.
 
-```bash
-npm run test:p2
-npm run test:p2:game-design
-npm run test:p2:deathmatch
-```
-
-P2 runtime tests:
-
-```bash
-npm run test:p2:seed-runtime
-npm run test:p2:runtime
-npm run test:p2:bots:runtime
-npm run test:p2:human-bots:runtime
-```
-
-Stacked regression examples:
+Static / deterministic tests:
 
 ```bash
 npm run test:p0
@@ -360,11 +328,25 @@ npm run test:p1
 npm run test:p1:semantic
 npm run test:p1:navigation
 npm run test:p1:auto-repair
+npm run test:p2
+npm run test:p2:game-design
+npm run test:p2:deathmatch
+```
+
+Runtime / Chromium tests:
+
+```bash
 npm run test:experiment
 npm run test:p1:semantic:runtime
 npm run test:p1:navigation:runtime
 npm run test:p1:auto-repair:runtime
+npm run test:p2:seed-runtime
+npm run test:p2:runtime
+npm run test:p2:bots:runtime
+npm run test:p2:human-bots:runtime
 ```
+
+P2.2 acceptance retains the P0 → P2.1 regression chain and adds both four-bot and human-plus-three-bot real LinuxDOOM browser tests.
 
 ## Runtime / build baseline
 
@@ -395,7 +377,7 @@ Commercial DOOM / DOOM II IWADs are not distributed by this repository.
 
 ## P3.0 — online multiplayer next
 
-P2.2 proves the content and local simulation side of multiplayer:
+P2.2 now proves the content and local simulation side of multiplayer:
 
 - multiplayer maps can be generated from zero;
 - fairness can be measured and compared;
@@ -403,7 +385,7 @@ P2.2 proves the content and local simulation side of multiplayer:
 - each AI player can have a different skill;
 - a human can play Player 1 against three AI players.
 
-The next milestone is **remote browser synchronization**, not another map-authoring layer.
+The next milestone is **remote browser synchronization**.
 
 Recommended first P3 target:
 
@@ -418,16 +400,17 @@ bounded 2-player match
 zero deterministic tic drift
 ```
 
-After that: 4 remote players, bot-filled slots, reconnect/lobby support and richer online telemetry.
+After that: four remote players, bot-filled empty slots, lobby/reconnect support, and richer multiplayer telemetry.
 
-See:
+## Reference docs
 
 - `mcp/P2_BLANK_MAP.md`
 - `mcp/P2_GAME_DESIGN.md`
 - `mcp/P2_DEATHMATCH.md`
+- `mcp/P2.2_BOTS.md`
 - `mcp/P2_STATUS.md`
 - `.github/P2_MULTIPLAYER_ROADMAP.md`
 
 The governing rule remains:
 
-> **AI proposes generation, authoring, evaluation and repair actions; deterministic validation, node building and real LinuxDOOM runtime evidence decide whether the result is accepted.**
+> **AI proposes generation, authoring, evaluation, and repair actions; deterministic validation, node building, and real LinuxDOOM runtime evidence decide whether the result is accepted.**
