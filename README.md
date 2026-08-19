@@ -1,6 +1,6 @@
-# Web DOOM — Direct LinuxDOOM + AI Authoring MCP P2.0
+# Web DOOM — Direct LinuxDOOM + AI Authoring MCP P2.1
 
-A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, extended into an AI-native DOOM authoring, deterministic validation, autonomous QA, conservative self-repair and now **source-free level generation** sandbox.
+A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, extended into an AI-native DOOM authoring, deterministic validation, autonomous QA, conservative self-repair, **source-free level generation and deterministic game-design evaluation** sandbox.
 
 The `/direct/` runtime uses original LinuxDOOM gameplay/rendering/WAD code with repository-owned browser platform adapters. Chocolate Doom is used only for the pinned Vanilla/DMX-compatible OPL music subsystem, not as the game runtime.
 
@@ -9,9 +9,10 @@ The `/direct/` runtime uses original LinuxDOOM gameplay/rendering/WAD code with 
 - Direct build: https://pavy23.github.io/web-doom/direct/
 - Earlier doomgeneric comparison build: https://pavy23.github.io/web-doom/
 - Stable P0→P1.4 baseline: `main`
-- P2.0 development branch: `p2-blank-map-generation`
+- P2.0 source-free generation: `p2-blank-map-generation`
+- P2.1 game-design evaluation: `p2-game-design-evaluator`
 
-Current MCP version on the P2.0 branch: **2.6.0-p2.0**
+Current MCP version on the P2.1 branch: **2.7.0-p2.1**
 
 ## What is complete
 
@@ -22,9 +23,10 @@ P1.2  ✅ Semantic geometry authoring
 P1.3  ✅ Navigation graph + autonomous QA
 P1.4  ✅ Diagnose → repair → rebuild → replay closed loop
 P2.0  ✅ Source-free blank-map generation
+P2.1  ✅ Deterministic game-design evaluator
 ```
 
-The full pipeline can now start without an existing Doom level:
+The pipeline can now generate, validate, repair, run and compare level-design iterations:
 
 ```text
 no legacy map
@@ -43,18 +45,18 @@ pinned ZDBSP rebuild
       ↓
 P1.3 navigation graph + progression analysis
       ↓
-real LinuxDOOM / Chromium
+P2.1 deterministic design-proxy evaluation
       ↓
-autonomous exact-tic playtest
+real LinuxDOOM / Chromium autonomous QA
       ↓
 P1.4 diagnosis + conservative repair when needed
       ↓
-rebuild + cold boot + autonomous replay
+rebuild + replay + before/after comparison
       ↓
-PASS / rollback / manual-repair-required
+PASS / rollback / manual-repair-required / iterate
 ```
 
-The AI does not write BSP nodes directly. Structural edits must pass deterministic validation and the pinned node-builder pipeline before LinuxDOOM loads them.
+The AI does not write BSP nodes directly. Structural edits must pass deterministic validation and the pinned node-builder pipeline before LinuxDOOM loads them. P2.1 scores are iteration proxies, not objective measurements of fun.
 
 ## P2.0 — source-free blank-map generation
 
@@ -115,7 +117,79 @@ All seed primitives are marked **AI-authored** by setting the generated workspac
 - `doom_run_blank_auto_repair`
 - `doom_run_blank_navigation_trial`
 
-The P2 server composes P1.4, so the existing P0/P1 tool surface remains available too.
+## P2.1 — deterministic game-design evaluator
+
+P2.1 adds repeatable design-analysis on top of **built/exported PWAD candidates**. Invalid draft geometry is not given a game-design score.
+
+Every evaluation returns six 0–100 components:
+
+- `reachability`
+- `progression`
+- `topology`
+- `combat`
+- `resources`
+- `pacing`
+
+Three built-in design profiles change weights and heuristic target ranges without changing the underlying measurements:
+
+- `balanced`
+- `combat`
+- `exploration`
+
+The evaluator also filters THINGS by `easy`, `medium` or `hard` skill flags.
+
+Measured proxies include:
+
+- reachable-sector ratio
+- key-aware exit progression and main-path depth
+- loops, branch sectors, dead ends and average graph degree
+- normalized monster threat density/distribution
+- threat concentration and path volatility
+- normalized ammo/weapon/health/armor/powerup support
+- early weapon access
+- start-room pressure
+- early/late threat pacing
+
+Structured findings include `EXIT_UNREACHABLE`, `TOPOLOGY_TOO_LINEAR`, `RESOURCE_STARVATION`, `NO_EARLY_WEAPON`, `THREAT_OVERCONCENTRATED`, `START_ROOM_OVERPRESSURED` and related issue codes. Findings include suggested follow-up actions, but P2.1 does not silently mutate the map.
+
+### P2.1 MCP tools
+
+- `doom_p2_game_design_status`
+- `doom_get_game_design_policy`
+- `doom_evaluate_game_design`
+- `doom_compare_game_design`
+
+The P2.1 server composes P2.0, which composes P1.4, so the complete P0→P2.0 tool surface remains available from the same MCP process.
+
+### P2.1 acceptance proof
+
+The deterministic regression deliberately builds a valid two-sector E1M1 with a Cyberdemon and no authored combat support.
+
+Under the same `balanced / medium` policy:
+
+```text
+before
+  overall: 70.3 (C)
+  resources: 12.25
+  issues: THREAT_OVERCONCENTRATED,
+          RESOURCE_STARVATION,
+          NO_EARLY_WEAPON,
+          MAIN_PATH_TOO_SHORT
+
+add shotgun + ammo + health + armor
+rebuild
+
+after
+  overall: 83.5 (B)
+  resources: 100
+  delta: +13.2
+  resolved: RESOURCE_STARVATION,
+            NO_EARLY_WEAPON
+```
+
+Repeated evaluation of the same candidate must produce the same report. The same final map is also evaluated under combat and exploration profiles to prove that policy weighting can represent different design briefs.
+
+This result should be interpreted as **the intended proxy metrics improved**, not as proof that the map became objectively more fun. Runtime QA and future combat/playtesting agents remain separate evidence layers.
 
 ## P0 — reliable atomic authoring
 
@@ -181,9 +255,9 @@ P1.4 can diagnose and conservatively repair bounded gameplay failures such as:
 
 Repairs run through P0 atomic validation, rebuild with ZDBSP and can be verified by autonomous LinuxDOOM replay. Legacy Vanilla geometry remains protected unless explicitly enabled.
 
-## P2.0 acceptance proof
+## P2.0 runtime acceptance proof
 
-The final source-free regression proves:
+The source-free regression proves:
 
 ```text
 no legacy E1M1 source
@@ -218,15 +292,16 @@ control playtest orchestrate cheats geometry
  │      │        │        │        │
  └──────┴────────┴────┬───┴────────┘
                      ▼
-              P2.0 MCP server
-          p2_blank_server.js
+              P2.1 MCP server
+       p2_game_design_server.js
                      │
        ┌─────────────┼──────────────┐
        ▼             ▼              ▼
- Blank-map seed   P0/P1 stack    Browser agent
- + workspace      validation     exact-tic QA
-                  navigation     replay
-                  auto-repair
+ P2.0 generation   Evaluator     Browser agent
+ P0/P1 stack       deterministic exact-tic QA
+ validation        proxies       replay
+ navigation        comparison
+ auto-repair
        └─────────────┼──────────────┘
                      ▼
                   stdio MCP
@@ -234,12 +309,12 @@ control playtest orchestrate cheats geometry
           Grok / Claude / Codex / etc.
 ```
 
-## Quick start — P2.0
+## Quick start — P2.1
 
 ```bash
 git clone https://github.com/pavy23/web-doom.git
 cd web-doom
-git checkout p2-blank-map-generation
+git checkout p2-game-design-evaluator
 cd mcp
 npm install
 npx playwright install chromium
@@ -249,12 +324,13 @@ npm start
 `npm start` launches:
 
 ```text
-node p2_blank_server.js
+node p2_game_design_server.js
 ```
 
-The previous complete P1.4 entry point remains available:
+Previous complete entry points remain available:
 
 ```bash
+npm run start:p2.0
 npm run start:p1.4
 ```
 
@@ -269,21 +345,22 @@ Generic MCP host configuration:
 ```json
 {
   "command": "node",
-  "args": ["C:/absolute/path/to/web-doom/mcp/p2_blank_server.js"]
+  "args": ["C:/absolute/path/to/web-doom/mcp/p2_game_design_server.js"]
 }
 ```
 
 For Grok CLI:
 
 ```powershell
-grok mcp add --scope project doom-p20 -- node D:\web-doom\mcp\p2_blank_server.js
+grok mcp add --scope project doom-p21 -- node D:\web-doom\mcp\p2_game_design_server.js
 ```
 
 ## Useful test commands
 
-P2-specific:
+P2.1 / P2.0:
 
 ```bash
+npm run test:p2:game-design
 npm run test:p2
 npm run test:p2:seed-runtime
 npm run test:p2:runtime
@@ -303,7 +380,7 @@ npm run test:p1:navigation:runtime
 npm run test:p1:auto-repair:runtime
 ```
 
-The P2 GitHub Actions gate runs on Node 24 and retains the complete P0→P1.4 static/runtime suite in addition to the P2 seed and full source-free regressions.
+The P2.1 GitHub Actions gate runs on Node 24 and retains the complete P0→P2.0 static/runtime suite in addition to the deterministic evaluator regression.
 
 ## Node builder
 
@@ -338,7 +415,7 @@ Commercial DOOM / DOOM II IWADs are not distributed by this repository.
 
 ## Online multiplayer direction
 
-Online multiplayer is **feasible**, but it is intentionally separate from P2.0 map generation.
+Online multiplayer is **feasible**, but it remains intentionally separate from the P2.1 single-player evaluator.
 
 The browser platform currently uses a deliberately single-player `direct-port/i_net_web.c` shim: `netgame=false`, one player/node, and no real `I_NetCmd()` transport. The LinuxDOOM game/network layer above that platform boundary remains available.
 
@@ -346,10 +423,12 @@ Recommended sequence:
 
 ```text
 P2.0  source-free maps                    ✅
-P2.1  game-design evaluator               ⏭️
-P2.2  deathmatch map generation/fairness
+P2.1  game-design evaluator               ✅
+P2.2  deathmatch map generation/fairness  ⏭️
 P3.0  browser online multiplayer transport
 ```
+
+P2.2 can reuse the P2.1 evaluator framework for spawn-distance fairness, spawn-to-weapon path cost, line-of-sight exposure, alternate routes, chokepoints and item distribution.
 
 The first P3 prototype should use a **WebSocket relay** between two browser clients because it is easier to instrument, synchronize and reproduce than a peer-to-peer implementation. WebRTC DataChannel can be evaluated afterward.
 
@@ -357,13 +436,13 @@ A sensible first online acceptance target is: two browser clients load the same 
 
 ## Current boundary
 
-P2.0 can generate a valid source-free map, safely extend it, populate it with THINGS, diagnose navigation faults, repair bounded failures, rebuild it and prove traversal in real LinuxDOOM.
+P2.1 can generate a valid source-free map, safely edit/populate it, diagnose navigation faults, repair bounded failures, build and run it in LinuxDOOM, then produce repeatable design-proxy scores and compare subsequent built candidates.
 
-It does **not yet** take a high-level brief such as “make me a balanced 10-minute E1-style level” and autonomously optimize pacing, combat/resource economy and fun. That is the purpose of P2.1 and later P2 work.
+It does **not yet** autonomously search many alternative designs until a brief is optimized, nor does it simulate real combat quality. P2.2 adds multiplayer/deathmatch-specific generation and fairness analysis; later work can add richer combat agents and bounded design-search loops.
 
 The governing rule remains:
 
-> **AI proposes generation, authoring and repair actions; deterministic validation, node building and real runtime QA decide whether the result is accepted.**
+> **AI proposes generation, authoring, repair and design changes; deterministic validation, node building, explicit evaluation policy and real runtime QA decide what evidence is accepted.**
 
 ## Roadmap
 
@@ -373,8 +452,8 @@ The governing rule remains:
 ### P1.3 — Navigation + autonomous QA ✅
 ### P1.4 — Auto-repair closed loop ✅
 ### P2.0 — Source-free blank-map generation ✅
-### P2.1 — Game-design evaluator ⏭️
-### P2.2 — Multiplayer / deathmatch map generator
+### P2.1 — Deterministic game-design evaluator ✅
+### P2.2 — Multiplayer / deathmatch map generator + fairness evaluator ⏭️
 ### P3.0 — Online multiplayer transport
 
-See `mcp/P2_BLANK_MAP.md`, `mcp/P2_STATUS.md` and `.github/P2_MULTIPLAYER_ROADMAP.md` for the current P2 design and acceptance details.
+See `mcp/P2_BLANK_MAP.md`, `mcp/P2_GAME_DESIGN.md`, `mcp/P2_STATUS.md` and `.github/P2_MULTIPLAYER_ROADMAP.md` for current design and acceptance details.
