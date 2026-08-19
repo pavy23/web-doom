@@ -43,6 +43,7 @@ jobs:
           node --check mcp/blank_map.js
           node --check mcp/p2_blank_server.js
           node --check mcp/p2_blank_map_selftest.mjs
+          node --check mcp/p2_seed_runtime_selftest.mjs
           node --check mcp/p2_blank_map_runtime_selftest.mjs
           node --check mcp/p2_resource_probe.mjs
           node --check mcp/p1_auto_repair_server.js
@@ -98,6 +99,11 @@ jobs:
         run: |
           cd mcp
           node p0_browser_e2e.mjs
+
+      - name: Run P2.0 seed-only LinuxDOOM boot isolation
+        run: |
+          cd mcp
+          node p2_seed_runtime_selftest.mjs
 
       - name: Run P0 automated episode experiment regression
         run: |
