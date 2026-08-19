@@ -78,6 +78,15 @@ try {
       && status.attacks.slice(1, 4).every(value => Number(value) > 0);
   }, null, { timeout: 30_000 });
 
+  // A visible attack command is necessary but not sufficient. Require the live
+  // unpaused match to produce real gameplay consequences under LinuxDOOM rules:
+  // at least one damaged player or a non-zero frag count.
+  await ai.waitForFunction(() => {
+    const status = window.DoomLocalBots?.status?.();
+    const players = status?.players?.players;
+    return Array.isArray(players) && players.some(row => Number(row.health) < 100 || Number(row.frags) !== 0);
+  }, null, { timeout: 30_000 });
+
   const aiState = await ai.evaluate(() => {
     const status = window.DoomLocalBots.status();
     return {
@@ -97,6 +106,7 @@ try {
   assert.ok(aiState.status.visibleDecisions.slice(1, 4).every(value => Number(value) > 0), JSON.stringify(aiState.status));
   assert.ok(aiState.status.attacks.slice(1, 4).every(value => Number(value) > 0), JSON.stringify(aiState.status));
   assert.ok(aiState.status.players.players.length >= 4, JSON.stringify(aiState.status.players));
+  assert.ok(aiState.status.players.players.some(row => Number(row.health) < 100 || Number(row.frags) !== 0), JSON.stringify(aiState.status.players));
 
   console.error('P2.2 public /direct/ launcher acceptance passed:', JSON.stringify({
     classic: { capacity: classicState.capacity, mode: classicState.launcher.mode },
