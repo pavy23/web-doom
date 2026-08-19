@@ -45,6 +45,47 @@ async function queueCommands(page, commands) {
       [row.player, row.forward, row.strafe, row.turn, row.attack ? 1 : 0, row.use ? 1 : 0, row.tics])
   })), commands);
 }
+async function localBootSnapshot(page, expectedPlayers, bootArgs) {
+  return page.evaluate(({ expected, args }) => {
+    let capacity = null;
+    let capacityError = null;
+    let players = null;
+    let playersRaw = null;
+    let playersError = null;
+    let doomState = null;
+    let doomStateError = null;
+    try { capacity = Module.ccall('doomctl_get_local_player_capacity', 'number', [], []); }
+    catch (error) { capacityError = String(error?.message || error); }
+    try {
+      playersRaw = Module.ccall('doomctl_get_players_json', 'string', [], []);
+      players = JSON.parse(playersRaw);
+    } catch (error) { playersError = String(error?.message || error); }
+    try { doomState = window.DoomControl?.getState?.() || null; }
+    catch (error) { doomStateError = String(error?.message || error); }
+    return {
+      expectedPlayers: expected,
+      requestedBootArgs: args,
+      url: location.href,
+      status: document.getElementById('status')?.textContent || null,
+      startDisabled: Boolean(document.getElementById('start')?.disabled),
+      runtimeReady: typeof Module !== 'undefined' && typeof Module.ccall === 'function',
+      moduleCallMainPresent: typeof Module?.callMain === 'function',
+      capacity,
+      capacityError,
+      players,
+      playersRaw,
+      playersError,
+      doomState,
+      doomStateError,
+      coldBoot: window.DoomColdBoot ? {
+        candidate: window.DoomColdBoot.candidate || null,
+        prepared: Boolean(window.DoomColdBoot.prepared),
+        bytes: Number(window.DoomColdBoot.bytes || 0),
+        virtualPath: window.DoomColdBoot.virtualPath || null
+      } : null
+    };
+  }, { expected: expectedPlayers, args: bootArgs });
+}
 function attackGate(skill, worldTic, player) {
   const period = Math.max(2, Math.round(12 - skill.aggression * 9));
   return ((Math.floor(worldTic / Math.max(1, skill.reactionTics)) + player * 3) % period) <= Math.max(0, Math.round(skill.aggression * 2));
@@ -60,8 +101,6 @@ function commandFor(perception, skill, worldTic) {
 
   const delta = Number(perception.angleDelta || 0);
   const absDelta = Math.abs(delta);
-  // Existing MCP agent semantics expose +turn as intuitive right. A positive
-  // geometric delta is CCW/left, therefore the command sign is inverted.
   const turn = Math.round(clamp(-(delta / 75) * skill.turnGain) * 100);
   const aligned = absDelta <= Number(skill.aimToleranceDeg);
   const visible = Boolean(perception.visible);
@@ -96,16 +135,25 @@ async function coldBootArena(page, { playUrl, filename, wadBase64, map, localPla
   await page.evaluate(bootArgs => {
     const original = Module.callMain.bind(Module);
     Module.callMain = () => original(bootArgs);
+    window.DoomP22RequestedBootArgs = [...bootArgs];
   }, args);
   await page.click('#start');
-  await page.waitForFunction(expectedPlayers => {
-    try {
-      const state = JSON.parse(Module.ccall('doomctl_get_players_json', 'string', [], []));
-      return state.ready === true && Array.isArray(state.players) && state.players.length === expectedPlayers;
-    } catch { return false; }
-  }, localPlayers, { timeout: 45000 });
+  try {
+    await page.waitForFunction(expectedPlayers => {
+      try {
+        const state = JSON.parse(Module.ccall('doomctl_get_players_json', 'string', [], []));
+        return state.ready === true && Array.isArray(state.players) && state.players.length === expectedPlayers;
+      } catch { return false; }
+    }, localPlayers, { timeout: 10000 });
+  } catch (error) {
+    const snapshot = await localBootSnapshot(page, localPlayers, args).catch(snapshotError => ({ snapshotError: String(snapshotError?.message || snapshotError) }));
+    throw new Error(`P2.2 local-player startup did not reach ${localPlayers} ready players: ${JSON.stringify(snapshot)}; ${error?.message || error}`);
+  }
   const capacity = await page.evaluate(() => Module.ccall('doomctl_get_local_player_capacity', 'number', [], []));
-  if (Number(capacity) !== Number(localPlayers)) throw new Error(`Expected ${localPlayers} local players, runtime reported ${capacity}`);
+  if (Number(capacity) !== Number(localPlayers)) {
+    const snapshot = await localBootSnapshot(page, localPlayers, args);
+    throw new Error(`Expected ${localPlayers} local players, runtime reported ${capacity}: ${JSON.stringify(snapshot)}`);
+  }
   await page.evaluate(() => window.DoomControl.setPlaytestPaused(true));
   await page.evaluate(() => window.DoomControl.cancelAgentInput());
   await page.evaluate(() => window.DoomControl.resetPlaytestMetrics());
@@ -212,6 +260,8 @@ export async function runLocalBotDeathmatch(input) {
     fatal = error;
     report.failure = 'bot_runtime_error';
     report.error = String(error?.stack || error?.message || error);
+    try { report.browserSnapshot = await localBootSnapshot(page, config.localPlayers, ['-deathmatch', ...mapWarpArgs(config.map), '-localplayers', String(config.localPlayers)]); }
+    catch (snapshotError) { report.browserSnapshot = { error: String(snapshotError?.message || snapshotError) }; }
   } finally {
     await browser.close();
   }
