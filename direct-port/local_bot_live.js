@@ -30,6 +30,7 @@
   let moduleRef = null;
   let decisions = [0, 0, 0, 0];
   let attacks = [0, 0, 0, 0];
+  let visibleDecisions = [0, 0, 0, 0];
   let lastError = null;
   let startedAt = null;
 
@@ -41,33 +42,84 @@
     throw new Error(`Unsupported P2.2 map ${map}`);
   }
   function clamp(value, min = -1, max = 1) { return Math.max(min, Math.min(max, Number(value))); }
-  function attackGate(skill, gametic, player) {
-    const period = Math.max(2, Math.round(12 - skill.aggression * 9));
-    return ((Math.floor(gametic / Math.max(1, skill.reactionTics)) + player * 3) % period) <= Math.max(0, Math.round(skill.aggression * 2));
+  function burstGate(skill, gametic, player) {
+    const phase = Math.floor(gametic / Math.max(1, skill.reactionTics)) + player * 5;
+    const slots = 5;
+    const active = Math.max(1, Math.min(slots, Math.round(1 + skill.aggression * 4)));
+    return (phase % slots) < active;
+  }
+  function turnToward(delta, skill, boost = 1) {
+    const authority = 0.72 + Number(skill.turnGain || 0) * 0.72;
+    return Math.round(clamp(-(Number(delta) / 42) * authority * boost) * 100);
   }
   function commandFor(perception, skill, gametic) {
     const player = Number(perception.player);
-    const tics = Math.max(1, Math.min(35, Number(skill.reactionTics)));
-    if (!perception.live) return { player, forward: 0, strafe: 0, turn: 0, attack: true, use: true, tics };
+    const baseTics = Math.max(1, Math.min(35, Number(skill.reactionTics)));
+    if (!perception.live) return { player, forward: 0, strafe: 0, turn: 0, attack: true, use: true, tics: baseTics };
     if (!perception.target) {
-      const sign = ((Math.floor(gametic / 40) + player) % 2) ? 1 : -1;
-      return { player, forward: Math.round(skill.forward * 55), strafe: Math.round(sign * skill.strafe * 25), turn: Math.round(sign * 18), attack: false, use: false, tics };
+      const sign = ((Math.floor(gametic / 48) + player) % 2) ? 1 : -1;
+      return {
+        player,
+        forward: Math.round(skill.forward * 48),
+        strafe: Math.round(sign * skill.strafe * 18),
+        turn: Math.round(sign * 28),
+        attack: false,
+        use: false,
+        tics: baseTics
+      };
     }
+
     const delta = Number(perception.angleDelta || 0);
     const absDelta = Math.abs(delta);
-    const turn = Math.round(clamp(-(delta / 75) * skill.turnGain) * 100);
     const visible = Boolean(perception.visible);
-    const close = Number(perception.distance || 9999) < 160;
-    const aligned = absDelta <= Number(skill.aimToleranceDeg);
-    const dodgeSign = ((Math.floor(gametic / 28) + player) % 2) ? 1 : -1;
+    const distance = Number(perception.distance || 9999);
+    const aim = Number(skill.aimToleranceDeg);
+    const fireCone = Math.max(aim * 1.65, distance < 192 ? 15 : 7);
+    const dodgeSign = ((Math.floor(gametic / 35) + player) % 2) ? 1 : -1;
+
+    // Do not combine full forward + strafe + turn while badly misaligned. That
+    // produces the circular "hamster wheel" behavior seen in the first public
+    // demo. First acquire the target, then move while maintaining aim.
+    if (absDelta > 34) {
+      return {
+        player,
+        forward: visible ? 4 : 12,
+        strafe: 0,
+        turn: turnToward(delta, skill, 1.2),
+        attack: false,
+        use: false,
+        tics: Math.max(1, Math.ceil(baseTics * 0.55))
+      };
+    }
+
+    if (!visible) {
+      return {
+        player,
+        forward: Math.round(skill.forward * (absDelta < 18 ? 58 : 28)),
+        strafe: Math.round(dodgeSign * skill.strafe * 18),
+        turn: turnToward(delta, skill, 1.05),
+        attack: false,
+        use: false,
+        tics: Math.max(1, Math.ceil(baseTics * 0.75))
+      };
+    }
+
+    let forward;
+    if (distance > 360) forward = Math.round(skill.forward * 92);
+    else if (distance > 220) forward = Math.round(skill.forward * 58);
+    else if (distance < 110) forward = -Math.round(28 + skill.aggression * 24);
+    else forward = Math.round(skill.forward * 14);
+
+    const strafe = Math.round(dodgeSign * skill.strafe * skill.dodge * 82);
+    const attack = absDelta <= fireCone && burstGate(skill, gametic, player);
     return {
       player,
-      forward: Math.round((absDelta < 65 ? skill.forward : 0.15) * 100),
-      strafe: Math.round(dodgeSign * (visible ? skill.strafe * skill.dodge : skill.strafe * 0.25) * 100),
-      turn,
-      attack: visible && (aligned || (close && absDelta <= skill.aimToleranceDeg * 2.2)) && attackGate(skill, gametic, player),
+      forward,
+      strafe,
+      turn: turnToward(delta, skill, 0.82),
+      attack,
       use: false,
-      tics
+      tics: Math.max(1, Math.ceil(baseTics * 0.6))
     };
   }
   function ccall(name, returnType, argTypes, args) {
@@ -102,6 +154,7 @@
         const result = queue(command);
         if (Number(result) > 0) {
           decisions[slot]++;
+          if (p?.visible) visibleDecisions[slot]++;
           if (command.attack) attacks[slot]++;
         }
       }
@@ -146,6 +199,7 @@
       botPlayers: skills.map((skill, index) => ({ player: index + 1, skill })),
       map: mapName,
       decisions: [...decisions],
+      visibleDecisions: [...visibleDecisions],
       attacks: [...attacks],
       startedAt,
       lastError,
@@ -154,7 +208,7 @@
   }
 
   globalThis.DoomLocalBots = {
-    version: '2.8.0-p2.2',
+    version: '2.8.1-p2.2-combat',
     presets: PRESETS,
     enabled: () => Boolean(skills.length),
     bootArgs: () => skills.length ? ['-deathmatch', ...warpArgs(mapName), '-localplayers', '4'] : [],
