@@ -6,6 +6,7 @@ import { chromium } from 'playwright';
 import { findSectorPath } from './navigation_graph.js';
 
 const DEFAULT_PLAY_URL = 'http://127.0.0.1:3777/';
+const DEFAULT_COLD_BOOT_TIMEOUT_MS = Math.max(60000, Number(process.env.DOOM_MCP_COLD_BOOT_TIMEOUT_MS || 180000));
 const MAP_RE = /^(?:E([1-9])M([1-9])|MAP(\d\d))$/;
 
 function mapWarpArgs(mapName) {
@@ -48,6 +49,63 @@ async function waitForRuntime(page, timeout = 120000) {
     && typeof window.DoomControl?.queueAgentInput === 'function'
     && typeof window.DoomControl?.stepPlaytestTics === 'function', null, { timeout });
 }
+async function coldBootSnapshot(page, expectedFilename) {
+  return page.evaluate(filename => {
+    let staged = null;
+    try {
+      const raw = sessionStorage.getItem('doom.mcp.coldBoot.v21');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        staged = {
+          filename: parsed?.filename || null,
+          base64Chars: typeof parsed?.base64 === 'string' ? parsed.base64.length : 0,
+          stagedAt: parsed?.stagedAt || null
+        };
+      }
+    } catch (error) {
+      staged = { error: String(error?.message || error) };
+    }
+    return {
+      expectedFilename: filename,
+      url: location.href,
+      status: document.getElementById('status')?.textContent || null,
+      audioNote: document.getElementById('audioNote')?.textContent || null,
+      startReady: Boolean(document.querySelector('#start.ready')),
+      startDisabled: Boolean(document.getElementById('start')?.disabled),
+      modulePresent: typeof Module !== 'undefined',
+      ccallPresent: typeof Module !== 'undefined' && typeof Module.ccall === 'function',
+      doomControlPresent: Boolean(window.DoomControl),
+      coldBoot: window.DoomColdBoot ? {
+        candidate: window.DoomColdBoot.candidate || null,
+        prepared: Boolean(window.DoomColdBoot.prepared),
+        bytes: Number(window.DoomColdBoot.bytes || 0),
+        virtualPath: window.DoomColdBoot.virtualPath || null
+      } : null,
+      staged
+    };
+  }, expectedFilename);
+}
+async function waitForColdBoot(page, filename, timeout = DEFAULT_COLD_BOOT_TIMEOUT_MS) {
+  try {
+    await page.waitForFunction(expected => {
+      const status = document.getElementById('status')?.textContent || '';
+      const prepared = window.DoomColdBoot?.prepared === true
+        && window.DoomColdBoot?.candidate === expected;
+      const failed = /cold-boot.*failed|startup failed|failed to start/i.test(status);
+      return prepared || failed;
+    }, filename, { timeout });
+  } catch (error) {
+    const snapshot = await coldBootSnapshot(page, filename).catch(snapshotError => ({
+      snapshotError: String(snapshotError?.message || snapshotError)
+    }));
+    throw new Error(`Cold-boot candidate ${filename} did not become ready within ${timeout} ms: ${JSON.stringify(snapshot)}; ${error?.message || error}`);
+  }
+  const snapshot = await coldBootSnapshot(page, filename);
+  if (!snapshot.coldBoot?.prepared || snapshot.coldBoot?.candidate !== filename) {
+    throw new Error(`Cold-boot preparation failed for ${filename}: ${JSON.stringify(snapshot)}`);
+  }
+  return snapshot;
+}
 async function waitForPlayable(page, expected, timeout = 30000) {
   await page.waitForFunction(({ episode, map }) => {
     try {
@@ -75,9 +133,8 @@ async function coldBoot(page, config, wadBase64) {
   assert.equal(staging?.scheduled, true, JSON.stringify(staging));
   await navigation;
   await waitForRuntime(page);
-  await page.waitForFunction(filename => window.DoomColdBoot?.prepared === true
-    && window.DoomColdBoot?.candidate === filename, config.filename, { timeout: 60000 });
-  await page.waitForSelector('#start.ready:not([disabled])', { timeout: 60000 });
+  await waitForColdBoot(page, config.filename, Number(config.coldBootTimeoutMs || DEFAULT_COLD_BOOT_TIMEOUT_MS));
+  await page.waitForSelector('#start.ready:not([disabled])', { timeout: 30000 });
   await page.click('#start');
   return warp(page, config.map);
 }
@@ -171,6 +228,7 @@ export async function runNavigationBrowserTrial(input) {
     maxTicsPerEdge: 210,
     captureFrame: true,
     keys: [],
+    coldBootTimeoutMs: DEFAULT_COLD_BOOT_TIMEOUT_MS,
     ...input
   };
   if (!config.wadPath || !config.filename || !config.map || !config.graph || config.targetSector == null || !config.reportDir) {
@@ -194,6 +252,7 @@ export async function runNavigationBrowserTrial(input) {
   page.on('pageerror', error => report.diagnostics.push({ type: 'pageerror', message: String(error?.message || error) }));
   page.on('console', message => { if (message.type() === 'error') report.diagnostics.push({ type: 'console', message: message.text() }); });
 
+  let fatalError = null;
   try {
     const initial = await coldBoot(page, config, wadBase64);
     await page.evaluate(() => window.DoomControl.setPlaytestPaused(true));
@@ -223,11 +282,25 @@ export async function runNavigationBrowserTrial(input) {
         }
       }
     }
+  } catch (error) {
+    fatalError = error;
+    report.failure = 'browser_trial_error';
+    report.error = String(error?.stack || error?.message || error);
+    try {
+      report.browserSnapshot = await coldBootSnapshot(page, config.filename);
+    } catch (snapshotError) {
+      report.browserSnapshot = { error: String(snapshotError?.message || snapshotError) };
+    }
   } finally {
     await browser.close();
   }
   report.completedAt = new Date().toISOString();
   report.reportPath = path.join(config.reportDir, 'report.json');
   await writeFile(report.reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  if (fatalError) {
+    const wrapped = new Error(`${fatalError?.message || fatalError} (browser report: ${report.reportPath})`);
+    wrapped.cause = fatalError;
+    throw wrapped;
+  }
   return report;
 }
