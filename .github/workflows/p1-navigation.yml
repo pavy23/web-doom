@@ -1,4 +1,5 @@
 name: Validate DOOM MCP P1.3 navigation agent
+# P1.3 stacked-PR validation gate
 
 on:
   push:
