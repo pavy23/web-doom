@@ -27,10 +27,12 @@ concurrency:
 jobs:
   p2-deathmatch:
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    timeout-minutes: 70
     steps:
       - name: Checkout P2.2 branch
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Setup Node 24
         uses: actions/setup-node@v4
@@ -43,20 +45,24 @@ jobs:
       - name: Syntax-check P2.2 modules
         run: |
           node --check mcp/deathmatch_design.js
-          node --check mcp/p2_deathmatch_server.js
-          node --check mcp/p2_deathmatch_selftest.mjs
+          node --check mcp/deathmatch_factory.js
+          node --check mcp/deathmatch_bot_runtime.mjs
+          node --check mcp/p2_deathmatch_bot_server.js
+          node --check mcp/p2_deathmatch_balanced_selftest.mjs
+          node --check mcp/p2_bot_runtime_selftest.mjs
           node --check mcp/game_design_evaluator.js
           node --check mcp/p2_game_design_server.js
           node --check mcp/p2_blank_server.js
           node --check mcp/p1_auto_repair_server.js
           node --check mcp/navigation_browser_agent.mjs
+          python3 -m py_compile direct-port/patch_multi_agent.py
 
-      - name: Instantiate P2.2 MCP server
+      - name: Instantiate final P2.2 MCP server
         run: |
           cd mcp
-          node --input-type=module -e "import('./p2_deathmatch_server.js').then(m => { const s=m.createMcpServer(); if(!s) process.exit(1); console.error('P2.2 MCP server import passed'); })"
+          node --input-type=module -e "import('./p2_deathmatch_bot_server.js').then(m => { const s=m.createMcpServer(); if(!s) process.exit(1); console.error('P2.2 deathmatch+bot MCP server import passed'); })"
 
-      - name: Run P2.2 deterministic deathmatch regression
+      - name: Run P2.2 deterministic deathmatch fairness regression
         run: |
           cd mcp
           npm run test:p2:deathmatch
@@ -141,3 +147,95 @@ jobs:
         run: |
           cd mcp
           npm run test:p2:runtime
+
+      - name: Install Emscripten 6.0.5 for P2.2 local-bot runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git /tmp/emsdk
+          /tmp/emsdk/emsdk install 6.0.5
+          /tmp/emsdk/emsdk activate 6.0.5
+
+      - name: Prepare P2.2 LinuxDOOM source and verified IWAD
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/id-doom /tmp/doom-shareware
+          git clone https://github.com/id-Software/DOOM.git /tmp/id-doom
+          git -C /tmp/id-doom checkout a77dfb96cb91780ca334d0d4cfd86957558007e0
+          SRC=/tmp/id-doom/linuxdoom-1.10
+          test -f "$SRC/d_main.c"
+
+          curl -fL --retry 3 https://www.libsdl.org/projects/doom/data/doom1.wad.zip -o /tmp/doom1.wad.zip
+          mkdir -p /tmp/doom-shareware
+          unzip -j /tmp/doom1.wad.zip -d /tmp/doom-shareware
+          WAD="$(find /tmp/doom-shareware -type f -iname 'doom1.wad' | head -n1)"
+          test -n "$WAD"
+          cp "$WAD" "$SRC/doom1.wad"
+          test "$(head -c4 "$SRC/doom1.wad")" = "IWAD"
+          test "$(stat -c%s "$SRC/doom1.wad")" -eq 4196020
+          echo "5f4eb849b1af12887dec04a2a12e5e62  $SRC/doom1.wad" | md5sum -c -
+
+          cp direct-port/i_video_web.c        "$SRC/i_video.c"
+          cp direct-port/i_system_web.c       "$SRC/i_system.c"
+          cp direct-port/i_sound_web.c        "$SRC/i_sound.c"
+          cp direct-port/i_music_opl_bridge.c "$SRC/i_music_opl_bridge.c"
+          cp direct-port/i_net_localbots.c    "$SRC/i_net.c"
+          cp direct-port/Makefile.web         "$SRC/Makefile.web"
+          cp direct-port/shell.html           "$SRC/shell.html"
+          python3 direct-port/apply_compat.py "$SRC"
+
+      - name: Build bot-capable P2.2 LinuxDOOM WebAssembly
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /tmp/emsdk/emsdk_env.sh
+          SRC=/tmp/id-doom/linuxdoom-1.10
+          cd "$SRC"
+
+          emmake make -f Makefile.web prepare-opl prepare-control validate-mcp
+
+          # prepare-control first installs the proven P1 console-player agent.
+          # Replace that source with the compatible multi-player implementation,
+          # then upgrade the G_Ticker hook from console-only to every player slot.
+          cp "$GITHUB_WORKSPACE/direct-port/doom_multi_agent.c" doom_agent_input.c
+          python3 "$GITHUB_WORKSPACE/direct-port/patch_multi_agent.py" "$SRC"
+
+          grep -q "doomctl_queue_player_input" doom_agent_input.c
+          grep -q "doomctl_get_players_json" doom_agent_input.c
+          grep -q "doomctl_get_player_perception_json" doom_agent_input.c
+          grep -q "doomctl_apply_player_agent_ticcmd(i, cmd)" g_game.c
+          grep -q "doomctl_get_local_player_capacity" i_net.c
+
+          emmake make -f Makefile.web webdoom.html
+          test -s webdoom.html
+          test -s webdoom.js
+          test -s webdoom.wasm
+          test -s webdoom.data
+          grep -q "doomctl_queue_player_input" webdoom.js
+          grep -q "doomctl_get_players_json" webdoom.js
+          grep -q "doomctl_get_player_perception_json" webdoom.js
+          grep -q "doomctl_get_local_player_capacity" webdoom.js
+
+      - name: Run four-player local bot LinuxDOOM acceptance
+        timeout-minutes: 12
+        shell: bash
+        env:
+          DOOM_MCP_UPSTREAM: http://127.0.0.1:8000/webdoom.html
+          DOOM_P22_BOT_TICS: "700"
+        run: |
+          set -euo pipefail
+          SRC=/tmp/id-doom/linuxdoom-1.10
+          python3 -m http.server 8000 --bind 127.0.0.1 --directory "$SRC" >/tmp/p22-runtime-http.log 2>&1 &
+          HTTP_PID=$!
+          trap 'kill $HTTP_PID 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/webdoom.html >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/webdoom.js >/dev/null
+          cd mcp
+          npm run test:p2:bots:runtime
