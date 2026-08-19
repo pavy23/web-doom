@@ -4,24 +4,12 @@ on:
   push:
     branches: ["p1-auto-repair"]
     paths:
-      - "mcp/auto_repair.js"
-      - "mcp/auto_repair_episode.js"
-      - "mcp/navigation_browser_agent.mjs"
-      - "mcp/p1_auto_repair_server.js"
-      - "mcp/p1_auto_repair_selftest.mjs"
-      - "mcp/p1_auto_repair_runtime_selftest.mjs"
-      - "mcp/package.json"
+      - "mcp/**"
       - ".github/workflows/p1-auto-repair.yml"
   pull_request:
     branches: ["p1-navigation-agent"]
     paths:
-      - "mcp/auto_repair.js"
-      - "mcp/auto_repair_episode.js"
-      - "mcp/navigation_browser_agent.mjs"
-      - "mcp/p1_auto_repair_server.js"
-      - "mcp/p1_auto_repair_selftest.mjs"
-      - "mcp/p1_auto_repair_runtime_selftest.mjs"
-      - "mcp/package.json"
+      - "mcp/**"
       - ".github/workflows/p1-auto-repair.yml"
   workflow_dispatch:
 
@@ -50,6 +38,10 @@ jobs:
 
       - name: Syntax-check P1.4 modules
         run: |
+          node --check mcp/server.js
+          node --check mcp/http_bind.js
+          node --check mcp/url_wad_bootstrap.js
+          node --check mcp/thing_placement.js
           node --check mcp/auto_repair.js
           node --check mcp/auto_repair_episode.js
           node --check mcp/navigation_browser_agent.mjs
