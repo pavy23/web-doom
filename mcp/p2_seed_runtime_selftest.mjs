@@ -47,13 +47,12 @@ const report = await runNavigationBrowserTrial({
   graph: buildNavigationGraph(workspace),
   targetSector: 0,
   reportDir: path.join(exportDir, 'p2-blank', 'seed-only-runtime'),
-  captureFrame: true,
-  bootDirectToMap: true
+  captureFrame: true
 });
 assert.equal(report.startSector, 0, JSON.stringify(report));
 assert.equal(report.passed, true, JSON.stringify(report));
 assert.equal(Number(report.finalState.currentSector), 0);
-console.error('P2.0 source-free seed-only LinuxDOOM boot passed:', JSON.stringify({
+console.error('P2.0 source-free seed-only LinuxDOOM standard-warp boot passed:', JSON.stringify({
   seed: generated.seed,
   candidateBytes: candidate.bytes.length,
   finalSector: report.finalState.currentSector
