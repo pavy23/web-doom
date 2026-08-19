@@ -1,0 +1,284 @@
+name: Validate DOOM MCP P2.2 deathmatch generation and bots
+
+on:
+  push:
+    branches: ["p2-deathmatch-bots"]
+    paths:
+      - "mcp/**"
+      - "direct-port/**"
+      - ".github/workflows/p2-deathmatch.yml"
+      - "README.md"
+  pull_request:
+    branches: ["p2-game-design-evaluator"]
+    paths:
+      - "mcp/**"
+      - "direct-port/**"
+      - ".github/workflows/p2-deathmatch.yml"
+      - "README.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p2-deathmatch-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p2-deathmatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout P2.2 branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install MCP dependencies
+        run: npm install --prefix mcp --ignore-scripts --no-audit --no-fund
+
+      - name: Syntax-check P2.2 modules
+        run: |
+          node --check mcp/deathmatch_design.js
+          node --check mcp/deathmatch_factory.js
+          node --check mcp/deathmatch_bot_runtime.mjs
+          node --check mcp/p2_deathmatch_bot_server.js
+          node --check mcp/p2_human_bot_server.js
+          node --check mcp/p2_deathmatch_balanced_selftest.mjs
+          node --check mcp/p2_bot_runtime_selftest.mjs
+          node --check mcp/p2_human_bot_browser_selftest.mjs
+          node --check mcp/game_design_evaluator.js
+          node --check mcp/p2_game_design_server.js
+          node --check mcp/p2_blank_server.js
+          node --check mcp/p1_auto_repair_server.js
+          node --check mcp/navigation_browser_agent.mjs
+          node --check direct-port/local_bot_live.js
+          python3 -m py_compile direct-port/patch_multi_agent.py direct-port/patch_local_bot_shell.py
+
+      - name: Instantiate final P2.2 MCP server
+        run: |
+          cd mcp
+          node --input-type=module -e "import('./p2_human_bot_server.js').then(m => { const s=m.createMcpServer(); if(!s) process.exit(1); console.error('P2.2 human+bot MCP server import passed'); })"
+
+      - name: Run P2.2 deterministic deathmatch fairness regression
+        run: |
+          cd mcp
+          npm run test:p2:deathmatch
+
+      - name: Run P2.1 deterministic game-design regression
+        run: |
+          cd mcp
+          npm run test:p2:game-design
+
+      - name: Run P2.0 source-free generation regression
+        run: |
+          cd mcp
+          npm run test:p2
+
+      - name: Run P0 transaction and nodebuilder regression
+        run: |
+          cd mcp
+          npm run test:p0
+
+      - name: Run P1.1 THINGS regression
+        run: |
+          cd mcp
+          npm run test:p1
+
+      - name: Run P1.2 semantic geometry regression
+        run: |
+          cd mcp
+          npm run test:p1:semantic
+
+      - name: Run P1.3 navigation graph regression
+        run: |
+          cd mcp
+          npm run test:p1:navigation
+
+      - name: Run P1.4 diagnosis and repair regression
+        run: |
+          cd mcp
+          npm run test:p1:auto-repair
+
+      - name: Install Playwright Chromium
+        timeout-minutes: 8
+        run: |
+          cd mcp
+          npx playwright install chromium
+
+      - name: Run P0 real browser regression
+        run: |
+          cd mcp
+          node p0_browser_e2e.mjs
+
+      - name: Run P2.0 seed-only LinuxDOOM boot regression
+        run: |
+          cd mcp
+          npm run test:p2:seed-runtime
+
+      - name: Run P0 automated episode experiment regression
+        run: |
+          cd mcp
+          npm run test:experiment
+
+      - name: Run P1.1 authored THINGS runtime regression
+        run: |
+          cd mcp
+          node p1_runtime_selftest.mjs
+
+      - name: Run P1.2 semantic runtime regression
+        run: |
+          cd mcp
+          npm run test:p1:semantic:runtime
+
+      - name: Run P1.3 autonomous navigation runtime regression
+        run: |
+          cd mcp
+          npm run test:p1:navigation:runtime
+
+      - name: Run P1.4 auto-repair runtime regression
+        run: |
+          cd mcp
+          npm run test:p1:auto-repair:runtime
+
+      - name: Run P2.0 full source-free runtime regression
+        run: |
+          cd mcp
+          npm run test:p2:runtime
+
+      - name: Install Emscripten 6.0.5 for P2.2 local-bot runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git /tmp/emsdk
+          /tmp/emsdk/emsdk install 6.0.5
+          /tmp/emsdk/emsdk activate 6.0.5
+
+      - name: Prepare P2.2 LinuxDOOM source and verified IWAD
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/id-doom /tmp/doom-shareware
+          git clone https://github.com/id-Software/DOOM.git /tmp/id-doom
+          git -C /tmp/id-doom checkout a77dfb96cb91780ca334d0d4cfd86957558007e0
+          SRC=/tmp/id-doom/linuxdoom-1.10
+          test -f "$SRC/d_main.c"
+
+          curl -fL --retry 3 https://www.libsdl.org/projects/doom/data/doom1.wad.zip -o /tmp/doom1.wad.zip
+          mkdir -p /tmp/doom-shareware
+          unzip -j /tmp/doom1.wad.zip -d /tmp/doom-shareware
+          WAD="$(find /tmp/doom-shareware -type f -iname 'doom1.wad' | head -n1)"
+          test -n "$WAD"
+          cp "$WAD" "$SRC/doom1.wad"
+          test "$(head -c4 "$SRC/doom1.wad")" = "IWAD"
+          test "$(stat -c%s "$SRC/doom1.wad")" -eq 4196020
+          echo "5f4eb849b1af12887dec04a2a12e5e62  $SRC/doom1.wad" | md5sum -c -
+
+          cp direct-port/i_video_web.c        "$SRC/i_video.c"
+          cp direct-port/i_system_web.c       "$SRC/i_system.c"
+          cp direct-port/i_sound_web.c        "$SRC/i_sound.c"
+          cp direct-port/i_music_opl_bridge.c "$SRC/i_music_opl_bridge.c"
+          cp direct-port/i_net_localbots.c    "$SRC/i_net.c"
+          cp direct-port/Makefile.web         "$SRC/Makefile.web"
+          cp direct-port/shell.html           "$SRC/shell.html"
+          python3 direct-port/apply_compat.py "$SRC"
+          python3 direct-port/patch_local_bot_shell.py "$SRC"
+          grep -q "p22BootArgs" "$SRC/shell.html"
+          grep -q "DoomLocalBots.onGameStarted" "$SRC/shell.html"
+
+      - name: Build bot-capable P2.2 LinuxDOOM WebAssembly
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /tmp/emsdk/emsdk_env.sh
+          SRC=/tmp/id-doom/linuxdoom-1.10
+          cd "$SRC"
+
+          emmake make -f Makefile.web prepare-opl prepare-control validate-mcp
+
+          cp "$GITHUB_WORKSPACE/direct-port/doom_multi_agent.c" doom_agent_input.c
+          python3 "$GITHUB_WORKSPACE/direct-port/patch_multi_agent.py" "$SRC"
+
+          grep -q "doomctl_queue_player_input" doom_agent_input.c
+          grep -q "doomctl_get_players_json" doom_agent_input.c
+          grep -q "doomctl_get_player_perception_json" doom_agent_input.c
+          grep -q "doomctl_apply_player_agent_ticcmd(i, cmd)" g_game.c
+          grep -q "doomctl_get_local_player_capacity" i_net.c
+
+          P22_EXTRA="--pre-js $GITHUB_WORKSPACE/direct-port/local_bot_live.js -sEXPORTED_FUNCTIONS=_main,_doomctl_queue_player_input,_doomctl_cancel_player_input,_doomctl_get_player_input_status_json,_doomctl_get_players_json,_doomctl_get_player_perception_json,_doomctl_get_local_player_capacity"
+          emmake make -f Makefile.web webdoom.html EXTRA_EMFLAGS="$P22_EXTRA"
+          test -s webdoom.html
+          test -s webdoom.js
+          test -s webdoom.wasm
+          test -s webdoom.data
+          grep -q "doomctl_queue_player_input" webdoom.js
+          grep -q "doomctl_get_players_json" webdoom.js
+          grep -q "doomctl_get_player_perception_json" webdoom.js
+          grep -q "doomctl_get_local_player_capacity" webdoom.js
+          grep -q "DoomLocalBots" webdoom.js
+
+      - name: Start isolated P2.2 bot-capable runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/p22-runtime-cache /tmp/p22-http-root
+          mkdir -p /tmp/p22-http-root
+          SRC=/tmp/id-doom/linuxdoom-1.10
+          cp "$SRC/webdoom.html" /tmp/p22-http-root/index.html
+          cp "$SRC/webdoom.js" /tmp/p22-http-root/webdoom.js
+          cp "$SRC/webdoom.wasm" /tmp/p22-http-root/webdoom.wasm
+          cp "$SRC/webdoom.data" /tmp/p22-http-root/webdoom.data
+          cp direct-port/opl_music.js /tmp/p22-http-root/opl_music.js
+          test -s /tmp/p22-http-root/index.html
+          test -s /tmp/p22-http-root/webdoom.js
+          test -s /tmp/p22-http-root/webdoom.wasm
+          test -s /tmp/p22-http-root/webdoom.data
+          python3 -m http.server 8000 --bind 127.0.0.1 --directory /tmp/p22-http-root >/tmp/p22-runtime-http.log 2>&1 &
+          echo $! >/tmp/p22-runtime-http.pid
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/index.html >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/index.html >/dev/null
+          curl -fsS http://127.0.0.1:8000/webdoom.js >/dev/null
+          curl -fsS http://127.0.0.1:8000/webdoom.wasm >/dev/null
+          curl -fsS http://127.0.0.1:8000/webdoom.data >/dev/null
+
+      - name: Run four-player local bot LinuxDOOM acceptance
+        timeout-minutes: 12
+        shell: bash
+        env:
+          DOOM_MCP_UPSTREAM: http://127.0.0.1:8000/
+          DOOM_MCP_GAME_DIR: /tmp/p22-runtime-cache
+          DOOM_P22_BOT_TICS: "700"
+        run: |
+          set -euo pipefail
+          cd mcp
+          npm run test:p2:bots:runtime
+
+      - name: Run interactive Player 1 plus three live bots acceptance
+        timeout-minutes: 8
+        shell: bash
+        env:
+          DOOM_MCP_UPSTREAM: http://127.0.0.1:8000/
+          DOOM_MCP_GAME_DIR: /tmp/p22-runtime-cache
+        run: |
+          set -euo pipefail
+          cd mcp
+          npm run test:p2:human-bots:runtime
+
+      - name: Stop isolated P2.2 runtime server
+        if: always()
+        shell: bash
+        run: |
+          if [ -f /tmp/p22-runtime-http.pid ]; then
+            kill "$(cat /tmp/p22-runtime-http.pid)" 2>/dev/null || true
+          fi

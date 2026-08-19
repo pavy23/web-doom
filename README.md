@@ -1,20 +1,23 @@
-# Web DOOM — Direct LinuxDOOM + AI Authoring MCP P2.1
+# Web DOOM — Direct LinuxDOOM + AI Authoring MCP P2.2
 
-A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, extended into an AI-native DOOM authoring, deterministic validation, autonomous QA, conservative self-repair, **source-free level generation and deterministic game-design evaluation** sandbox.
+A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, extended into an AI-native DOOM authoring, deterministic validation, autonomous QA, conservative self-repair, source-free level generation, game-design evaluation, **deathmatch generation and configurable local AI-player bots** sandbox.
 
 The `/direct/` runtime uses original LinuxDOOM gameplay/rendering/WAD code with repository-owned browser platform adapters. Chocolate Doom is used only for the pinned Vanilla/DMX-compatible OPL music subsystem, not as the game runtime.
 
-## Play
+## Project state
 
-- Direct build: https://pavy23.github.io/web-doom/direct/
+- Public direct build: https://pavy23.github.io/web-doom/direct/
 - Earlier doomgeneric comparison build: https://pavy23.github.io/web-doom/
 - Stable P0→P1.4 baseline: `main`
 - P2.0 source-free generation: `p2-blank-map-generation`
 - P2.1 game-design evaluation: `p2-game-design-evaluator`
+- P2.2 deathmatch + local bots: `p2-deathmatch-bots`
 
-Current MCP version on the P2.1 branch: **2.7.0-p2.1**
+Current MCP version on the P2.2 branch: **2.8.0-p2.2**
 
-## What is complete
+> The public `/direct/` deployment is still the stable single-player runtime. P2.2's bot-capable LinuxDOOM/WASM is built branch-locally or in CI until the P2 line is later consolidated and published.
+
+## Completed milestones
 
 ```text
 P0    ✅ Reliable atomic episode authoring
@@ -24,349 +27,332 @@ P1.3  ✅ Navigation graph + autonomous QA
 P1.4  ✅ Diagnose → repair → rebuild → replay closed loop
 P2.0  ✅ Source-free blank-map generation
 P2.1  ✅ Deterministic game-design evaluator
+P2.2  ✅ Deathmatch generation + fairness + local AI players
+P3.0  ⏭️ Online browser multiplayer transport
 ```
 
-The pipeline can now generate, validate, repair, run and compare level-design iterations:
+The current pipeline can begin from no legacy level at all:
 
 ```text
-no legacy map
-      ↓
-canonical E#M# / MAP## marker + classic map lumps
-      ↓
-runtime-safe generated seed
-      ↓
+high-level authoring request
+        ↓
+source-free map / deathmatch generation
+        ↓
 P0 atomic transaction
-      ↓
+        ↓
 P1.1 THINGS + P1.2 semantic geometry
-      ↓
+        ↓
 deterministic topology / placement validation
-      ↓
+        ↓
 pinned ZDBSP rebuild
-      ↓
-P1.3 navigation graph + progression analysis
-      ↓
-P2.1 deterministic design-proxy evaluation
-      ↓
-real LinuxDOOM / Chromium autonomous QA
-      ↓
-P1.4 diagnosis + conservative repair when needed
-      ↓
-rebuild + replay + before/after comparison
-      ↓
-PASS / rollback / manual-repair-required / iterate
+        ↓
+P1.3 navigation / progression analysis
+        ↓
+P2.1 single-player design-proxy evaluation
+or
+P2.2 deathmatch fairness evaluation
+        ↓
+real LinuxDOOM / Chromium runtime
+        ↓
+autonomous playtest / local AI-player match
+        ↓
+P1.4 repair or new authoring iteration
+        ↓
+rebuild + before/after comparison
 ```
 
-The AI does not write BSP nodes directly. Structural edits must pass deterministic validation and the pinned node-builder pipeline before LinuxDOOM loads them. P2.1 scores are iteration proxies, not objective measurements of fun.
+The AI does not write BSP nodes directly. Structural edits must pass deterministic validation and the pinned node-builder pipeline before LinuxDOOM loads them.
 
-## P2.0 — source-free blank-map generation
+## P2.2 — source-free deathmatch generation
 
-P2.0 removes the previous requirement that the source WAD already contain the map being authored.
+The accepted default deathmatch seed uses an **octagonal ring + contested center** topology:
 
-A new map begins with the canonical sequence:
+- 8 ring sectors + 1 center sector
+- 8 DoomEd 11 deathmatch starts
+- real Player 1–4 starts
+- 8 independent navigation loops
+- equal radial shotgun + shell access from every spawn
+- central rocket launcher as a high-value contested pickup
+- health / armor around center approaches
+- shareware-safe `STARTAN3 / FLOOR4_8 / CEIL3_5` materials
+
+The design principle is:
+
+> **Basic survival access is symmetric; high-value control remains competitive.**
+
+### P2.2 fairness metrics
+
+The deterministic evaluator scores:
+
+- spawn distance
+- spawn→weapon access
+- immediate route choice
+- initial line-of-sight exposure
+- high-value pickup access equity
+- topology / loop quality
+
+The accepted balanced seed scored:
 
 ```text
-<MAP MARKER>
-THINGS
-LINEDEFS
-SIDEDEFS
-VERTEXES
-SEGS
-SSECTORS
-NODES
-SECTORS
-REJECT
-BLOCKMAP
+Overall              84.67 (B)
+Spawn distance       78.78
+Weapon access        99.82
+Route choice        100.00
+Initial exposure      6.25
+High-value equity    99.95
+Topology             100.00
+
+Deathmatch starts        8
+Independent loops        8
+Nearest-weapon CV    0.001
+High-value-item CV   0.000
 ```
 
-The geometry and THINGS are generated directly. `SEGS`, `SSECTORS`, `NODES`, `REJECT` and `BLOCKMAP` start as derived data and are rebuilt by pinned ZDBSP.
+The arena is intentionally visually open at this checkpoint, so `SPAWN_EXPOSURE_HIGH` is still reported rather than hidden.
 
-### Runtime-safe generated seed
+An intentionally biased candidate — one clustered spawn plus a rocket launcher moved toward another spawn — fell to **48.2 (F)**. Restoring the balanced version produced a **+36.47** fairness delta.
 
-The default seed is deliberately small but uses **two connected sectors**, not one:
+## Real local AI players
 
-- rectangular footprint split into left/right sectors
-- six outer one-sided walls
-- one two-sided internal portal
-- Player 1 start in sector 0
-- optional S1 exit wall (`special 11`)
-- default wall: `STARTAN3`
-- default floor: `FLOOR4_8`
-- default ceiling: `CEIL3_5`
-- default vertical clearance: 128 map units
-
-Those material defaults are verified against the supported shareware E1M1 runtime baseline.
-
-The two-sector seed is intentional. A single convex sector can cause ZDBSP to emit a zero-byte `NODES` lump; the generated two-sector seed produces a real Vanilla BSP node and has been verified in LinuxDOOM.
-
-All seed primitives are marked **AI-authored** by setting the generated workspace's legacy boundary to zero. This means P1.4 can repair generated geometry with legacy repair still disabled.
-
-### P2.0 MCP tools
-
-- `doom_p2_blank_map_status`
-- `doom_create_blank_map_session`
-- `doom_get_blank_map_session`
-- `doom_get_blank_map`
-- `doom_begin_blank_transaction`
-- `doom_apply_blank_edits`
-- `doom_validate_blank_transaction`
-- `doom_commit_blank_transaction`
-- `doom_rollback_blank_transaction`
-- `doom_validate_blank_map`
-- `doom_build_blank_level`
-- `doom_diagnose_blank_navigation`
-- `doom_run_blank_auto_repair`
-- `doom_run_blank_navigation_trial`
-
-## P2.1 — deterministic game-design evaluator
-
-P2.1 adds repeatable design-analysis on top of **built/exported PWAD candidates**. Invalid draft geometry is not given a game-design score.
-
-Every evaluation returns six 0–100 components:
-
-- `reachability`
-- `progression`
-- `topology`
-- `combat`
-- `resources`
-- `pacing`
-
-Three built-in design profiles change weights and heuristic target ranges without changing the underlying measurements:
-
-- `balanced`
-- `combat`
-- `exploration`
-
-The evaluator also filters THINGS by `easy`, `medium` or `hard` skill flags.
-
-Measured proxies include:
-
-- reachable-sector ratio
-- key-aware exit progression and main-path depth
-- loops, branch sectors, dead ends and average graph degree
-- normalized monster threat density/distribution
-- threat concentration and path volatility
-- normalized ammo/weapon/health/armor/powerup support
-- early weapon access
-- start-room pressure
-- early/late threat pacing
-
-Structured findings include `EXIT_UNREACHABLE`, `TOPOLOGY_TOO_LINEAR`, `RESOURCE_STARVATION`, `NO_EARLY_WEAPON`, `THREAT_OVERCONCENTRATED`, `START_ROOM_OVERPRESSURED` and related issue codes. Findings include suggested follow-up actions, but P2.1 does not silently mutate the map.
-
-### P2.1 MCP tools
-
-- `doom_p2_game_design_status`
-- `doom_get_game_design_policy`
-- `doom_evaluate_game_design`
-- `doom_compare_game_design`
-
-The P2.1 server composes P2.0, which composes P1.4, so the complete P0→P2.0 tool surface remains available from the same MCP process.
-
-### P2.1 acceptance proof
-
-The deterministic regression deliberately builds a valid two-sector E1M1 with a Cyberdemon and no authored combat support.
-
-Under the same `balanced / medium` policy:
+P2.2 bots use the original LinuxDOOM **`players[0..3]` player slots**. They are not monsters disguised as players.
 
 ```text
-before
-  overall: 70.3 (C)
-  resources: 12.25
-  issues: THREAT_OVERCONCENTRATED,
-          RESOURCE_STARVATION,
-          NO_EARLY_WEAPON,
-          MAIN_PATH_TOO_SHORT
-
-add shotgun + ammo + health + armor
-rebuild
-
-after
-  overall: 83.5 (B)
-  resources: 100
-  delta: +13.2
-  resolved: RESOURCE_STARVATION,
-            NO_EARLY_WEAPON
+LinuxDOOM G_Ticker
+       │
+       ├─ Player 1 ticcmd
+       ├─ Player 2 ticcmd
+       ├─ Player 3 ticcmd
+       └─ Player 4 ticcmd
+             ▲
+             │
+     doom_multi_agent.c
+             ▲
+             │
+ deterministic bot policy
 ```
 
-Repeated evaluation of the same candidate must produce the same report. The same final map is also evaluated under combat and exploration profiles to prove that policy weighting can represent different design briefs.
-
-This result should be interpreted as **the intended proxy metrics improved**, not as proof that the map became objectively more fun. Runtime QA and future combat/playtesting agents remain separate evidence layers.
-
-## P0 — reliable atomic authoring
-
-P0 provides the reliability layer beneath every later phase:
-
-- selected-map and multi-map workspaces
-- atomic begin/apply/validate/commit/rollback transactions
-- duplicate/crossing/overlap/T-junction/manifold validation
-- cross-map rollback on failed edits
-- pinned and hash-verified ZDBSP rebuilds
-- candidate restore/finalize support
-- real Chromium cold-boot regression
-- exact-tic episode experiment runner with PNG + telemetry evidence
-
-## P1.1 — General THINGS authoring
-
-P1.1 edits real classic 10-byte DOOM THINGS:
-
-- Player 1–4 starts and deathmatch starts
-- monsters
-- weapons and ammo
-- health and armor
-- blue/yellow/red keys
-- powerups and barrels
-- numeric DoomEd fallback
-
-Persistent add/move/update/delete operations participate in P0 atomic transactions and authored actor placement checks.
-
-## P1.2 — Semantic geometry
-
-High-level authoring operations include:
-
-- convex polygon room extrusion
-- staircases
-- manual/keyed door rooms
-- tagged lift rooms
-- ordered sector-boundary inspection
-- safe simple-sector split
-
-Generated P2 maps use this exact same semantic layer rather than a separate level generator.
-
-## P1.3 — Navigation graph + autonomous QA
-
-P1.3 derives gameplay connectivity directly from Doom geometry and classifies portals as walk/drop/door/lift/blocked.
-
-The planner understands Player 1 start, key acquisition, keyed doors, step/clearance limits and exits. The browser agent then verifies the planned path in real LinuxDOOM using deterministic exact-tic input.
-
-Core tools:
-
-- `doom_get_navigation_graph`
-- `doom_find_navigation_path`
-- `doom_analyze_exit_progression`
-- `doom_run_navigation_trial`
-
-## P1.4 — conservative auto-repair
-
-P1.4 can diagnose and conservatively repair bounded gameplay failures such as:
-
-- missing/inaccessible keys
-- authored portal `ML_BLOCKING`
-- authored sector step/clearance defects
-- safe authored exit insertion
-
-Repairs run through P0 atomic validation, rebuild with ZDBSP and can be verified by autonomous LinuxDOOM replay. Legacy Vanilla geometry remains protected unless explicitly enabled.
-
-## P2.0 runtime acceptance proof
-
-The source-free regression proves:
+The P2.2 platform mode deliberately remains one process / one network node:
 
 ```text
-no legacy E1M1 source
-→ generate runtime-safe two-sector E1M1
-→ validate seed
-→ P1.2 adds a new polygon room
-→ deliberately block the authored portal
-→ P1.4 diagnoses BLOCKED_PORTAL_FLAG
-→ plan + apply repair_clear_blocking
-→ atomic validation + commit
-→ pinned ZDBSP rebuild
-→ LinuxDOOM standard runtime warp
-→ autonomous exact-tic navigation
-→ enter generated target sector
-→ PASS
+netgame = false
+numnodes = 1
+numplayers = 1..4
 ```
 
-CI additionally validates SEG/SSECTOR/NODE/BLOCKMAP references and separately proves the untouched generated seed itself boots in LinuxDOOM.
+This keeps remote packet synchronization out of P2.2 while enabling true local multiplayer semantics. A narrow compatibility patch preserves the original per-player deathmatch respawn path instead of reloading the whole level when a local player dies.
 
-## Architecture
+### Bot difficulty
+
+Built-in presets:
+
+| Skill | Reaction tics | Aim tolerance | Behavior |
+|---|---:|---:|---|
+| Easy | 10 | 20° | slow reaction, low aggression/dodge |
+| Normal | 5 | 11° | balanced baseline |
+| Hard | 3 | 6° | fast, aggressive, stronger dodge |
+| Nightmare | 1 | 2.5° | near-every-tic decisions and tight aim |
+
+Difficulty also changes movement, turn gain, strafe, aggression, item bias and dodge behavior.
+
+### Four-bot acceptance
+
+A 700-exact-tic LinuxDOOM match ran four different policies simultaneously:
 
 ```text
-LinuxDOOM 1.10 / WASM
-        │
-        ▼
-Browser DoomControl
-        │
- ┌──────┼────────┬────────┬────────┬────────┐
- │      │        │        │        │        │
-3777   3778     3779     3780     3781
-control playtest orchestrate cheats geometry
- │      │        │        │        │
- └──────┴────────┴────┬───┴────────┘
-                     ▼
-              P2.1 MCP server
-       p2_game_design_server.js
-                     │
-       ┌─────────────┼──────────────┐
-       ▼             ▼              ▼
- P2.0 generation   Evaluator     Browser agent
- P0/P1 stack       deterministic exact-tic QA
- validation        proxies       replay
- navigation        comparison
- auto-repair
-       └─────────────┼──────────────┘
-                     ▼
-                  stdio MCP
-                     │
-          Grok / Claude / Codex / etc.
+Player 1 Easy       74 decisions /  3 attacks /  834 movement / 0 frags
+Player 2 Normal    141 decisions / 23 attacks / 1524 movement / 0 frags
+Player 3 Hard      234 decisions /  7 attacks / 4752 movement / 2 frags
+Player 4 Nightmare 700 decisions / 13 attacks / 5314 movement / 1 frag
 ```
 
-## Quick start — P2.1
+Real damage and real frags were observed under the original LinuxDOOM gameplay rules.
 
-```bash
-git clone https://github.com/pavy23/web-doom.git
-cd web-doom
-git checkout p2-game-design-evaluator
+### Player 1 human + three bots
+
+P2.2 also supports an interactive browser mode:
+
+```text
+Player 1  human keyboard / mouse
+Player 2  configurable bot
+Player 3  configurable bot
+Player 4  configurable bot
+```
+
+CI verifies that the Player 1 autonomous-agent override remains inactive while browser keyboard input is sent, and that Players 2–4 independently receive live bot decisions.
+
+Accepted short-run example:
+
+```text
+Player 2 Easy        14 bot decisions
+Player 3 Hard        37 bot decisions
+Player 4 Nightmare  110 bot decisions
+Player 1 agent override: false
+```
+
+Live controls are also exposed in the browser console:
+
+```js
+DoomLocalBots.status()
+DoomLocalBots.setSkill(1, 'hard')      // Player 2
+DoomLocalBots.setSkill(2, 'nightmare') // Player 3
+DoomLocalBots.stop()
+DoomLocalBots.start()
+```
+
+## P2.2 MCP entry point
+
+```text
+mcp/p2_human_bot_server.js
+```
+
+`npm start` on the P2.2 branch launches this full server. Earlier milestones remain available through `start:p2.1`, `start:p2.0`, `start:p1.4`, and the lower-level scripts.
+
+Important P2.2 tools:
+
+- `doom_p2_deathmatch_status`
+- `doom_get_deathmatch_policy`
+- `doom_get_bot_skill_profiles`
+- `doom_resolve_bot_skill`
+- `doom_create_deathmatch_arena`
+- `doom_get_deathmatch_session`
+- `doom_begin_deathmatch_transaction`
+- `doom_apply_deathmatch_edits`
+- `doom_validate_deathmatch_transaction`
+- `doom_commit_deathmatch_transaction`
+- `doom_rollback_deathmatch_transaction`
+- `doom_build_deathmatch_level`
+- `doom_evaluate_deathmatch_fairness`
+- `doom_compare_deathmatch_fairness`
+- `doom_run_local_bot_deathmatch`
+- `doom_prepare_human_bot_arena`
+
+All P0→P2.1 tools remain composed underneath the P2.2 entry point.
+
+## Windows + Grok quick start for P2.2
+
+The bot-capable runtime should be prepared once from the P2.2 branch. The provided PowerShell wrapper uses WSL because the pinned LinuxDOOM/Emscripten build is Linux-based.
+
+```powershell
+cd D:\web-doom
+git switch p2-deathmatch-bots
+git pull
+
+.\direct-port\prepare_p22_runtime.ps1
+
 cd mcp
 npm install
-npx playwright install chromium
 npm start
 ```
 
-`npm start` launches:
+The wrapper writes the local bot-capable runtime to:
 
 ```text
-node p2_game_design_server.js
+mcp/.cache/p22-runtime
 ```
 
-Previous complete entry points remain available:
+and sets `DOOM_MCP_GAME_DIR` for the current PowerShell session.
 
-```bash
-npm run start:p2.0
-npm run start:p1.4
-```
-
-For interactive browser work open:
-
-```text
-http://127.0.0.1:3777/
-```
-
-Generic MCP host configuration:
-
-```json
-{
-  "command": "node",
-  "args": ["C:/absolute/path/to/web-doom/mcp/p2_game_design_server.js"]
-}
-```
-
-For Grok CLI:
+Register the final MCP server in Grok:
 
 ```powershell
-grok mcp add --scope project doom-p21 -- node D:\web-doom\mcp\p2_game_design_server.js
+grok mcp add --scope project doom-p22 -- node D:\web-doom\mcp\p2_human_bot_server.js
 ```
 
-## Useful test commands
+A typical interactive flow is:
 
-P2.1 / P2.0:
+1. call `doom_create_deathmatch_arena` and export e.g. `arena.wad`;
+2. inspect or iterate with the P2.2 fairness tools;
+3. call `doom_prepare_human_bot_arena` with e.g. `easy`, `hard`, `nightmare`;
+4. open the returned localhost URL;
+5. click **CLICK TO START**;
+6. play normally as Player 1 against the three AI player slots.
+
+For automated map balancing, use `doom_run_local_bot_deathmatch` in `all_bots` mode.
+
+## Earlier reliability layers
+
+### P0 — atomic authoring
+
+- selected-map and multi-map workspaces
+- begin/apply/validate/commit/rollback transactions
+- duplicate/crossing/overlap/T-junction/manifold validation
+- pinned, hash-verified ZDBSP rebuild
+- real Chromium regression and exact-tic episode experiments
+
+### P1.1 — General THINGS
+
+- Player starts / deathmatch starts
+- monsters
+- weapons / ammo
+- health / armor
+- keys / powerups / barrels
+- persistent add/move/update/delete with placement checks
+
+### P1.2 — Semantic geometry
+
+- polygon-room extrusion
+- stairs
+- keyed/manual doors
+- lifts
+- sector boundary inspection
+- safe simple-sector split
+
+### P1.3 — Navigation + autonomous QA
+
+- sector/portal navigation graph
+- walk/drop/door/lift/blocked edges
+- key and exit progression
+- deterministic exact-tic browser traversal
+
+### P1.4 — Conservative auto-repair
+
+- navigation failure diagnosis
+- bounded authored-geometry repair
+- atomic validation / rebuild
+- LinuxDOOM replay verification
+- rollback or manual-repair-required fallback
+
+### P2.0 — Source-free maps
+
+- canonical map marker + classic map lumps from zero
+- runtime-safe generated seed
+- generated geometry treated as AI-authored
+- P0→P1.4 reuse on newly generated maps
+
+### P2.1 — Game-design evaluator
+
+- deterministic reachability / progression / topology / combat / resource / pacing proxies
+- balanced / combat / exploration profiles
+- structured issues and before/after comparison
+
+Reference P2.1 acceptance:
+
+```text
+Under-supported Cyberdemon candidate  70.3 (C), resources 12.25
+Supported candidate                  83.5 (B), resources 100
+Delta                                +13.2
+```
+
+## Test commands
+
+P2-specific static tests:
 
 ```bash
-npm run test:p2:game-design
 npm run test:p2
-npm run test:p2:seed-runtime
-npm run test:p2:runtime
+npm run test:p2:game-design
+npm run test:p2:deathmatch
 ```
 
-Stacked regressions:
+P2 runtime tests:
+
+```bash
+npm run test:p2:seed-runtime
+npm run test:p2:runtime
+npm run test:p2:bots:runtime
+npm run test:p2:human-bots:runtime
+```
+
+Stacked regression examples:
 
 ```bash
 npm run test:p0
@@ -380,24 +366,18 @@ npm run test:p1:navigation:runtime
 npm run test:p1:auto-repair:runtime
 ```
 
-The P2.1 GitHub Actions gate runs on Node 24 and retains the complete P0→P2.0 static/runtime suite in addition to the deterministic evaluator regression.
+## Runtime / build baseline
 
-## Node builder
-
-Structural authoring uses immutable artifacts from `seanmorris/zdbsp-wasm` commit:
-
-```text
-acc45bf6b2232a75bdbb0b6295822e72e13dfeec
-```
-
-The wrapper and WASM binary are cached under `mcp/.cache/zdbsp/` and checked against their exact Git blob SHA before execution.
-
-## Runtime baseline
-
-LinuxDOOM baseline:
+Pinned LinuxDOOM baseline:
 
 ```text
 a77dfb96cb91780ca334d0d4cfd86957558007e0
+```
+
+Pinned ZDBSP WASM source revision:
+
+```text
+acc45bf6b2232a75bdbb0b6295822e72e13dfeec
 ```
 
 Pinned Chocolate Doom OPL source revision:
@@ -406,54 +386,48 @@ Pinned Chocolate Doom OPL source revision:
 410d96855b5df5410ff591a90efeafa889119224
 ```
 
-Public shareware IWAD:
+Supported public shareware IWAD:
 
 - size: 4,196,020 bytes
 - MD5: `5f4eb849b1af12887dec04a2a12e5e62`
 
 Commercial DOOM / DOOM II IWADs are not distributed by this repository.
 
-## Online multiplayer direction
+## P3.0 — online multiplayer next
 
-Online multiplayer is **feasible**, but it remains intentionally separate from the P2.1 single-player evaluator.
+P2.2 proves the content and local simulation side of multiplayer:
 
-The browser platform currently uses a deliberately single-player `direct-port/i_net_web.c` shim: `netgame=false`, one player/node, and no real `I_NetCmd()` transport. The LinuxDOOM game/network layer above that platform boundary remains available.
+- multiplayer maps can be generated from zero;
+- fairness can be measured and compared;
+- four real LinuxDOOM player slots can run in one browser;
+- each AI player can have a different skill;
+- a human can play Player 1 against three AI players.
 
-Recommended sequence:
+The next milestone is **remote browser synchronization**, not another map-authoring layer.
+
+Recommended first P3 target:
 
 ```text
-P2.0  source-free maps                    ✅
-P2.1  game-design evaluator               ✅
-P2.2  deathmatch map generation/fairness  ⏭️
-P3.0  browser online multiplayer transport
+Browser A ─┐
+           ├─ WebSocket relay
+Browser B ─┘
+
+same PWAD hash
+same match seed
+bounded 2-player match
+zero deterministic tic drift
 ```
 
-P2.2 can reuse the P2.1 evaluator framework for spawn-distance fairness, spawn-to-weapon path cost, line-of-sight exposure, alternate routes, chokepoints and item distribution.
+After that: 4 remote players, bot-filled slots, reconnect/lobby support and richer online telemetry.
 
-The first P3 prototype should use a **WebSocket relay** between two browser clients because it is easier to instrument, synchronize and reproduce than a peer-to-peer implementation. WebRTC DataChannel can be evaluated afterward.
+See:
 
-A sensible first online acceptance target is: two browser clients load the same generated deathmatch PWAD, exchange LinuxDOOM tic packets through the relay, and remain synchronized for a bounded match interval.
-
-## Current boundary
-
-P2.1 can generate a valid source-free map, safely edit/populate it, diagnose navigation faults, repair bounded failures, build and run it in LinuxDOOM, then produce repeatable design-proxy scores and compare subsequent built candidates.
-
-It does **not yet** autonomously search many alternative designs until a brief is optimized, nor does it simulate real combat quality. P2.2 adds multiplayer/deathmatch-specific generation and fairness analysis; later work can add richer combat agents and bounded design-search loops.
+- `mcp/P2_BLANK_MAP.md`
+- `mcp/P2_GAME_DESIGN.md`
+- `mcp/P2_DEATHMATCH.md`
+- `mcp/P2_STATUS.md`
+- `.github/P2_MULTIPLAYER_ROADMAP.md`
 
 The governing rule remains:
 
-> **AI proposes generation, authoring, repair and design changes; deterministic validation, node building, explicit evaluation policy and real runtime QA decide what evidence is accepted.**
-
-## Roadmap
-
-### P0 — Reliability foundation ✅
-### P1.1 — General THINGS ✅
-### P1.2 — Semantic geometry ✅
-### P1.3 — Navigation + autonomous QA ✅
-### P1.4 — Auto-repair closed loop ✅
-### P2.0 — Source-free blank-map generation ✅
-### P2.1 — Deterministic game-design evaluator ✅
-### P2.2 — Multiplayer / deathmatch map generator + fairness evaluator ⏭️
-### P3.0 — Online multiplayer transport
-
-See `mcp/P2_BLANK_MAP.md`, `mcp/P2_GAME_DESIGN.md`, `mcp/P2_STATUS.md` and `.github/P2_MULTIPLAYER_ROADMAP.md` for current design and acceptance details.
+> **AI proposes generation, authoring, evaluation and repair actions; deterministic validation, node building and real LinuxDOOM runtime evidence decide whether the result is accepted.**
