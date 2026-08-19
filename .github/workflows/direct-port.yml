@@ -1,0 +1,291 @@
+name: Build direct LinuxDOOM browser port
+
+on:
+  push:
+    branches: ["direct-linuxdoom"]
+    paths:
+      - "direct-port/**"
+      - "mcp/**"
+      - ".github/workflows/direct-port.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: direct-linuxdoom-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout direct port branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Emscripten 6.0.5
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git /tmp/emsdk
+          /tmp/emsdk/emsdk install 6.0.5
+          /tmp/emsdk/emsdk activate 6.0.5
+
+      - name: Fetch pristine id Software LinuxDOOM 1.10
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/id-Software/DOOM.git /tmp/id-doom
+          git -C /tmp/id-doom checkout a77dfb96cb91780ca334d0d4cfd86957558007e0
+          test -f /tmp/id-doom/linuxdoom-1.10/d_main.c
+
+      - name: Fetch and verify DOOM shareware data
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 https://www.libsdl.org/projects/doom/data/doom1.wad.zip -o /tmp/doom1.wad.zip
+          rm -rf /tmp/doom-shareware
+          mkdir -p /tmp/doom-shareware
+          unzip -j /tmp/doom1.wad.zip -d /tmp/doom-shareware
+          WAD="$(find /tmp/doom-shareware -type f -iname 'doom1.wad' | head -n1)"
+          test -n "$WAD"
+          cp "$WAD" /tmp/id-doom/linuxdoom-1.10/doom1.wad
+          test "$(head -c4 /tmp/id-doom/linuxdoom-1.10/doom1.wad)" = "IWAD"
+          test "$(stat -c%s /tmp/id-doom/linuxdoom-1.10/doom1.wad)" -eq 4196020
+          echo "5f4eb849b1af12887dec04a2a12e5e62  /tmp/id-doom/linuxdoom-1.10/doom1.wad" | md5sum -c -
+
+          python3 - <<'PY'
+          import struct
+          from pathlib import Path
+          wad = Path('/tmp/id-doom/linuxdoom-1.10/doom1.wad').read_bytes()
+          count, directory = struct.unpack_from('<II', wad, 4)
+          found = None
+          for i in range(count):
+              pos, size, raw_name = struct.unpack_from('<II8s', wad, directory + i * 16)
+              name = raw_name.split(b'\0', 1)[0].decode('ascii').upper()
+              if name == 'GENMIDI':
+                  found = wad[pos:pos + size]
+                  break
+          assert found is not None, 'GENMIDI lump missing from shareware IWAD'
+          assert found[:8] == b'#OPL_II#', 'unexpected GENMIDI header'
+          assert len(found) >= 8 + (128 + 47) * 36, 'GENMIDI instrument table truncated'
+          print('Verified GENMIDI:', len(found), 'bytes')
+          PY
+
+      - name: Install our browser platform layer
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC=/tmp/id-doom/linuxdoom-1.10
+          cp direct-port/i_video_web.c        "$SRC/i_video.c"
+          cp direct-port/i_system_web.c       "$SRC/i_system.c"
+          cp direct-port/i_sound_web.c        "$SRC/i_sound.c"
+          cp direct-port/i_music_opl_bridge.c "$SRC/i_music_opl_bridge.c"
+          cp direct-port/i_net_web.c          "$SRC/i_net.c"
+          cp direct-port/Makefile.web         "$SRC/Makefile.web"
+          cp direct-port/shell.html           "$SRC/shell.html"
+          python3 direct-port/apply_compat.py "$SRC"
+
+      - name: Compile original LinuxDOOM with our web layer
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /tmp/emsdk/emsdk_env.sh
+          cd /tmp/id-doom/linuxdoom-1.10
+
+          build_ok=0
+          for attempt in 1 2 3; do
+            echo "Emscripten build attempt ${attempt}/3"
+            if emmake make -f Makefile.web; then
+              build_ok=1
+              break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Build attempt failed; waiting before retry (Emscripten ports may be rate-limited)..."
+              sleep $((attempt * 12))
+            fi
+          done
+          test "$build_ok" -eq 1
+
+          test -s webdoom.html
+          test -s webdoom.js
+          test -s webdoom.wasm
+          test -s webdoom.data
+          test "$(od -An -tx1 -N4 webdoom.wasm | tr -d ' \n')" = "0061736d"
+          ! grep -q "Emscripten-Generated Code" webdoom.html
+          grep -q "LINUXDOOM 1.10" webdoom.html
+          grep -q "MCP CONNECTED" webdoom.html
+          grep -q "MCP AUTHORING" webdoom.html
+          grep -q "DoomControl" webdoom.html
+          grep -q "spawnEnemy" webdoom.html
+          grep -q "removeNearestEnemy" webdoom.html
+          grep -q "getSectors" webdoom.html
+          grep -q "setSectorLight" webdoom.html
+          grep -q "getChangeSet" webdoom.html
+          grep -q "exportPwad" webdoom.html
+          grep -q "127.0.0.1:3781/geometry" webdoom.html
+          grep -q "geometry_snapshot" webdoom.html
+          grep -q "geometry_load" webdoom.html
+          grep -q "load_pwad" webdoom.js
+          grep -q "reload_current_map" webdoom.js
+          grep -q "get_linedefs" webdoom.js
+          grep -q "set_linedef_action" webdoom.js
+          grep -q "activate_linedef" webdoom.js
+          grep -q "get_visuals" webdoom.js
+          grep -q "list_visual_assets" webdoom.js
+          grep -q "set_wall_texture" webdoom.js
+          grep -q "set_sector_flat" webdoom.js
+          grep -q "set_playtest_paused" webdoom.js
+          grep -q "step_playtest_tics" webdoom.js
+          grep -q "get_playtest_telemetry" webdoom.js
+          grep -q "reset_playtest_metrics" webdoom.js
+          grep -q "capture_frame" webdoom.js
+          grep -q "queue_agent_input" webdoom.js
+          grep -q "cancel_agent_input" webdoom.js
+          grep -q "get_agent_input_status" webdoom.js
+          grep -q "doomctl_queue_agent_input" webdoom.js
+          grep -q "doomctl_get_agent_input_status_json" webdoom.js
+          grep -q "DoomPlaytestDispatch" webdoom.js
+          grep -q "127.0.0.1:3778/playtest" webdoom.js
+          grep -q "DoomOrchestrationDispatch" webdoom.js
+          grep -q "author_export_pwad" webdoom.js
+          grep -q "author_load_pwad" webdoom.js
+          grep -q "127.0.0.1:3779/orchestrate" webdoom.js
+          grep -q "doom_pause_playtest" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doom_resume_playtest" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doom_step_tics" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doom_get_playtest_telemetry" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doom_reset_playtest_metrics" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doom_capture_frame" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doom_agent_input_status" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doom_cancel_agent_input" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doom_run_input" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doom_run_input_sequence" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doom_evaluate_playtest" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doom_run_design_trial" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doom_get_trial_history" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "doom_compare_trials" "$GITHUB_WORKSPACE/mcp/playtest_server.js"
+          grep -q "evaluateTrial" "$GITHUB_WORKSPACE/mcp/evaluator.js"
+          grep -q "stuckActions" "$GITHUB_WORKSPACE/mcp/evaluator.js"
+          grep -q "visualRubric" "$GITHUB_WORKSPACE/mcp/evaluator.js"
+          grep -q "doom_orchestrator_status" "$GITHUB_WORKSPACE/mcp/v1_server.js"
+          grep -q "doom_begin_design_session" "$GITHUB_WORKSPACE/mcp/v1_server.js"
+          grep -q "doom_run_authoring_iteration" "$GITHUB_WORKSPACE/mcp/v1_server.js"
+          grep -q "doom_review_design_iteration" "$GITHUB_WORKSPACE/mcp/v1_server.js"
+          grep -q "doom_restore_design_candidate" "$GITHUB_WORKSPACE/mcp/v1_server.js"
+          grep -q "doom_finalize_design_session" "$GITHUB_WORKSPACE/mcp/v1_server.js"
+          grep -q "MAX_SESSION_ITERATIONS" "$GITHUB_WORKSPACE/mcp/orchestrator.js"
+          grep -q "sessionArtifactName" "$GITHUB_WORKSPACE/mcp/orchestrator.js"
+          grep -q "revisionHints" "$GITHUB_WORKSPACE/mcp/orchestrator.js"
+          grep -q "type: 'image'" "$GITHUB_WORKSPACE/mcp/v1_server.js"
+          grep -q "doomctl_agent_after_world_tic" "$GITHUB_WORKSPACE/direct-port/doom_playtest.c"
+          grep -q "doomctl_apply_agent_ticcmd" "$GITHUB_WORKSPACE/direct-port/doom_agent_input.c"
+          grep -q "doomctl_queue_agent_input" "$GITHUB_WORKSPACE/direct-port/doom_agent_input.c"
+          grep -q "doomctl_get_visuals_json" "$GITHUB_WORKSPACE/direct-port/doom_visuals.c"
+          grep -q "doomctl_get_linedefs_json" "$GITHUB_WORKSPACE/direct-port/doom_linedefs.c"
+          grep -q "doomctl_load_pwad_json" "$GITHUB_WORKSPACE/direct-port/doom_reload.c"
+          grep -q "lumpcache" "$GITHUB_WORKSPACE/direct-port/doom_reload.c"
+          grep -q "doom_geometry_add_room" "$GITHUB_WORKSPACE/mcp/geometry_server.js"
+          grep -q "doom_geometry_add_corridor" "$GITHUB_WORKSPACE/mcp/geometry_server.js"
+          grep -q "doom_geometry_build" "$GITHUB_WORKSPACE/mcp/geometry_server.js"
+          grep -q "doom_geometry_restore_baseline" "$GITHUB_WORKSPACE/mcp/geometry_server.js"
+          grep -q "rebuildVanillaNodes" "$GITHUB_WORKSPACE/mcp/nodebuilder.js"
+          grep -q "ZDBSP_WASM_WRAPPER_COMMIT" "$GITHUB_WORKSPACE/mcp/nodebuilder.js"
+          grep -q "properIntersection" "$GITHUB_WORKSPACE/mcp/geometry.js"
+          grep -q "addRoomFromWall" "$GITHUB_WORKSPACE/mcp/geometry.js"
+          grep -q "addCorridorBetweenWalls" "$GITHUB_WORKSPACE/mcp/geometry.js"
+          node --check "$GITHUB_WORKSPACE/mcp/geometry.js"
+          node --check "$GITHUB_WORKSPACE/mcp/nodebuilder.js"
+          node --check "$GITHUB_WORKSPACE/mcp/geometry_server.js"
+
+      - name: Publish direct-port preview under /direct/
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          rm -rf /tmp/publish-main
+          git worktree add -B publish-main /tmp/publish-main origin/main
+
+          rm -rf /tmp/publish-main/direct
+          mkdir -p /tmp/publish-main/direct
+          cp /tmp/id-doom/linuxdoom-1.10/webdoom.html  /tmp/publish-main/direct/index.html
+          cp /tmp/id-doom/linuxdoom-1.10/webdoom.js    /tmp/publish-main/direct/webdoom.js
+          cp /tmp/id-doom/linuxdoom-1.10/webdoom.wasm  /tmp/publish-main/direct/webdoom.wasm
+          cp /tmp/id-doom/linuxdoom-1.10/webdoom.data  /tmp/publish-main/direct/webdoom.data
+          cp direct-port/opl_music.js                   /tmp/publish-main/direct/opl_music.js
+
+          cat > /tmp/publish-main/direct/SOURCE.txt <<'EOF'
+          Direct browser port of id Software LinuxDOOM 1.10
+          =================================================
+
+          Engine/game source baseline:
+          https://github.com/id-Software/DOOM
+          pinned commit: a77dfb96cb91780ca334d0d4cfd86957558007e0
+
+          Browser platform and MCP source:
+          https://github.com/pavy23/web-doom/tree/direct-linuxdoom/direct-port
+          https://github.com/pavy23/web-doom/tree/direct-linuxdoom/mcp
+
+          Build: Emscripten 6.0.5 + SDL2 + SDL2_mixer.
+          Gameplay/rendering/game-state remain id Software LinuxDOOM.
+
+          Browser controls:
+          - W/S forward/back through original LinuxDOOM movement bindings.
+          - A/D use original dedicated strafe-left/strafe-right bindings.
+          - Mouse X turns at the browser adapter's modernized sensitivity.
+          - Mouse Y is intentionally ignored; vanilla no-vertical-look gameplay stays intact.
+          - Clicking the canvas requests Pointer Lock; Escape releases it.
+
+          Audio:
+          - Direct DMX type-3 SFX playback through SDL2_mixer.
+          - Vanilla/DMX-compatible OPL behavior from pinned Chocolate Doom
+            commit 410d96855b5df5410ff591a90efeafa889119224.
+          - Nuked OPL3 v1.8 in OPL2-compatible nine-voice mode by default.
+
+          MCP / AI closed-loop level authoring (v2.0):
+          - v1 semantic authoring, autonomous exact-tic playtest, PNG observation,
+            deterministic evaluation, rollback/finalization and runtime cheats remain intact.
+          - geometry_server.js composes every earlier MCP layer and adds a local-only
+            structural geometry bridge at 127.0.0.1:3781/geometry.
+          - Current playable maps are snapshotted as ordinary PWADs and parsed into a
+            Doom Geometry IR containing VERTEXES, LINEDEFS, SIDEDEFS and SECTORS.
+          - Semantic geometry operations currently include rectangular room extrusion,
+            generated-room resize/delete and straight corridor connection between safe
+            facing one-sided walls. Low-level vertex/linedef/sidedef/sector additions and
+            existing vertex/sector-height changes are also available.
+          - Geometry validation checks coordinate/index ranges, zero-length lines,
+            side/sector references, new-line proper crossings and closed boundaries for
+            newly-created sectors before any node build is allowed.
+          - AI never authors BSP nodes directly. A pinned ZDBSP WebAssembly node builder
+            rebuilds SEGS, SSECTORS, NODES, BLOCKMAP and a vanilla-sized zero REJECT.
+          - ZDBSP WASM wrapper artifacts are pinned to seanmorris/zdbsp-wasm commit
+            acc45bf6b2232a75bdbb0b6295822e72e13dfeec and each downloaded artifact is
+            verified by its exact Git blob SHA before execution.
+          - The CI integration gate creates a synthetic E1M1 room, runs the real pinned
+            ZDBSP WASM builder and requires verified non-empty vanilla derived lumps.
+          - Built structural candidates are ordinary PWAD files under mcp/exports and may
+            be loaded, compared, rolled back to baseline/earlier candidate, or finalized.
+
+          Closed loop:
+          AI design goal -> semantic/primitive geometry edits -> deterministic validation
+          -> ZDBSP derived-lump rebuild -> verified candidate PWAD -> LinuxDOOM reload
+          -> autonomous playtest/vision/evaluation -> revise/restore -> final PWAD.
+
+          Shareware game data:
+          - Redistributable DOOM shareware IWAD fetched from SDL archive during CI.
+          - size: 4,196,020 bytes
+          - MD5: 5f4eb849b1af12887dec04a2a12e5e62
+          EOF
+
+          touch /tmp/publish-main/.nojekyll
+          git -C /tmp/publish-main add direct .nojekyll
+          if git -C /tmp/publish-main diff --cached --quiet; then
+            echo "No preview changes to publish."
+            exit 0
+          fi
+          git -C /tmp/publish-main commit -m "Publish direct LinuxDOOM browser port preview"
+          git -C /tmp/publish-main push origin HEAD:main
