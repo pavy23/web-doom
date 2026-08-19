@@ -168,7 +168,7 @@ async function proxyPublishedGame(req, res, requestUrl) {
   Readable.fromWeb(upstreamResponse.body).pipe(res);
 }
 
-function safeExportFilename(raw) {
+function safeServedWadFilename(raw) {
   const cleaned = String(raw || '').replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^\.+/, '');
   if (!cleaned.toLowerCase().endsWith('.wad')) return '';
   return cleaned;
@@ -201,7 +201,7 @@ async function handleGameRequest(req, res) {
       return;
     }
     if (requestUrl.pathname.startsWith('/exports/')) {
-      const name = safeExportFilename(path.posix.basename(requestUrl.pathname));
+      const name = safeServedWadFilename(path.posix.basename(requestUrl.pathname));
       if (!name) {
         res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
         res.end('PWAD not found');
