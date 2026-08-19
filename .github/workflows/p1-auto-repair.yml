@@ -6,6 +6,7 @@ on:
     paths:
       - "mcp/auto_repair.js"
       - "mcp/auto_repair_episode.js"
+      - "mcp/navigation_browser_agent.mjs"
       - "mcp/p1_auto_repair_server.js"
       - "mcp/p1_auto_repair_selftest.mjs"
       - "mcp/p1_auto_repair_runtime_selftest.mjs"
@@ -16,6 +17,7 @@ on:
     paths:
       - "mcp/auto_repair.js"
       - "mcp/auto_repair_episode.js"
+      - "mcp/navigation_browser_agent.mjs"
       - "mcp/p1_auto_repair_server.js"
       - "mcp/p1_auto_repair_selftest.mjs"
       - "mcp/p1_auto_repair_runtime_selftest.mjs"
@@ -50,6 +52,7 @@ jobs:
         run: |
           node --check mcp/auto_repair.js
           node --check mcp/auto_repair_episode.js
+          node --check mcp/navigation_browser_agent.mjs
           node --check mcp/p1_auto_repair_server.js
           node --check mcp/p1_auto_repair_selftest.mjs
           node --check mcp/p1_auto_repair_runtime_selftest.mjs
