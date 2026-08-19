@@ -4,6 +4,7 @@ import { MAP_LUMP_ORDER, parseWad, writeWad } from './geometry.js';
 import { createDeathmatchArenaPwad } from './deathmatch_design.js';
 
 const THINGS_OFFSET = MAP_LUMP_ORDER.indexOf('THINGS');
+const BASIC_RING_WEAPONS = new Set([2001, 2002]); // shotgun / chaingun from the raw arena seed
 
 function decodeThings(data) {
   if (data.length % 10) throw new Error('THINGS size must be divisible by 10');
@@ -37,16 +38,23 @@ export function addFairSpawnWeapons(bytes, mapName = 'E1M1', { inwardOffset = 96
   if (marker < 0) throw new Error(`Map ${map} not found`);
   const lump = doc.lumps[marker + 1 + THINGS_OFFSET];
   if (!lump || lump.name !== 'THINGS') throw new Error(`Map ${map} has no canonical THINGS lump`);
-  const things = decodeThings(lump.data);
-  const starts = things.filter(thing => Number(thing.doomEdNum) === 11);
+  const decoded = decodeThings(lump.data);
+  const starts = decoded.filter(thing => Number(thing.doomEdNum) === 11);
   if (starts.length < 4) throw new Error('Deathmatch seed needs at least four DoomEd 11 starts');
+
+  // The raw arena deliberately demonstrates distributed weapon placement, but
+  // those four shotgun/chaingun pickups make half of the eight spawns closer to
+  // a weapon than the others. For the accepted P2.2 seed we first remove those
+  // asymmetric nearest-weapon candidates, then give every spawn the same radial
+  // shotgun/shell package. The central rocket remains the contested power item.
+  const things = decoded.filter(thing => !BASIC_RING_WEAPONS.has(Number(thing.doomEdNum)));
 
   for (const start of starts) {
     const radius = Math.hypot(start.x, start.y) || 1;
     const x = Math.round(start.x - (start.x / radius) * inwardOffset);
     const y = Math.round(start.y - (start.y / radius) * inwardOffset);
     things.push({ x, y, angle: 0, doomEdNum: 2001, flags: 7 });
-    // A small shell pickup follows the same radial lane, slightly closer to center.
+
     const shellOffset = inwardOffset + 42;
     things.push({
       x: Math.round(start.x - (start.x / radius) * shellOffset),
@@ -56,6 +64,7 @@ export function addFairSpawnWeapons(bytes, mapName = 'E1M1', { inwardOffset = 96
       flags: 7
     });
   }
+
   lump.data = encodeThings(things);
   return writeWad(doc, 'PWAD');
 }
@@ -68,7 +77,8 @@ export function createBalancedDeathmatchArenaPwad(input = {}) {
     bytes,
     arena: {
       ...generated.arena,
-      spawnWeaponPolicy: 'one shotgun + shells on each deathmatch spawn radial lane',
+      spawnWeaponPolicy: 'equal radial shotgun + shells for every deathmatch spawn; central rocket remains contested',
+      removedAsymmetricBasicWeapons: 4,
       addedSpawnWeapons: generated.arena.deathmatchStarts,
       addedSpawnAmmo: generated.arena.deathmatchStarts
     }
