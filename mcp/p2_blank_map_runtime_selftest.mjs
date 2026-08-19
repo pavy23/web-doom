@@ -92,7 +92,8 @@ const report = await runNavigationBrowserTrial({
   targetSector,
   reportDir: path.join(exportDir, 'p2-blank', 'runtime-selftest'),
   maxTicsPerEdge: 280,
-  captureFrame: true
+  captureFrame: true,
+  bootDirectToMap: true
 });
 assert.equal(report.startSector, 0, JSON.stringify(report));
 assert.equal(report.plan?.found, true, JSON.stringify(report.plan));
