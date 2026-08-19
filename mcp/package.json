@@ -20,6 +20,7 @@
     "start:v2": "node geometry_server.js",
     "test:p2:deathmatch": "node p2_deathmatch_balanced_selftest.mjs",
     "test:p2:bots:runtime": "node p2_bot_runtime_selftest.mjs",
+    "test:p2:human-bots:runtime": "node p2_human_bot_browser_selftest.mjs",
     "test:p2:game-design": "node p2_game_design_selftest.mjs",
     "test:p2": "node p2_blank_map_selftest.mjs",
     "test:p2:seed-runtime": "node p2_seed_runtime_selftest.mjs",
