@@ -1,14 +1,15 @@
 {
   "name": "web-doom-mcp",
-  "version": "2.4.0-p1.3",
+  "version": "2.5.0-p1.4",
   "private": true,
   "type": "module",
-  "description": "Local DOOM MCP P1.3: THINGS + semantic geometry + sector navigation graph and deterministic autonomous QA",
+  "description": "Local DOOM MCP P1.4: THINGS + semantic geometry + navigation + conservative diagnose-repair-rebuild-replay closed loop",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "start": "node p1_navigation_server.js",
+    "start": "node p1_auto_repair_server.js",
+    "start:p1.3": "node p1_navigation_server.js",
     "start:p1.2": "node p1_server.js",
     "start:p0": "node p0_experiment_server.js",
     "start:p0-core": "node p0_server.js",
@@ -18,6 +19,8 @@
     "test:p1:semantic:runtime": "node p1_semantic_runtime_selftest.mjs",
     "test:p1:navigation": "node p1_navigation_selftest.mjs",
     "test:p1:navigation:runtime": "node p1_navigation_runtime_selftest.mjs",
+    "test:p1:auto-repair": "node p1_auto_repair_selftest.mjs",
+    "test:p1:auto-repair:runtime": "node p1_auto_repair_runtime_selftest.mjs",
     "test:p0": "node p0_selftest.mjs",
     "test:experiment": "node p0_experiment_selftest.mjs",
     "prepare-experiment": "playwright install chromium",
