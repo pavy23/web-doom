@@ -23,6 +23,18 @@ async function waitRuntime(page) {
   }, null, { timeout: 120_000 });
 }
 
+async function waitAiReady(page) {
+  await page.waitForFunction(() => {
+    const status = window.DoomLocalBots?.status?.();
+    return window.DoomPublicLauncher?.mode === 'ai'
+      && status?.running
+      && status?.players?.ready
+      && Array.isArray(status.players.players)
+      && status.players.players.length >= 4
+      && status?.match?.phase !== 'idle';
+  }, null, { timeout: 60_000 });
+}
+
 try {
   const classic = await browser.newPage();
   attachDiagnostics(classic, 'classic');
@@ -42,6 +54,27 @@ try {
   assert.equal(classicState.launcher.demoWad, null);
   await classic.close();
 
+  // Time-limit ties must not pick an arbitrary winner. Force a one-second
+  // regulation window with an unreachable frag limit, then verify the public
+  // controller enters sudden death while the match remains live.
+  const sudden = await browser.newPage();
+  attachDiagnostics(sudden, 'sudden');
+  await sudden.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 120_000 });
+  await waitRuntime(sudden);
+  await sudden.evaluate(() => window.DoomLocalBots.configureMatch({ fragLimit: 99, timeLimitSeconds: 1 }));
+  await sudden.locator('#playAi').click();
+  await waitAiReady(sudden);
+  await sudden.waitForFunction(() => window.DoomLocalBots?.status?.().match?.phase === 'sudden_death', null, { timeout: 15_000 });
+  const suddenState = await sudden.evaluate(() => ({
+    match: window.DoomLocalBots.status().match,
+    rule: document.getElementById('matchRule')?.textContent,
+    endVisible: document.getElementById('matchEnd')?.classList.contains('visible')
+  }));
+  assert.equal(suddenState.match.phase, 'sudden_death');
+  assert.match(String(suddenState.rule), /SUDDEN DEATH/);
+  assert.equal(Boolean(suddenState.endVisible), false);
+  await sudden.close();
+
   const ai = await browser.newPage();
   attachDiagnostics(ai, 'ai');
   await ai.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 120_000 });
@@ -52,15 +85,18 @@ try {
   const wadBytes = await wadResponse.body();
   assert.equal(wadBytes.subarray(0, 4).toString('ascii'), 'PWAD');
 
+  // A one-frag test match exercises the real winner/freeze/result flow without
+  // making CI play a full public first-to-ten round.
+  await ai.evaluate(() => window.DoomLocalBots.configureMatch({ fragLimit: 1, timeLimitSeconds: 120 }));
   await ai.locator('#playAi').click();
-  await ai.waitForFunction(() => {
-    const status = window.DoomLocalBots?.status?.();
-    return window.DoomPublicLauncher?.mode === 'ai'
-      && status?.running
-      && status?.players?.ready
-      && Array.isArray(status.players.players)
-      && status.players.players.length >= 4;
-  }, null, { timeout: 60_000 });
+  await waitAiReady(ai);
+
+  // Speed up the acceptance fight while preserving Player 1 as human-only.
+  await ai.evaluate(() => {
+    window.DoomLocalBots.setSkill(1, 'nightmare');
+    window.DoomLocalBots.setSkill(2, 'nightmare');
+    window.DoomLocalBots.setSkill(3, 'nightmare');
+  });
 
   await ai.waitForFunction(() => {
     const status = window.DoomLocalBots?.status?.();
@@ -68,9 +104,6 @@ try {
       && status.decisions.slice(1, 4).every(value => Number(value) > 0);
   }, null, { timeout: 30_000 });
 
-  // Public/live acceptance must prove more than movement. Every AI slot must
-  // acquire a visible opponent and emit a real BT_ATTACK command. This catches
-  // regressions where bots orbit forever without engaging.
   await ai.waitForFunction(() => {
     const status = window.DoomLocalBots?.status?.();
     return Array.isArray(status?.visibleDecisions)
@@ -79,14 +112,14 @@ try {
       && status.attacks.slice(1, 4).every(value => Number(value) > 0);
   }, null, { timeout: 30_000 });
 
-  // A visible attack command is necessary but not sufficient. Require the live
-  // unpaused match to produce real gameplay consequences under LinuxDOOM rules:
-  // at least one damaged player or a non-zero frag count.
   await ai.waitForFunction(() => {
     const status = window.DoomLocalBots?.status?.();
     const players = status?.players?.players;
     return Array.isArray(players) && players.some(row => Number(row.health) < 100 || Number(row.frags) !== 0);
   }, null, { timeout: 30_000 });
+
+  await ai.waitForFunction(() => window.DoomLocalBots?.status?.().match?.phase === 'finished', null, { timeout: 90_000 });
+  await ai.waitForFunction(() => document.getElementById('matchEnd')?.classList.contains('visible'), null, { timeout: 5_000 });
 
   const aiState = await ai.evaluate(() => {
     const status = window.DoomLocalBots.status();
@@ -94,38 +127,69 @@ try {
       launcher: window.DoomPublicLauncher,
       capacity: Module.ccall('doomctl_get_local_player_capacity', 'number', [], []),
       humanOverride: JSON.parse(Module.ccall('doomctl_get_player_input_status_json', 'string', ['number'], [0])),
-      status
+      status,
+      resultUi: {
+        winner: document.getElementById('matchWinner')?.textContent,
+        reason: document.getElementById('matchEndReason')?.textContent,
+        rematch: document.getElementById('matchRematch')?.textContent,
+        classic: document.getElementById('matchClassic')?.textContent
+      }
     };
   });
 
   assert.equal(aiState.capacity, 4, JSON.stringify(aiState));
-  assert.deepEqual(aiState.launcher.bots, ['easy', 'normal', 'hard']);
   assert.equal(aiState.launcher.demoWad, 'p22-demo.wad');
   assert.equal(Boolean(aiState.humanOverride.active), false, JSON.stringify(aiState.humanOverride));
-  assert.deepEqual(aiState.status.botPlayers.map(row => row.skill), ['easy', 'normal', 'hard']);
+  assert.deepEqual(aiState.status.botPlayers.map(row => row.skill), ['nightmare', 'nightmare', 'nightmare']);
   assert.ok(aiState.status.decisions.slice(1, 4).every(value => Number(value) > 0), JSON.stringify(aiState.status));
   assert.ok(aiState.status.visibleDecisions.slice(1, 4).every(value => Number(value) > 0), JSON.stringify(aiState.status));
   assert.ok(aiState.status.attacks.slice(1, 4).every(value => Number(value) > 0), JSON.stringify(aiState.status));
   assert.ok(aiState.status.players.players.length >= 4, JSON.stringify(aiState.status.players));
-  assert.ok(aiState.status.players.players.some(row => Number(row.health) < 100 || Number(row.frags) !== 0), JSON.stringify(aiState.status.players));
+  assert.equal(aiState.status.match.phase, 'finished', JSON.stringify(aiState.status.match));
+  assert.equal(aiState.status.match.reason, 'frag_limit', JSON.stringify(aiState.status.match));
+  assert.ok(Number.isInteger(aiState.status.match.winner), JSON.stringify(aiState.status.match));
+  assert.match(String(aiState.resultUi.winner), /^PLAYER [1-4] WINS$/);
+  assert.equal(aiState.resultUi.reason, '1 FRAGS');
+  assert.equal(aiState.resultUi.rematch, 'REMATCH');
+  assert.equal(aiState.resultUi.classic, 'PLAY CLASSIC DOOM');
 
-  console.error('P2.2 public /direct/ launcher acceptance passed:', JSON.stringify({
+  // REMATCH intentionally reloads the whole WASM runtime, giving the new round
+  // clean health/frags/tics, then auto-enters AI mode from sessionStorage.
+  await ai.locator('#matchRematch').click();
+  await ai.waitForLoadState('domcontentloaded', { timeout: 120_000 });
+  await ai.waitForFunction(() => window.DoomPublicLauncher?.mode === 'ai', null, { timeout: 120_000 });
+  await waitAiReady(ai);
+  const rematchState = await ai.evaluate(() => ({
+    launcher: window.DoomPublicLauncher,
+    status: window.DoomLocalBots.status()
+  }));
+  assert.equal(rematchState.launcher.mode, 'ai');
+  assert.equal(rematchState.status.match.phase, 'running');
+  assert.deepEqual(rematchState.status.match.scores, [0, 0, 0, 0]);
+
+  console.error('P2.2 public /direct/ launcher + match-rules acceptance passed:', JSON.stringify({
     classic: { capacity: classicState.capacity, mode: classicState.launcher.mode },
+    suddenDeath: suddenState.match,
     ai: {
       capacity: aiState.capacity,
-      mode: aiState.launcher.mode,
-      demoWad: aiState.launcher.demoWad,
+      winner: aiState.status.match.winner,
+      reason: aiState.status.match.reason,
+      finalScores: aiState.status.match.scores,
       botSkills: aiState.status.botPlayers.map(row => row.skill),
       decisions: aiState.status.decisions,
       visibleDecisions: aiState.status.visibleDecisions,
-      attacks: aiState.status.attacks,
-      players: aiState.status.players.players.map(row => ({ player: row.player, health: row.health, frags: row.frags, x: row.x, y: row.y }))
+      attacks: aiState.status.attacks
+    },
+    rematch: {
+      mode: rematchState.launcher.mode,
+      phase: rematchState.status.match.phase,
+      scores: rematchState.status.match.scores
     }
   }));
   await ai.close();
 } catch (error) {
   console.error('P2.2 public /direct/ launcher acceptance failed:', error);
-  console.error('Diagnostics:', diagnostics.slice(-80));
+  console.error('Diagnostics:', diagnostics.slice(-120));
   throw error;
 } finally {
   await browser.close();
