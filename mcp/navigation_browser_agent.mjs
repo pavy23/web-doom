@@ -148,7 +148,7 @@ async function coldBoot(page, config, wadBase64) {
   await waitForColdBoot(page, config.filename, Number(config.coldBootTimeoutMs || DEFAULT_COLD_BOOT_TIMEOUT_MS));
   await page.waitForSelector('#start.ready:not([disabled])', { timeout: 30000 });
   await page.click('#start');
-  return currentMapOrWarp(page, config.map, config.preferCurrentMap === true);
+  return currentMapOrWarp(page, config.map, config.preferCurrentMap !== false);
 }
 async function exactInput(page, command) {
   const tics = Math.max(1, Math.min(12, Math.trunc(command.tics || 1)));
@@ -240,6 +240,7 @@ export async function runNavigationBrowserTrial(input) {
     maxTicsPerEdge: 210,
     captureFrame: true,
     keys: [],
+    preferCurrentMap: true,
     coldBootTimeoutMs: DEFAULT_COLD_BOOT_TIMEOUT_MS,
     ...input
   };
