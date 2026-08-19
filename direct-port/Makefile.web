@@ -37,6 +37,11 @@ MCP_CHEAT_SERVER := $(MCP_DIR)/cheat_server.js
 MCP_ORCHESTRATOR := $(MCP_DIR)/orchestrator.js
 MCP_PACKAGE := $(MCP_DIR)/package.json
 
+# Optional linker flags are intentionally empty for the normal direct-port build.
+# P2.2 uses this hook to explicitly export its additional local-player bot C API
+# without forcing those symbols into older single-player build configurations.
+EXTRA_EMFLAGS ?=
+
 # LinuxDOOM 1.10 predates modern compiler diagnostics by decades. Suppress
 # legacy warnings so CI logs surface real adapter/link errors clearly.
 CFLAGS := -O2 -w -std=gnu89 -DNORMALUNIX -D__EMSCRIPTEN__ $(PORT_FLAGS) -I. -Ichoco_opl
@@ -245,7 +250,7 @@ validate-mcp:
 
 webdoom.html: $(SOURCES) doom1.wad shell.html
 	@rm -f emcc-build.log
-	@($(CC) $(CFLAGS) $(SOURCES) -o $@ $(EMFLAGS) -lm >emcc-build.log 2>&1) || { \
+	@($(CC) $(CFLAGS) $(SOURCES) -o $@ $(EMFLAGS) $(EXTRA_EMFLAGS) -lm >emcc-build.log 2>&1) || { \
 		echo "===== Emscripten failure diagnostics ====="; \
 		tail -n 240 emcc-build.log; \
 		exit 1; \
