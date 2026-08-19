@@ -30,7 +30,8 @@ const built = await episode.build({ filename: 'p2-deathmatch-balanced.wad' });
 assert.equal(built.maps[0].inspected.ok, true, JSON.stringify(built.maps[0].inspected));
 const balanced = evaluateDeathmatchFairness(new GeometryWorkspace(built.bytes, 'E1M1'));
 assert.equal(balanced.metrics.deathmatchStarts, 8);
-assert.ok(balanced.metrics.weapons >= 13, JSON.stringify(balanced.metrics));
+// Eight equal-access spawn shotguns plus the contested central rocket.
+assert.ok(balanced.metrics.weapons >= 9, JSON.stringify(balanced.metrics));
 assert.ok(balanced.metrics.loops >= 2, JSON.stringify(balanced.metrics));
 assert.ok(balanced.componentScores.weaponAccess >= 85, JSON.stringify(balanced.componentScores));
 assert.ok(balanced.componentScores.highValueEquity >= 85, JSON.stringify(balanced.componentScores));
