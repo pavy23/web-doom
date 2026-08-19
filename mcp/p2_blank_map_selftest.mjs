@@ -27,6 +27,7 @@ function inspectVanillaDerivedReferences(bytes, mapName, geometry) {
   assert.equal(lumps.SEGS.length % 12, 0);
   assert.equal(lumps.SSECTORS.length % 4, 0);
   assert.equal(lumps.NODES.length % 28, 0);
+  assert.ok(lumps.NODES.length >= 28, 'Generated runtime map must contain at least one Vanilla BSP node');
   assert.ok(lumps.BLOCKMAP.length >= 8);
 
   const segs = [];
@@ -104,14 +105,16 @@ assert.deepEqual(workspace.originalCounts, {
 
 const initial = workspace.validate();
 assert.equal(initial.ok, true, JSON.stringify(initial.errors));
-assert.equal(workspace.geometry.vertices.length, 4);
-assert.equal(workspace.geometry.linedefs.length, 4);
-assert.equal(workspace.geometry.sidedefs.length, 4);
-assert.equal(workspace.geometry.sectors.length, 1);
+assert.equal(workspace.geometry.vertices.length, 6);
+assert.equal(workspace.geometry.linedefs.length, 7);
+assert.equal(workspace.geometry.sidedefs.length, 8);
+assert.equal(workspace.geometry.sectors.length, 2);
 const starts = workspace.listThings({ category: 'start' });
 assert.equal(starts.length, 1);
 assert.equal(starts[0].doomEdNum, 1);
-assert.equal(workspace.geometry.linedefs[2].special, 11);
+assert.equal(starts[0].x, -128);
+assert.equal(workspace.geometry.linedefs[3].special, 11);
+assert.equal(generated.seed.portalLine, 6);
 
 // Prove that the generated baseline can immediately use the P1.2 semantic layer.
 episode.beginTransaction('P2 extend source-free seed');
@@ -157,7 +160,7 @@ const preNode = workspace.preNodeWad();
 const rebuilt = await rebuildVanillaNodes(preNode, 'E1M1');
 const inspected = inspectBuiltMap(rebuilt.bytes, 'E1M1');
 assert.equal(inspected.ok, true, JSON.stringify(inspected));
-assert.equal(inspected.counts.sectors, 2);
+assert.equal(inspected.counts.sectors, 3);
 assert.ok(inspected.counts.nodeBytes > 0);
 assert.ok(inspected.counts.blockmapBytes > 0);
 const vanillaReferences = inspectVanillaDerivedReferences(rebuilt.bytes, 'E1M1', workspace.geometry);
