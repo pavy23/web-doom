@@ -92,8 +92,7 @@ const report = await runNavigationBrowserTrial({
   targetSector,
   reportDir: path.join(exportDir, 'p2-blank', 'runtime-selftest'),
   maxTicsPerEdge: 280,
-  captureFrame: true,
-  bootDirectToMap: true
+  captureFrame: true
 });
 assert.equal(report.startSector, 0, JSON.stringify(report));
 assert.equal(report.plan?.found, true, JSON.stringify(report.plan));
@@ -101,7 +100,7 @@ assert.equal(report.passed, true, JSON.stringify(report));
 assert.equal(Number(report.finalState.currentSector), targetSector);
 assert.ok(report.screenshot);
 
-console.error('P2.0 blank map -> semantic authoring -> auto-repair -> LinuxDOOM autonomous replay passed:', JSON.stringify({
+console.error('P2.0 blank map -> semantic authoring -> auto-repair -> LinuxDOOM standard-warp autonomous replay passed:', JSON.stringify({
   sourceLegacyMap: false,
   seedCounts: generated.seed.counts,
   targetSector,
