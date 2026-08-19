@@ -64,7 +64,18 @@ try {
   await ai.waitForFunction(() => {
     const status = window.DoomLocalBots?.status?.();
     return Array.isArray(status?.decisions)
-      && status.decisions.slice(1, 4).reduce((sum, value) => sum + Number(value || 0), 0) > 0;
+      && status.decisions.slice(1, 4).every(value => Number(value) > 0);
+  }, null, { timeout: 30_000 });
+
+  // Public/live acceptance must prove more than movement. Every AI slot must
+  // acquire a visible opponent and emit a real BT_ATTACK command. This catches
+  // regressions where bots orbit forever without engaging.
+  await ai.waitForFunction(() => {
+    const status = window.DoomLocalBots?.status?.();
+    return Array.isArray(status?.visibleDecisions)
+      && Array.isArray(status?.attacks)
+      && status.visibleDecisions.slice(1, 4).every(value => Number(value) > 0)
+      && status.attacks.slice(1, 4).every(value => Number(value) > 0);
   }, null, { timeout: 30_000 });
 
   const aiState = await ai.evaluate(() => {
@@ -83,6 +94,8 @@ try {
   assert.equal(Boolean(aiState.humanOverride.active), false, JSON.stringify(aiState.humanOverride));
   assert.deepEqual(aiState.status.botPlayers.map(row => row.skill), ['easy', 'normal', 'hard']);
   assert.ok(aiState.status.decisions.slice(1, 4).every(value => Number(value) > 0), JSON.stringify(aiState.status));
+  assert.ok(aiState.status.visibleDecisions.slice(1, 4).every(value => Number(value) > 0), JSON.stringify(aiState.status));
+  assert.ok(aiState.status.attacks.slice(1, 4).every(value => Number(value) > 0), JSON.stringify(aiState.status));
   assert.ok(aiState.status.players.players.length >= 4, JSON.stringify(aiState.status.players));
 
   console.error('P2.2 public /direct/ launcher acceptance passed:', JSON.stringify({
@@ -93,6 +106,8 @@ try {
       demoWad: aiState.launcher.demoWad,
       botSkills: aiState.status.botPlayers.map(row => row.skill),
       decisions: aiState.status.decisions,
+      visibleDecisions: aiState.status.visibleDecisions,
+      attacks: aiState.status.attacks,
       players: aiState.status.players.players.map(row => ({ player: row.player, health: row.health, frags: row.frags, x: row.x, y: row.y }))
     }
   }));
