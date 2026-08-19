@@ -1,0 +1,134 @@
+name: Validate DOOM MCP P2.1 game design evaluator
+
+on:
+  push:
+    branches: ["p2-game-design-evaluator"]
+    paths:
+      - "mcp/**"
+      - ".github/workflows/p2-game-design.yml"
+      - "README.md"
+  pull_request:
+    branches: ["p2-blank-map-generation"]
+    paths:
+      - "mcp/**"
+      - ".github/workflows/p2-game-design.yml"
+      - "README.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p2-game-design-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p2-game-design:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout P2.1 branch
+        uses: actions/checkout@v4
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install MCP dependencies
+        run: npm install --prefix mcp --ignore-scripts --no-audit --no-fund
+
+      - name: Syntax-check P2.1 modules
+        run: |
+          node --check mcp/game_design_evaluator.js
+          node --check mcp/p2_game_design_server.js
+          node --check mcp/p2_game_design_selftest.mjs
+          node --check mcp/p2_blank_server.js
+          node --check mcp/p1_auto_repair_server.js
+          node --check mcp/navigation_browser_agent.mjs
+
+      - name: Instantiate P2.1 MCP server
+        run: |
+          cd mcp
+          node --input-type=module -e "import('./p2_game_design_server.js').then(m => { const s=m.createMcpServer(); if(!s) process.exit(1); console.error('P2.1 MCP server import passed'); })"
+
+      - name: Run P2.1 deterministic game-design regression
+        run: |
+          cd mcp
+          npm run test:p2:game-design
+
+      - name: Run P2.0 source-free generation regression
+        run: |
+          cd mcp
+          npm run test:p2
+
+      - name: Run P0 transaction and nodebuilder regression
+        run: |
+          cd mcp
+          npm run test:p0
+
+      - name: Run P1.1 THINGS regression
+        run: |
+          cd mcp
+          npm run test:p1
+
+      - name: Run P1.2 semantic geometry regression
+        run: |
+          cd mcp
+          npm run test:p1:semantic
+
+      - name: Run P1.3 navigation graph regression
+        run: |
+          cd mcp
+          npm run test:p1:navigation
+
+      - name: Run P1.4 diagnosis and repair regression
+        run: |
+          cd mcp
+          npm run test:p1:auto-repair
+
+      - name: Install Playwright Chromium
+        timeout-minutes: 8
+        run: |
+          cd mcp
+          npx playwright install chromium
+
+      - name: Run P0 real browser regression
+        run: |
+          cd mcp
+          node p0_browser_e2e.mjs
+
+      - name: Run P2.0 seed-only LinuxDOOM boot regression
+        run: |
+          cd mcp
+          npm run test:p2:seed-runtime
+
+      - name: Run P0 automated episode experiment regression
+        run: |
+          cd mcp
+          npm run test:experiment
+
+      - name: Run P1.1 authored THINGS runtime regression
+        run: |
+          cd mcp
+          node p1_runtime_selftest.mjs
+
+      - name: Run P1.2 semantic runtime regression
+        run: |
+          cd mcp
+          npm run test:p1:semantic:runtime
+
+      - name: Run P1.3 autonomous navigation runtime regression
+        run: |
+          cd mcp
+          npm run test:p1:navigation:runtime
+
+      - name: Run P1.4 auto-repair runtime regression
+        run: |
+          cd mcp
+          npm run test:p1:auto-repair:runtime
+
+      - name: Run P2.0 full source-free runtime regression
+        run: |
+          cd mcp
+          npm run test:p2:runtime
