@@ -8,8 +8,9 @@ multi-player sessions even though they deliberately keep netgame=false and use
 only one network node.
 
 P2.2 also enforces one shared death presentation rule for every local player:
-P1 human and P2-P4 bots must remain in PST_DEAD for 45 tics (~1.29 seconds)
-before an automated BT_USE respawn command is allowed through.
+P1 human and P2-P4 bots remain in PST_DEAD for 45 tics (~1.29 seconds), then
+the engine bridge itself emits the respawn BT_USE. No JS scheduler may shorten
+or accidentally omit that window.
 """
 
 from pathlib import Path
@@ -68,9 +69,10 @@ def main() -> None:
         text = text.replace(old_reborn, new_reborn, 1)
 
     # The P2.2 build copies direct-port/doom_multi_agent.c to this source file
-    # immediately before invoking this patcher. Gate automated respawn input in
-    # the engine bridge itself so human and bot slots obey exactly the same
-    # minimum death animation window regardless of scheduler reaction speed.
+    # immediately before invoking this patcher. Own the death/respawn timing in
+    # the engine-facing ticcmd hook itself. That hook runs for P1-P4 every tic,
+    # even when a slot has no active bot override, so human and bots cannot
+    # diverge in respawn timing.
     agent_path = root / "doom_agent_input.c"
     if agent_path.exists():
         agent = agent_path.read_text(encoding="utf-8")
@@ -86,52 +88,73 @@ def main() -> None:
                 raise SystemExit("doom_agent_input.c delay anchor not found")
             agent = agent.replace(delay_anchor, delay_block, 1)
 
-        state_anchor = "    // Preserve the original LinuxDOOM movement envelope.\n"
-        state_block = (
-            "    // All local deathmatch slots share the same death presentation window.\n"
-            "    // Automated USE is suppressed until the corpse has remained dead for\n"
-            "    // 45 tics (~1.29 s at DOOM's 35 Hz simulation rate).\n"
-            "    if (players[player].playerstate == PST_LIVE)\n"
-            "        doomctl_death_tic[player] = -1;\n"
-            "    else if (players[player].playerstate == PST_DEAD && doomctl_death_tic[player] < 0)\n"
-            "        doomctl_death_tic[player] = gametic;\n\n"
-            "    // Preserve the original LinuxDOOM movement envelope.\n"
-        )
-        if "doomctl_death_tic[player] = gametic" not in agent:
-            if state_anchor not in agent:
-                raise SystemExit("doom_agent_input.c state anchor not found")
-            agent = agent.replace(state_anchor, state_block, 1)
-
-        old_buttons = (
-            "    buttons = 0;\n"
-            "    if (agent->attack)\n"
-            "        buttons |= BT_ATTACK;\n"
-            "    if (agent->use)\n"
-            "        buttons |= BT_USE;\n"
-            "    cmd->buttons = (byte)buttons;\n"
-        )
-        new_buttons = (
-            "    buttons = 0;\n"
-            "    if (agent->attack && players[player].playerstate == PST_LIVE)\n"
-            "        buttons |= BT_ATTACK;\n"
-            "    if (agent->use)\n"
+        old_prologue = (
+            "    if (!cmd || player < 0 || player >= MAXPLAYERS)\n"
+            "        return;\n"
+            "    agent = &doomctl_agents[player];\n"
+            "    if (agent->remaining <= 0)\n"
+            "        return;\n"
+            "    if (gamestate != GS_LEVEL || gameepisode != agent->episode || gamemap != agent->map)\n"
             "    {\n"
-            "        if (players[player].playerstate != PST_DEAD ||\n"
-            "            (doomctl_death_tic[player] >= 0 &&\n"
-            "             gametic - doomctl_death_tic[player] >= DOOMCTL_RESPAWN_DELAY_TICS))\n"
-            "            buttons |= BT_USE;\n"
+            "        doomctl_clear_player_agent(player);\n"
+            "        return;\n"
             "    }\n"
-            "    cmd->buttons = (byte)buttons;\n"
+            "    if (!doomctl_valid_player(player) || !players[player].mo)\n"
+            "    {\n"
+            "        doomctl_clear_player_agent(player);\n"
+            "        return;\n"
+            "    }\n\n"
         )
-        if "gametic - doomctl_death_tic[player] >= DOOMCTL_RESPAWN_DELAY_TICS" not in agent:
-            if old_buttons not in agent:
-                raise SystemExit("doom_agent_input.c button block not found")
-            agent = agent.replace(old_buttons, new_buttons, 1)
+        new_prologue = (
+            "    if (!cmd || player < 0 || player >= MAXPLAYERS)\n"
+            "        return;\n"
+            "    agent = &doomctl_agents[player];\n"
+            "    if (gamestate != GS_LEVEL)\n"
+            "    {\n"
+            "        if (agent->remaining > 0)\n"
+            "            doomctl_clear_player_agent(player);\n"
+            "        return;\n"
+            "    }\n"
+            "    if (!doomctl_valid_player(player) || !players[player].mo)\n"
+            "    {\n"
+            "        if (agent->remaining > 0)\n"
+            "            doomctl_clear_player_agent(player);\n"
+            "        return;\n"
+            "    }\n\n"
+            "    // Shared death presentation for every local deathmatch slot.\n"
+            "    // While dead, suppress attack/use regardless of human keyboard or\n"
+            "    // bot scheduler input. After 45 tics, synthesize exactly the USE\n"
+            "    // command Vanilla DOOM expects to enter PST_REBORN.\n"
+            "    if (players[player].playerstate == PST_LIVE)\n"
+            "    {\n"
+            "        doomctl_death_tic[player] = -1;\n"
+            "    }\n"
+            "    else if (players[player].playerstate == PST_DEAD)\n"
+            "    {\n"
+            "        if (doomctl_death_tic[player] < 0)\n"
+            "            doomctl_death_tic[player] = gametic;\n"
+            "        cmd->buttons &= (byte)~(BT_ATTACK | BT_USE);\n"
+            "        if (gametic - doomctl_death_tic[player] >= DOOMCTL_RESPAWN_DELAY_TICS)\n"
+            "            cmd->buttons |= BT_USE;\n"
+            "        return;\n"
+            "    }\n\n"
+            "    if (agent->remaining <= 0)\n"
+            "        return;\n"
+            "    if (gameepisode != agent->episode || gamemap != agent->map)\n"
+            "    {\n"
+            "        doomctl_clear_player_agent(player);\n"
+            "        return;\n"
+            "    }\n\n"
+        )
+        if "synthesize exactly the USE" not in agent:
+            if old_prologue not in agent:
+                raise SystemExit("doom_agent_input.c function prologue not found")
+            agent = agent.replace(old_prologue, new_prologue, 1)
 
         agent_path.write_text(agent, encoding="utf-8")
 
     path.write_text(text, encoding="utf-8")
-    print("Patched G_Ticker for P2.2 per-player ticcmds, local deathmatch rebirth, and 45-tic shared respawn delay")
+    print("Patched G_Ticker for P2.2 per-player ticcmds, local deathmatch rebirth, and engine-owned 45-tic respawn delay")
 
 
 if __name__ == "__main__":
