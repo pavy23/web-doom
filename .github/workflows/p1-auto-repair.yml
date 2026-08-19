@@ -2,12 +2,12 @@ name: Validate DOOM MCP P1.4 auto repair
 
 on:
   push:
-    branches: ["p1-auto-repair"]
+    branches: ["p1-auto-repair", "p1-consolidation"]
     paths:
       - "mcp/**"
       - ".github/workflows/p1-auto-repair.yml"
   pull_request:
-    branches: ["p1-navigation-agent"]
+    branches: ["p1-navigation-agent", "main"]
     paths:
       - "mcp/**"
       - ".github/workflows/p1-auto-repair.yml"
