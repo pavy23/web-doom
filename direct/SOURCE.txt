@@ -1,60 +1,19 @@
-Direct browser port of id Software LinuxDOOM 1.10
-=================================================
+P2.2 direct browser build of id Software LinuxDOOM 1.10
+=======================================================
 
-Engine/game source baseline:
-https://github.com/id-Software/DOOM
-pinned commit: a77dfb96cb91780ca334d0d4cfd86957558007e0
+Engine baseline: id Software DOOM, pinned commit
+a77dfb96cb91780ca334d0d4cfd86957558007e0
 
-Browser platform and MCP source:
-https://github.com/pavy23/web-doom/tree/direct-linuxdoom/direct-port
-https://github.com/pavy23/web-doom/tree/direct-linuxdoom/mcp
+Toolchain: Emscripten 6.0.5 + SDL2 + SDL2_mixer.
+Music: pinned Vanilla/DMX-compatible Chocolate Doom OPL subsystem.
 
-Build: Emscripten 6.0.5 + SDL2 + SDL2_mixer.
-Gameplay/rendering/game-state remain id Software LinuxDOOM.
+Public launcher modes:
+- PLAY CLASSIC DOOM: original shareware campaign, one local player.
+- PLAY AI DEATHMATCH: generated P2.2 E1M1 arena, one human plus three
+  real LinuxDOOM player slots controlled by Easy / Normal / Hard bots.
 
-Browser controls:
-- W/S forward/back through original LinuxDOOM movement bindings.
-- A/D use original dedicated strafe-left/strafe-right bindings.
-- Mouse X turns at the browser adapter's modernized sensitivity.
-- Mouse Y is intentionally ignored; vanilla no-vertical-look gameplay stays intact.
-- Clicking the canvas requests Pointer Lock; Escape releases it.
+The bundled p22-demo.wad is generated deterministically by
+mcp/build_p22_demo_wad.mjs and rebuilt with the pinned ZDBSP pipeline.
 
-Audio:
-- Direct DMX type-3 SFX playback through SDL2_mixer.
-- Vanilla/DMX-compatible OPL behavior from pinned Chocolate Doom
-  commit 410d96855b5df5410ff591a90efeafa889119224.
-- Nuked OPL3 v1.8 in OPL2-compatible nine-voice mode by default.
-
-MCP / AI closed-loop level authoring (v2.0):
-- v1 semantic authoring, autonomous exact-tic playtest, PNG observation,
-  deterministic evaluation, rollback/finalization and runtime cheats remain intact.
-- geometry_server.js composes every earlier MCP layer and adds a local-only
-  structural geometry bridge at 127.0.0.1:3781/geometry.
-- Current playable maps are snapshotted as ordinary PWADs and parsed into a
-  Doom Geometry IR containing VERTEXES, LINEDEFS, SIDEDEFS and SECTORS.
-- Semantic geometry operations currently include rectangular room extrusion,
-  generated-room resize/delete and straight corridor connection between safe
-  facing one-sided walls. Low-level vertex/linedef/sidedef/sector additions and
-  existing vertex/sector-height changes are also available.
-- Geometry validation checks coordinate/index ranges, zero-length lines,
-  side/sector references, new-line proper crossings and closed boundaries for
-  newly-created sectors before any node build is allowed.
-- AI never authors BSP nodes directly. A pinned ZDBSP WebAssembly node builder
-  rebuilds SEGS, SSECTORS, NODES, BLOCKMAP and a vanilla-sized zero REJECT.
-- ZDBSP WASM wrapper artifacts are pinned to seanmorris/zdbsp-wasm commit
-  acc45bf6b2232a75bdbb0b6295822e72e13dfeec and each downloaded artifact is
-  verified by its exact Git blob SHA before execution.
-- The CI integration gate creates a synthetic E1M1 room, runs the real pinned
-  ZDBSP WASM builder and requires verified non-empty vanilla derived lumps.
-- Built structural candidates are ordinary PWAD files under mcp/exports and may
-  be loaded, compared, rolled back to baseline/earlier candidate, or finalized.
-
-Closed loop:
-AI design goal -> semantic/primitive geometry edits -> deterministic validation
--> ZDBSP derived-lump rebuild -> verified candidate PWAD -> LinuxDOOM reload
--> autonomous playtest/vision/evaluation -> revise/restore -> final PWAD.
-
-Shareware game data:
-- Redistributable DOOM shareware IWAD fetched from SDL archive during CI.
-- size: 4,196,020 bytes
-- MD5: 5f4eb849b1af12887dec04a2a12e5e62
+P2.2 local multiplayer is intentionally single-process and netgame=false.
+Remote browser synchronization remains P3.0 work.
