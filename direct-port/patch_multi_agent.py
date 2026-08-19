@@ -62,9 +62,10 @@ def patch_makefile(root: Path) -> None:
     path = root / "Makefile.web"
     text = path.read_text(encoding="utf-8")
 
-    live_flag = "  --pre-js $(GITHUB_WORKSPACE)/direct-port/local_bot_live.js \\\n"
+    line_continuation = "\\" + "\n"
+    live_flag = "  --pre-js $(GITHUB_WORKSPACE)/direct-port/local_bot_live.js " + line_continuation
     if live_flag not in text:
-        anchor = "  --pre-js $(AGENT_PRE_JS) \\\n"
+        anchor = "  --pre-js $(AGENT_PRE_JS) " + line_continuation
         if anchor not in text:
             raise SystemExit("AGENT_PRE_JS anchor not found in Makefile.web")
         text = text.replace(anchor, anchor + live_flag, 1)
