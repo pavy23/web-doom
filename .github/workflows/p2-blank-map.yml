@@ -44,8 +44,14 @@ jobs:
           node --check mcp/p2_blank_server.js
           node --check mcp/p2_blank_map_selftest.mjs
           node --check mcp/p2_blank_map_runtime_selftest.mjs
+          node --check mcp/p2_resource_probe.mjs
           node --check mcp/p1_auto_repair_server.js
           node --check mcp/navigation_browser_agent.mjs
+
+      - name: Probe shareware IWAD seed materials
+        run: |
+          cd mcp
+          node p2_resource_probe.mjs
 
       - name: Instantiate P2.0 MCP server
         run: |
