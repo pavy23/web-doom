@@ -83,7 +83,7 @@ jobs:
         timeout-minutes: 8
         run: |
           cd mcp
-          npx playwright install --with-deps chromium
+          npx playwright install chromium
 
       - name: Run P0 real browser regression
         run: |
