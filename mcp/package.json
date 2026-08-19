@@ -1,14 +1,15 @@
 {
   "name": "web-doom-mcp",
-  "version": "2.7.0-p2.1",
+  "version": "2.8.0-p2.2",
   "private": true,
   "type": "module",
-  "description": "Local DOOM MCP P2.1: deterministic game-design evaluation layered on source-free generation and the P0-P1.4 authoring/QA stack",
+  "description": "Local DOOM MCP P2.2: source-free deathmatch generation, fairness evaluation and local bot-arena control layered on P2.1",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "start": "node p2_game_design_server.js",
+    "start": "node p2_deathmatch_server.js",
+    "start:p2.1": "node p2_game_design_server.js",
     "start:p2.0": "node p2_blank_server.js",
     "start:p1.4": "node p1_auto_repair_server.js",
     "start:p1.3": "node p1_navigation_server.js",
@@ -16,6 +17,7 @@
     "start:p0": "node p0_experiment_server.js",
     "start:p0-core": "node p0_server.js",
     "start:v2": "node geometry_server.js",
+    "test:p2:deathmatch": "node p2_deathmatch_selftest.mjs",
     "test:p2:game-design": "node p2_game_design_selftest.mjs",
     "test:p2": "node p2_blank_map_selftest.mjs",
     "test:p2:seed-runtime": "node p2_seed_runtime_selftest.mjs",
