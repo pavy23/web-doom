@@ -12,16 +12,6 @@ Public launcher modes:
 - PLAY AI DEATHMATCH: generated P2.2 E1M1 arena, one human plus three
   real LinuxDOOM player slots controlled by Easy / Normal / Hard bots.
 
-AI Deathmatch match lifecycle:
-- FIRST TO 10 FRAGS
-- 5:00 regulation time limit
-- regulation tie -> SUDDEN DEATH
-- match finish pauses the world and cancels bot ticcmd overrides
-- REMATCH reloads a clean session with scores reset to 0 / 0 / 0 / 0
-
-The verified P2.2 game runtime is preserved as game.html and the public
-index.html provides the live scoreboard, timer, match-end and rematch shell.
-
 The bundled p22-demo.wad is generated deterministically by
 mcp/build_p22_demo_wad.mjs and rebuilt with the pinned ZDBSP pipeline.
 
