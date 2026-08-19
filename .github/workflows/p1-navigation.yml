@@ -27,6 +27,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: p1-navigation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   p1-navigation:
     runs-on: ubuntu-24.04
@@ -77,6 +81,7 @@ jobs:
           npm run test:p1:semantic
 
       - name: Install Playwright Chromium
+        timeout-minutes: 8
         run: |
           cd mcp
           npx playwright install --with-deps chromium
