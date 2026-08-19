@@ -14,7 +14,24 @@ The `/direct/` runtime uses original LinuxDOOM gameplay/rendering/WAD code with 
 - Current MCP version: **2.8.0-p2.2**
 - Next milestone: **P3.0 online browser multiplayer transport**
 
-> The repository source is consolidated through P2.2, but the public `/direct/` deployment is still the stable single-player build. The P2.2 bot-capable LinuxDOOM/WASM runtime is currently built locally or in CI with the provided build helpers.
+> The public `/direct/` deployment is now the validated P2.2 bot-capable build. Its launcher offers **PLAY CLASSIC DOOM** and **PLAY AI DEATHMATCH**. AI Deathmatch loads the bundled generated `p22-demo.wad` and starts Player 1 as the human against Easy / Normal / Hard local AI players.
+
+### Public launcher
+
+- **PLAY CLASSIC DOOM** — original shareware campaign with one local player.
+- **PLAY AI DEATHMATCH** — deterministic P2.2 demo arena with Player 1 human + three real LinuxDOOM AI player slots (Easy / Normal / Hard).
+
+The bundled public arena is generated and validated during CI before `/direct/` is published:
+
+```text
+p22-demo.wad
+E1M1
+fairness 84.67 / B
+8 deathmatch starts
+8 loops
+nearest-weapon cost CV 0.001
+high-value-item cost CV 0.000
+```
 
 ## Completed milestones
 
@@ -348,6 +365,8 @@ npm run test:p2:human-bots:runtime
 
 P2.2 acceptance retains the P0 → P2.1 regression chain and adds both four-bot and human-plus-three-bot real LinuxDOOM browser tests.
 
+The public `/direct/` publication adds one more browser gate: `mcp/p22_public_direct_selftest.mjs` verifies both launcher paths on the freshly compiled static candidate before any main publish commit is allowed.
+
 ## Runtime / build baseline
 
 Pinned LinuxDOOM baseline:
@@ -383,7 +402,8 @@ P2.2 now proves the content and local simulation side of multiplayer:
 - fairness can be measured and compared;
 - four real LinuxDOOM player slots can run in one browser;
 - each AI player can have a different skill;
-- a human can play Player 1 against three AI players.
+- a human can play Player 1 against three AI players;
+- the public `/direct/` build exposes the validated Classic / AI Deathmatch split.
 
 The next milestone is **remote browser synchronization**.
 
