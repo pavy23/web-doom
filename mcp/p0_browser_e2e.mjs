@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
+import { clickClassicLaunch } from './browser_launcher_compat.mjs';
 
 // Importing P0 installs the topology patch and proves the full MCP composition
 // can be loaded before we start the five browser bridges used by the real WASM.
@@ -48,8 +49,7 @@ page.on('console', message => {
 
 try {
   await page.goto('http://127.0.0.1:3777/', { waitUntil: 'domcontentloaded', timeout: 120000 });
-  await page.waitForSelector('#start.ready:not([disabled])', { timeout: 120000 });
-  await page.click('#start');
+  await clickClassicLaunch(page, 120000);
   await page.waitForFunction(() => typeof Module !== 'undefined' && typeof Module.ccall === 'function', null, { timeout: 120000 });
 
   const warped = await page.evaluate(() => Module.ccall(
