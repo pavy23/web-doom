@@ -7,7 +7,23 @@
   const cleaned = raw.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^\.+/, '');
   const name = !cleaned ? '' : (cleaned.toLowerCase().endsWith('.wad') ? cleaned : `${cleaned}.wad`);
 
-  // The public P2.2 page introduced a dual launcher (`#playClassic` and
+  // The temporarily deployed public /direct/ page is a same-origin wrapper
+  // around game.html. Local MCP QA predates that wrapper and requires Module +
+  // DoomControl on the top-level page (including before main() for cold-boot
+  // geometry staging). Redirect only the localhost/127.0.0.1 proxy copy to the
+  // preserved runtime shell. GitHub Pages itself never receives this injected
+  // bootstrap, so the public launcher remains unchanged.
+  function redirectWrapperToRuntime() {
+    if (!document.getElementById('game') || !document.getElementById('classic')) return false;
+    const next = new URL(location.href);
+    next.pathname = next.pathname.replace(/[^/]*$/, 'game.html');
+    location.replace(next.href);
+    return true;
+  }
+
+  if (redirectWrapperToRuntime()) return;
+
+  // The generated P2.2 page introduced a dual launcher (`#playClassic` and
   // `#playAi`), while the older P0/P1/P2 browser harnesses intentionally use
   // the long-standing `#start.ready:not([disabled])` contract. Local MCP proxy
   // pages install this compatibility alias before webdoom.js starts. The
