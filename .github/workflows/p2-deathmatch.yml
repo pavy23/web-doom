@@ -224,10 +224,12 @@ jobs:
         shell: bash
         env:
           DOOM_MCP_UPSTREAM: http://127.0.0.1:8000/webdoom.html
+          DOOM_MCP_GAME_DIR: /tmp/p22-runtime-cache
           DOOM_P22_BOT_TICS: "700"
         run: |
           set -euo pipefail
           SRC=/tmp/id-doom/linuxdoom-1.10
+          rm -rf "$DOOM_MCP_GAME_DIR"
           python3 -m http.server 8000 --bind 127.0.0.1 --directory "$SRC" >/tmp/p22-runtime-http.log 2>&1 &
           HTTP_PID=$!
           trap 'kill $HTTP_PID 2>/dev/null || true' EXIT
