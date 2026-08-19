@@ -11,13 +11,29 @@ function runtimeGameUrl(currentUrl) {
   return url.href;
 }
 
+async function waitForLauncherShape(page, timeout) {
+  await page.waitForFunction(() => Boolean(
+    (document.getElementById('classic') && document.getElementById('game'))
+      || document.getElementById('playClassic')
+      || document.getElementById('start')
+  ), null, { timeout });
+}
+
+// Enter the actual runtime shell without clicking PLAY. This is needed by cold-
+// boot authoring tests that must call DoomControl.geometryLoad before main().
+export async function enterClassicRuntimeShell(page, timeout = 60000) {
+  await waitForLauncherShape(page, timeout);
+  const wrapper = await page.evaluate(() => Boolean(
+    document.getElementById('classic') && document.getElementById('game')
+  ));
+  if (wrapper) {
+    await page.goto(runtimeGameUrl(page.url()), { waitUntil: 'domcontentloaded', timeout });
+  }
+  return wrapper;
+}
+
 export async function waitForClassicLaunchReady(page, timeout = 60000) {
   await page.waitForFunction(() => {
-    // Temporary deployed P2.2 wrapper. Its #classic button launches an iframe,
-    // but legacy QA requires Module/DoomControl on the top-level page. The click
-    // helper below therefore navigates directly to game.html instead.
-    if (document.getElementById('classic') && document.getElementById('game')) return true;
-
     const classic = document.getElementById('playClassic');
     if (classic) return classic.disabled === false;
     const legacy = document.getElementById('start');
@@ -26,15 +42,8 @@ export async function waitForClassicLaunchReady(page, timeout = 60000) {
 }
 
 export async function clickClassicLaunch(page, timeout = 60000) {
+  const wrapper = await enterClassicRuntimeShell(page, timeout);
   await waitForClassicLaunchReady(page, timeout);
-
-  const wrapper = await page.evaluate(() => Boolean(
-    document.getElementById('classic') && document.getElementById('game')
-  ));
-  if (wrapper) {
-    await page.goto(runtimeGameUrl(page.url()), { waitUntil: 'domcontentloaded', timeout });
-    await waitForClassicLaunchReady(page, timeout);
-  }
 
   const selector = await page.evaluate(() => {
     if (document.getElementById('playClassic')) return '#playClassic';
