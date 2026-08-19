@@ -19,9 +19,9 @@ Completed on `p2-blank-map-generation`:
 - seed-only real LinuxDOOM boot through the standard runtime warp path
 - full source-free generation → semantic extension → deliberate defect → P1.4 repair → ZDBSP → LinuxDOOM autonomous replay regression
 
-## P2.1 — Deterministic Game-Design Evaluator 🚧
+## P2.1 — Deterministic Game-Design Evaluator ✅
 
-Implemented on this branch:
+Completed on this branch:
 
 - built-candidate-only game-design evaluation
 - deterministic 0–100 components for reachability, progression, topology, combat, resources and pacing
@@ -37,7 +37,14 @@ Implemented on this branch:
 - dedicated P2.1 MCP entry point composed on P2.0
 - P2.1 deterministic regression plus complete P2.0 and P0→P1.4 CI gate
 
-Completion gate is green GitHub Actions on the exact P2.1 branch head.
+Acceptance example under the same `balanced / medium` policy:
+
+- under-supported Cyberdemon candidate: 70.3 (C), resources 12.25
+- supported candidate after shotgun/ammo/health/armor edits: 83.5 (B), resources 100
+- overall delta: +13.2
+- resolved: `RESOURCE_STARVATION`, `NO_EARLY_WEAPON`
+
+The score is a deterministic iteration proxy, not an objective measurement of fun; runtime QA remains a separate acceptance layer.
 
 ## Next
 
