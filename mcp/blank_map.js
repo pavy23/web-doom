@@ -7,6 +7,7 @@ export const BLANK_MAP_VERSION = '2.6.0-p2.0';
 const MAP_NAME = /^(?:E[1-9]M[1-9]|MAP\d\d)$/;
 const NO_SIDE = 0xffff;
 const ML_BLOCKING = 0x0001;
+const ML_TWOSIDED = 0x0004;
 
 function normalizeMapName(value = 'E1M1') {
   const name = String(value || 'E1M1').trim().toUpperCase();
@@ -85,8 +86,8 @@ function encodeSectors(items) {
     const at = index * 26;
     out.writeInt16LE(boundedInt(sector.floor, `sector ${index}.floor`, -32768, 32767), at);
     out.writeInt16LE(boundedInt(sector.ceiling, `sector ${index}.ceiling`, -32768, 32767), at + 2);
-    writeName8(out, at + 4, sector.floorFlat || 'FLOOR0_1');
-    writeName8(out, at + 12, sector.ceilingFlat || 'CEIL1_1');
+    writeName8(out, at + 4, sector.floorFlat || 'FLOOR4_8');
+    writeName8(out, at + 12, sector.ceilingFlat || 'CEIL3_5');
     out.writeInt16LE(boundedInt(sector.light, `sector ${index}.light`, -32768, 32767), at + 20);
     out.writeUInt16LE(boundedInt(sector.special || 0, `sector ${index}.special`, 0, 65535), at + 22);
     out.writeUInt16LE(boundedInt(sector.tag || 0, `sector ${index}.tag`, 0, 65535), at + 24);
@@ -115,32 +116,60 @@ export function createSeededBlankMapPwad(input = {}) {
   if (ceiling - floor < 64) throw new Error('Blank start room needs at least 64 map units of vertical clearance');
   const light = boundedInt(input.light ?? 176, 'light', 0, 255);
   const wallTexture = String(input.wallTexture || 'STARTAN3').trim().toUpperCase();
-  const floorFlat = String(input.floorFlat || 'FLOOR0_1').trim().toUpperCase();
-  const ceilingFlat = String(input.ceilingFlat || 'CEIL1_1').trim().toUpperCase();
+  // These defaults are present in shareware E1M1 and therefore guaranteed by
+  // the repository's supported doom1.wad runtime baseline.
+  const floorFlat = String(input.floorFlat || 'FLOOR4_8').trim().toUpperCase();
+  const ceilingFlat = String(input.ceilingFlat || 'CEIL3_5').trim().toUpperCase();
   const includeExit = input.includeExit !== false;
   const exitWall = String(input.exitWall || 'east').trim().toLowerCase();
-  const wallIndex = { west: 0, north: 1, east: 2, south: 3 }[exitWall];
-  if (wallIndex == null) throw new Error('exitWall must be west, north, east or south');
+  const exitLine = { west: 0, north: 2, east: 3, south: 4 }[exitWall];
+  if (exitLine == null) throw new Error('exitWall must be west, north, east or south');
 
   const halfW = Math.floor(width / 2);
   const halfH = Math.floor(height / 2);
-  // Clockwise boundary: interior is always on each linedef's right/front side.
+  const playerX = -Math.max(24, Math.floor(width / 4));
+
+  // Two connected sectors are deliberate. Vanilla LinuxDOOM's BSP point lookup
+  // expects at least one NODES entry; a single convex sector lets ZDBSP emit a
+  // zero-node tree, which is not a safe Vanilla runtime baseline.
+  // Outer boundary lines are clockwise so the interior stays on the right/front.
   const vertices = [
-    { x: -halfW, y: -halfH },
-    { x: -halfW, y: halfH },
-    { x: halfW, y: halfH },
-    { x: halfW, y: -halfH }
+    { x: -halfW, y: -halfH }, // 0 left-bottom
+    { x: -halfW, y: halfH },  // 1 left-top
+    { x: 0, y: halfH },       // 2 mid-top
+    { x: halfW, y: halfH },   // 3 right-top
+    { x: halfW, y: -halfH },  // 4 right-bottom
+    { x: 0, y: -halfH }       // 5 mid-bottom
   ];
-  const sectors = [{ floor, ceiling, floorFlat, ceilingFlat, light, special: 0, tag: 0 }];
-  const sidedefs = [0, 1, 2, 3].map(() => ({
-    xOffset: 0, yOffset: 0, upper: '-', lower: '-', middle: wallTexture, sector: 0
+  const sectors = [0, 1].map(() => ({
+    floor, ceiling, floorFlat, ceilingFlat, light, special: 0, tag: 0
   }));
-  const pairs = [[0, 1], [1, 2], [2, 3], [3, 0]];
-  const linedefs = pairs.map(([v1, v2], index) => ({
-    v1, v2, flags: ML_BLOCKING, special: includeExit && index === wallIndex ? 11 : 0,
-    tag: 0, right: index, left: NO_SIDE
+  const sidedefs = [
+    { middle: wallTexture, sector: 0 }, // 0 west
+    { middle: wallTexture, sector: 0 }, // 1 north-left
+    { middle: wallTexture, sector: 1 }, // 2 north-right
+    { middle: wallTexture, sector: 1 }, // 3 east
+    { middle: wallTexture, sector: 1 }, // 4 south-right
+    { middle: wallTexture, sector: 0 }, // 5 south-left
+    { middle: '-', sector: 0 },         // 6 portal front/right
+    { middle: '-', sector: 1 }          // 7 portal back/left
+  ].map(side => ({ xOffset: 0, yOffset: 0, upper: '-', lower: '-', ...side }));
+
+  const outerPairs = [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 0]];
+  const linedefs = outerPairs.map(([v1, v2], index) => ({
+    v1,
+    v2,
+    flags: ML_BLOCKING,
+    special: includeExit && index === exitLine ? 11 : 0,
+    tag: 0,
+    right: index,
+    left: NO_SIDE
   }));
-  const things = [{ x: 0, y: 0, angle: 0, doomEdNum: 1, flags: 7 }];
+  // Downward center divider: west/left room is right/front sector 0, east/right
+  // room is left/back sector 1.
+  linedefs.push({ v1: 2, v2: 5, flags: ML_TWOSIDED, special: 0, tag: 0, right: 6, left: 7 });
+
+  const things = [{ x: playerX, y: 0, angle: 0, doomEdNum: 1, flags: 7 }];
 
   const bytes = writeWad({
     lumps: canonicalLumps(map, {
@@ -157,10 +186,20 @@ export function createSeededBlankMapPwad(input = {}) {
     map,
     bytes,
     seed: {
-      width, height, floor, ceiling, light, wallTexture, floorFlat, ceilingFlat,
-      includeExit, exitWall, exitLine: includeExit ? wallIndex : null,
-      player1Start: { x: 0, y: 0, angle: 0 },
-      counts: { things: 1, vertices: 4, linedefs: 4, sidedefs: 4, sectors: 1 }
+      width,
+      height,
+      floor,
+      ceiling,
+      light,
+      wallTexture,
+      floorFlat,
+      ceilingFlat,
+      includeExit,
+      exitWall,
+      exitLine: includeExit ? exitLine : null,
+      portalLine: 6,
+      player1Start: { x: playerX, y: 0, angle: 0, sector: 0 },
+      counts: { things: 1, vertices: 6, linedefs: 7, sidedefs: 8, sectors: 2 }
     }
   };
 }
