@@ -1,19 +1,22 @@
 {
   "name": "web-doom-mcp",
-  "version": "2.5.0-p1.4",
+  "version": "2.6.0-p2.0",
   "private": true,
   "type": "module",
-  "description": "Local DOOM MCP P1.4: THINGS + semantic geometry + navigation + conservative diagnose-repair-rebuild-replay closed loop",
+  "description": "Local DOOM MCP P2.0: source-free blank map generation feeding the proven P0-P1.4 authoring, validation, navigation and auto-repair stack",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "start": "node p1_auto_repair_server.js",
+    "start": "node p2_blank_server.js",
+    "start:p1.4": "node p1_auto_repair_server.js",
     "start:p1.3": "node p1_navigation_server.js",
     "start:p1.2": "node p1_server.js",
     "start:p0": "node p0_experiment_server.js",
     "start:p0-core": "node p0_server.js",
     "start:v2": "node geometry_server.js",
+    "test:p2": "node p2_blank_map_selftest.mjs",
+    "test:p2:runtime": "node p2_blank_map_runtime_selftest.mjs",
     "test:p1": "node p1_things_selftest.mjs",
     "test:p1:semantic": "node p1_semantic_selftest.mjs",
     "test:p1:semantic:runtime": "node p1_semantic_runtime_selftest.mjs",
