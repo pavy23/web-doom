@@ -27,7 +27,7 @@ concurrency:
 jobs:
   p2-deathmatch:
     runs-on: ubuntu-24.04
-    timeout-minutes: 70
+    timeout-minutes: 75
     steps:
       - name: Checkout P2.2 branch
         uses: actions/checkout@v4
@@ -48,19 +48,22 @@ jobs:
           node --check mcp/deathmatch_factory.js
           node --check mcp/deathmatch_bot_runtime.mjs
           node --check mcp/p2_deathmatch_bot_server.js
+          node --check mcp/p2_human_bot_server.js
           node --check mcp/p2_deathmatch_balanced_selftest.mjs
           node --check mcp/p2_bot_runtime_selftest.mjs
+          node --check mcp/p2_human_bot_browser_selftest.mjs
           node --check mcp/game_design_evaluator.js
           node --check mcp/p2_game_design_server.js
           node --check mcp/p2_blank_server.js
           node --check mcp/p1_auto_repair_server.js
           node --check mcp/navigation_browser_agent.mjs
-          python3 -m py_compile direct-port/patch_multi_agent.py
+          node --check direct-port/local_bot_live.js
+          python3 -m py_compile direct-port/patch_multi_agent.py direct-port/patch_local_bot_shell.py
 
       - name: Instantiate final P2.2 MCP server
         run: |
           cd mcp
-          node --input-type=module -e "import('./p2_deathmatch_bot_server.js').then(m => { const s=m.createMcpServer(); if(!s) process.exit(1); console.error('P2.2 deathmatch+bot MCP server import passed'); })"
+          node --input-type=module -e "import('./p2_human_bot_server.js').then(m => { const s=m.createMcpServer(); if(!s) process.exit(1); console.error('P2.2 human+bot MCP server import passed'); })"
 
       - name: Run P2.2 deterministic deathmatch fairness regression
         run: |
@@ -184,6 +187,9 @@ jobs:
           cp direct-port/Makefile.web         "$SRC/Makefile.web"
           cp direct-port/shell.html           "$SRC/shell.html"
           python3 direct-port/apply_compat.py "$SRC"
+          python3 direct-port/patch_local_bot_shell.py "$SRC"
+          grep -q "p22BootArgs" "$SRC/shell.html"
+          grep -q "DoomLocalBots.onGameStarted" "$SRC/shell.html"
 
       - name: Build bot-capable P2.2 LinuxDOOM WebAssembly
         timeout-minutes: 25
@@ -196,9 +202,6 @@ jobs:
 
           emmake make -f Makefile.web prepare-opl prepare-control validate-mcp
 
-          # prepare-control first installs the proven P1 console-player agent.
-          # Replace that source with the compatible multi-player implementation,
-          # then upgrade the G_Ticker hook from console-only to every player slot.
           cp "$GITHUB_WORKSPACE/direct-port/doom_multi_agent.c" doom_agent_input.c
           python3 "$GITHUB_WORKSPACE/direct-port/patch_multi_agent.py" "$SRC"
 
@@ -208,8 +211,8 @@ jobs:
           grep -q "doomctl_apply_player_agent_ticcmd(i, cmd)" g_game.c
           grep -q "doomctl_get_local_player_capacity" i_net.c
 
-          P22_EXPORTS='-sEXPORTED_FUNCTIONS=_main,_doomctl_queue_player_input,_doomctl_cancel_player_input,_doomctl_get_player_input_status_json,_doomctl_get_players_json,_doomctl_get_player_perception_json,_doomctl_get_local_player_capacity'
-          emmake make -f Makefile.web webdoom.html EXTRA_EMFLAGS="$P22_EXPORTS"
+          P22_EXTRA="--pre-js $GITHUB_WORKSPACE/direct-port/local_bot_live.js -sEXPORTED_FUNCTIONS=_main,_doomctl_queue_player_input,_doomctl_cancel_player_input,_doomctl_get_player_input_status_json,_doomctl_get_players_json,_doomctl_get_player_perception_json,_doomctl_get_local_player_capacity"
+          emmake make -f Makefile.web webdoom.html EXTRA_EMFLAGS="$P22_EXTRA"
           test -s webdoom.html
           test -s webdoom.js
           test -s webdoom.wasm
@@ -218,6 +221,22 @@ jobs:
           grep -q "doomctl_get_players_json" webdoom.js
           grep -q "doomctl_get_player_perception_json" webdoom.js
           grep -q "doomctl_get_local_player_capacity" webdoom.js
+          grep -q "DoomLocalBots" webdoom.js
+
+      - name: Start isolated P2.2 bot-capable runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/p22-runtime-cache
+          python3 -m http.server 8000 --bind 127.0.0.1 --directory /tmp/id-doom/linuxdoom-1.10 >/tmp/p22-runtime-http.log 2>&1 &
+          echo $! >/tmp/p22-runtime-http.pid
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/webdoom.html >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/webdoom.js >/dev/null
 
       - name: Run four-player local bot LinuxDOOM acceptance
         timeout-minutes: 12
@@ -228,17 +247,24 @@ jobs:
           DOOM_P22_BOT_TICS: "700"
         run: |
           set -euo pipefail
-          SRC=/tmp/id-doom/linuxdoom-1.10
-          rm -rf "$DOOM_MCP_GAME_DIR"
-          python3 -m http.server 8000 --bind 127.0.0.1 --directory "$SRC" >/tmp/p22-runtime-http.log 2>&1 &
-          HTTP_PID=$!
-          trap 'kill $HTTP_PID 2>/dev/null || true' EXIT
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8000/webdoom.html >/dev/null; then
-              break
-            fi
-            sleep 1
-          done
-          curl -fsS http://127.0.0.1:8000/webdoom.js >/dev/null
           cd mcp
           npm run test:p2:bots:runtime
+
+      - name: Run interactive Player 1 plus three live bots acceptance
+        timeout-minutes: 8
+        shell: bash
+        env:
+          DOOM_MCP_UPSTREAM: http://127.0.0.1:8000/webdoom.html
+          DOOM_MCP_GAME_DIR: /tmp/p22-runtime-cache
+        run: |
+          set -euo pipefail
+          cd mcp
+          npm run test:p2:human-bots:runtime
+
+      - name: Stop isolated P2.2 runtime server
+        if: always()
+        shell: bash
+        run: |
+          if [ -f /tmp/p22-runtime-http.pid ]; then
+            kill "$(cat /tmp/p22-runtime-http.pid)" 2>/dev/null || true
+          fi
