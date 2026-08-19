@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#050505">
+<title>DOOM — P2.2 Direct</title>
+<style>
+:root{color-scheme:dark}*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;background:#050505;overflow:hidden;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}#game{position:absolute;inset:0;width:100%;height:100%;border:0;background:#050505}#launch,#result{position:absolute;inset:0;z-index:20;display:grid;place-items:center;background:radial-gradient(circle at center,#161616 0,#050505 70%)}#launch.hidden,#result{display:none}#result.visible{display:grid;background:rgba(0,0,0,.84);backdrop-filter:blur(3px)}.box{text-align:center;padding:30px 26px;max-width:620px}.title{font-size:34px;font-weight:1000;letter-spacing:.18em}.sub{margin-top:12px;color:#999;font-size:12px;line-height:1.6}.buttons{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:24px}button{appearance:none;border:1px solid rgba(255,255,255,.3);background:#171717;color:#eee;border-radius:8px;padding:14px 20px;font:inherit;font-size:12px;font-weight:900;letter-spacing:.08em;cursor:pointer}button:hover{background:#292929}#ai{border-color:rgba(255,126,76,.72)}#loading{margin-top:16px;color:#aaa;font-size:11px;min-height:16px}#hud{display:none;position:absolute;z-index:10;top:12px;left:50%;transform:translateX(-50%);width:min(650px,90vw);text-align:center;pointer-events:none}#hud.live{display:block}#rule{display:inline-block;padding:7px 11px;border:1px solid rgba(255,255,255,.22);border-radius:7px;background:rgba(0,0,0,.76);font-size:11px;font-weight:900;letter-spacing:.08em}#rule.sudden{color:#ffcf6b;border-color:rgba(255,207,107,.72)}#scores{display:flex;justify-content:center;gap:6px;flex-wrap:wrap;margin-top:6px}.score{min-width:86px;padding:6px 8px;border:1px solid rgba(255,255,255,.16);border-radius:6px;background:rgba(0,0,0,.70);font-size:10px}.score.human{border-color:rgba(116,255,147,.55);color:#c8ffd3}.score.leader{background:rgba(70,54,12,.86);border-color:rgba(255,207,107,.72);color:#fff3c4}#kicker{color:#888;font-size:10px;font-weight:900;letter-spacing:.18em}#winner{margin-top:10px;font-size:clamp(26px,5vw,46px);font-weight:1000;letter-spacing:.08em}#reason{margin-top:8px;color:#ffcf6b;font-size:12px;font-weight:900}#finalScores{display:flex;justify-content:center;gap:7px;flex-wrap:wrap;margin:20px 0}
+</style>
+</head>
+<body>
+<iframe id="game" title="DOOM runtime" allow="autoplay; fullscreen" src="about:blank"></iframe>
+<div id="hud"><div id="rule">FIRST TO 10 · 05:00</div><div id="scores"></div></div>
+<div id="launch"><div class="box"><div class="title">DOOM</div><div class="sub">DIRECT LINUXDOOM WEBASSEMBLY PORT</div><div class="buttons"><button id="classic">PLAY CLASSIC DOOM</button><button id="ai">PLAY AI DEATHMATCH</button></div><div id="loading"></div></div></div>
+<div id="result"><div class="box"><div id="kicker">MATCH COMPLETE</div><div id="winner">PLAYER 1 WINS</div><div id="reason"></div><div id="finalScores"></div><div class="buttons"><button id="rematch">REMATCH</button><button id="backClassic">PLAY CLASSIC DOOM</button></div></div></div>
+<script>
+(()=>{
+const FRAG_LIMIT=10,TIME_LIMIT_TICS=300*35;
+const frame=document.getElementById('game'),launch=document.getElementById('launch'),hud=document.getElementById('hud'),rule=document.getElementById('rule'),scoresEl=document.getElementById('scores'),loading=document.getElementById('loading'),result=document.getElementById('result'),winnerEl=document.getElementById('winner'),reasonEl=document.getElementById('reason'),finalScores=document.getElementById('finalScores');
+let poll=null,mode=null,phase='idle',startTic=null,contenders=[],baseline=null,final=null;
+const labels=['P1 HUMAN','P2 EASY','P3 NORMAL','P4 HARD'];
+function rows(){try{return frame.contentWindow.DoomLocalBots?.status?.().players||null}catch{return null}}
+function scoreArray(state){const s=[0,0,0,0];for(const p of state?.players||[]){const i=Number(p.player);if(i>=0&&i<4)s[i]=Number(p.frags||0)}return s}
+function leaders(s,c=[0,1,2,3]){const best=Math.max(...c.map(i=>s[i]));return c.filter(i=>s[i]===best)}
+function fmt(sec){sec=Math.max(0,Math.ceil(sec));return `${String(Math.floor(sec/60)).padStart(2,'0')}:${String(sec%60).padStart(2,'0')}`}
+function renderScores(s,target=scoresEl){const lead=new Set(leaders(s));target.innerHTML=s.map((v,i)=>`<div class="score ${i===0?'human':''} ${lead.has(i)?'leader':''}">${labels[i]} · <b>${v}</b></div>`).join('')}
+function pauseWorld(){try{frame.contentWindow.DoomLocalBots?.stop?.()}catch{}try{frame.contentWindow.DoomControl?.setPlaytestPaused?.(true)}catch{}}
+function finish(w,why,s){if(phase==='finished')return;phase='finished';final=[...s];pauseWorld();hud.classList.remove('live');winnerEl.textContent=`PLAYER ${w+1} WINS`;reasonEl.textContent=why==='frag_limit'?'FIRST TO 10 FRAGS':why==='time_limit'?'TIME LIMIT':'SUDDEN DEATH';renderScores(s,finalScores);result.classList.add('visible')}
+function tick(){if(mode!=='ai'||phase==='finished')return;const state=rows();if(!state?.ready||!Array.isArray(state.players)||state.players.length<4)return;const s=scoreArray(state),tic=Number(state.gametic||0);if(startTic===null){startTic=tic;phase='running'}if(phase==='running'){const ls=leaders(s),best=s[ls[0]];if(best>=FRAG_LIMIT){if(ls.length===1)return finish(ls[0],'frag_limit',s);phase='sudden';contenders=[...ls];baseline=[...s]}else if(tic-startTic>=TIME_LIMIT_TICS){if(ls.length===1)return finish(ls[0],'time_limit',s);phase='sudden';contenders=[...ls];baseline=[...s]}}
+if(phase==='sudden'){const ls=leaders(s,contenders),changed=contenders.some(i=>s[i]!==baseline[i]);if(changed&&ls.length===1)return finish(ls[0],'sudden_death',s)}
+const left=(TIME_LIMIT_TICS-Math.max(0,tic-startTic))/35;rule.textContent=phase==='sudden'?'SUDDEN DEATH · NEXT FRAG WINS':`FIRST TO 10 · ${fmt(left)}`;rule.classList.toggle('sudden',phase==='sudden');renderScores(s)}
+async function waitReady(childMode){const deadline=Date.now()+120000;while(Date.now()<deadline){try{const d=frame.contentDocument,button=d?.querySelector(childMode==='ai'?'#playAi':'#start');if(button&&!button.disabled){button.click();const startDeadline=Date.now()+30000;while(Date.now()<startDeadline){if(frame.contentWindow.DoomPublicLauncher?.mode===childMode)return;await new Promise(r=>setTimeout(r,100))}return}}catch{}await new Promise(r=>setTimeout(r,100))}throw new Error('DOOM runtime did not become ready')}
+async function start(childMode){clearInterval(poll);mode=childMode;phase='idle';startTic=null;contenders=[];baseline=null;final=null;result.classList.remove('visible');hud.classList.remove('live');launch.classList.remove('hidden');loading.textContent=childMode==='ai'?'LOADING AI DEATHMATCH…':'LOADING CLASSIC DOOM…';frame.src=`game.html?session=${Date.now()}`;try{await new Promise((resolve,reject)=>{const t=setTimeout(()=>reject(new Error('frame load timeout')),30000);frame.onload=()=>{clearTimeout(t);resolve()}});await waitReady(childMode);launch.classList.add('hidden');loading.textContent='';frame.contentWindow.focus();frame.contentDocument?.getElementById('canvas')?.focus();if(childMode==='ai'){hud.classList.add('live');poll=setInterval(tick,100)}}catch(e){console.error(e);loading.textContent='STARTUP FAILED — RELOAD AND TRY AGAIN'}}
+document.getElementById('classic').onclick=()=>start('classic');document.getElementById('ai').onclick=()=>start('ai');document.getElementById('rematch').onclick=()=>start('ai');document.getElementById('backClassic').onclick=()=>start('classic');
+window.DoomMatchShell={status:()=>({mode,phase,startTic,contenders:[...contenders],finalScores:final?[...final]:null}),start};
+})();
+</script>
+</body>
+</html>
