@@ -14,7 +14,7 @@ import { appendFile } from 'node:fs/promises';
 
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 
-export const JEV_POLICY_VERSION = '0.5.0-jev-policy';
+export const JEV_POLICY_VERSION = '0.5.1-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -243,7 +243,34 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
   if (mode === 'retreat' && target && isHitscan(target.name) && target.canHitPlayerNow) {
     mode = 'fight'; fire = true; rules.push('hitscanFight');
   }
+  // lowHealthHold: under `lowHealth` with something able to hit the player,
+  // never advance into it; every UV death came from walking into the
+  // courtyard at ~44 hp. Fight from where the player stands instead.
+  const shooters = Number(compact.threat?.enemiesThatCanHitPlayerNow ?? 0);
+  if (mode === 'advance' && target && shooters > 0 && Number(compact.player?.health) < Number(options.lowHealth ?? 40)) {
+    mode = 'fight'; fire = true; rules.push('lowHealthHold');
+  }
+  // cover: fighting two or more shooters in the open, close to the point
+  // where the player entered this edge (the doorway it came through), back
+  // up to that point while keeping the target in front. In a doorway the
+  // enemies arrive one or two at a time instead of all at once.
+  const cover = options.cover;
+  const takeCover = mode === 'fight' && target && shooters >= 2 && cover
+    && cover.distance > Number(options.coverArrive ?? 40) && cover.distance <= Number(options.coverMaxDistance ?? 300);
+  if (takeCover) { mode = 'cover'; rules.push('cover'); }
   const meta = { source: 'jev', mode, target: target?.id || 'none', fire, danger: round(answers.danger?.score ?? 0, 2), ...(rules.length ? { rules } : {}) };
+
+  if (takeCover) {
+    const aligned = Math.abs(target.bearing) <= aimTolerance;
+    const aim = aligned ? 0 : turnToward(target.bearing, 0.4);
+    if (Math.abs(cover.bearing) > 135) {
+      // entry point roughly behind: backpedal while aiming
+      return { forward: -0.6, strafe: 0, turn: aim, attack: fire && aligned, use: false, tics: 3, ...meta };
+    }
+    // entry point to the side: strafe toward it while facing the target
+    const side = cover.bearing > 0 ? -1 : 1; // positive bearing = left; agent -strafe = left
+    return { forward: Math.abs(cover.bearing) > 90 ? -0.3 : 0.3, strafe: 0.6 * side, turn: aim, attack: fire && aligned, use: false, tics: 3, ...meta };
+  }
 
   if (!target || mode === 'advance') {
     if (fire && target && Math.abs(target.bearing) <= aimTolerance) return { ...proposal, attack: true, ...meta };
@@ -306,6 +333,9 @@ export async function createJevPolicy(options = {}) {
     meleeRange: 96,            // ... with an enemy this close -> forced fight
     dodgeHoldCalls: 4,         // dodge answers per strafe side before flipping
     pointBlankDistance: 96,    // aligned target this close is always fired at
+    coverHold: true,           // back up to the edge entry point when fighting 2+ shooters near it
+    coverMaxDistance: 300,     // only when the entry point is this close
+    coverArrive: 40,           // ... and stop backing up inside this distance of it
     lootShotgun: true,         // after killing a shotgun guy with the pistol, walk over its dropped shotgun
     lootTimeoutTics: 140,      // give the detour at most 4 s
     runThreshold: 0.5,         // safeToRun noul at or above this keeps advancing
@@ -322,8 +352,22 @@ export async function createJevPolicy(options = {}) {
   const stats = {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
-    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 }
+    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 }
   };
+  let edgeEntry = null;        // { edgeId, x, y }: where the player entered the current edge (its doorway)
+  function coverInfo(context) {
+    const edgeId = context.edge?.id || 'exit';
+    const player = context.state?.player || {};
+    if (!edgeEntry || edgeEntry.edgeId !== edgeId) edgeEntry = { edgeId, x: Number(player.x), y: Number(player.y) };
+    if (!config.coverHold) return null;
+    const dx = edgeEntry.x - Number(player.x);
+    const dy = edgeEntry.y - Number(player.y);
+    const distance = Math.hypot(dx, dy);
+    let bearing = Math.atan2(dy, dx) * 180 / Math.PI - Number(player.angle);
+    while (bearing > 180) bearing -= 360;
+    while (bearing < -180) bearing += 360;
+    return { distance: round(distance), bearing: round(bearing) };
+  }
   let lastMode = null;
   let lastTarget = null;       // the enemy fought at the previous consultation (sticky target)
   let lastKills = null;
@@ -398,13 +442,13 @@ export async function createJevPolicy(options = {}) {
     return hurt || inFront;
   }
 
-  function ruleOptions(compact, state) {
+  function ruleOptions(compact, state, context) {
     const stalled = detectStall(state, compact);
-    return { ...config, dodgeSide, lastTarget, ...(stalled ? { forceMode: 'fight' } : {}) };
+    return { ...config, dodgeSide, lastTarget, cover: context ? coverInfo(context) : null, ...(stalled ? { forceMode: 'fight' } : {}) };
   }
   function rememberTarget(command, compact, state) {
-    if (!command || !['fight', 'retreat', 'advance'].includes(command.mode) || !command.attack) {
-      if (!command || !['fight', 'retreat'].includes(command.mode)) { lastTarget = null; return; }
+    if (!command || !['fight', 'retreat', 'advance', 'cover'].includes(command.mode) || !command.attack) {
+      if (!command || !['fight', 'retreat', 'cover'].includes(command.mode)) { lastTarget = null; return; }
     }
     const enemy = compact.visibleEnemies.find(item => item.id === command.target) || null;
     lastTarget = enemy ? { ...enemy, world: enemyWorldPosition(state.player || {}, enemy) } : null;
@@ -433,6 +477,7 @@ export async function createJevPolicy(options = {}) {
     const consult = shouldConsult(state, config, { lastHealth });
     lastHealth = Number(state?.player?.health ?? lastHealth);
     const lost = recentDamage(state);
+    coverInfo(context); // keep the edge entry point current even on steps that are not consulted
     await lootCheck(state);
     if (loot) {
       const lootCommand = await lootStep(state);
@@ -442,7 +487,7 @@ export async function createJevPolicy(options = {}) {
     stats.eligibleSteps++;
     if (stepsSinceCall < config.minStepsBetweenCalls) {
       // Reuse the last judgment for a short hold without paying again.
-      return lastDecision ? answersToCommand(lastDecision.answers, lastDecision.compact, proposal, ruleOptions(lastDecision.compact, state)) : null;
+      return lastDecision ? answersToCommand(lastDecision.answers, lastDecision.compact, proposal, ruleOptions(lastDecision.compact, state, context)) : null;
     }
     if (stats.calls >= config.maxCalls) { stats.capped = true; return null; }
 
@@ -486,7 +531,7 @@ export async function createJevPolicy(options = {}) {
       dodgeRun = 0;
     }
     lastDecision = { answers: result.answers, compact };
-    const options = ruleOptions(compact, state);
+    const options = ruleOptions(compact, state, context);
     const command = answersToCommand(result.answers, compact, proposal, options);
     rememberTarget(command, compact, state);
     if (command) stats.overrides++;
