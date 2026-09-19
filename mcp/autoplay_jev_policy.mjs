@@ -14,7 +14,21 @@ import { appendFile } from 'node:fs/promises';
 
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 
-export const JEV_POLICY_VERSION = '0.2.0-jev-policy';
+export const JEV_POLICY_VERSION = '0.3.0-jev-policy';
+
+// Safety rules the code owns regardless of what the model answers. They were
+// added after the first live E1M1 trial, where the player was pinned in a
+// corridor by an Imp in melee range, strafed left and right without net
+// progress, never crossed the fire threshold and died.
+//
+//   stall       no net progress over the last `stallWindow` consultations while
+//               an enemy is inside `meleeRange`  -> force `fight` and fire
+//   dodgeHold   a dodge keeps its strafe side for `dodgeHoldCalls` consecutive
+//               dodge answers instead of flipping every call
+//   pointBlank  a target inside `pointBlankDistance` that the player is aligned
+//               with is fired at whatever the `fire` noul says; the noul
+//               threshold itself is 0.4 (it hovered at 0.45 in the stall)
+export const SAFETY_RULES = ['stall', 'dodgeHold', 'pointBlank'];
 export const INPUT_TOKEN_PRICE_USD_PER_MILLION = 0.042; // published launch price; verify in console
 
 const WEAPON_NAMES = ['fist', 'pistol', 'shotgun', 'chaingun', 'rocket launcher', 'plasma rifle', 'BFG', 'chainsaw', 'super shotgun'];
@@ -100,13 +114,26 @@ function turnToward(bearing, max = 0.7) {
 export function answersToCommand(answers, compact, proposal, options = {}) {
   const aimTolerance = Number(options.aimTolerance ?? 8);
   const enemyById = new Map(compact.visibleEnemies.map(enemy => [enemy.id, enemy]));
-  const target = enemyById.get(answers.target?.choice) || compact.visibleEnemies[0] || null;
-  const fire = Number(answers.fire?.noul ?? 0) >= Number(options.fireThreshold ?? 0.5);
-  const mode = answers.mode?.choice;
-  const meta = { source: 'jev', mode, target: target?.id || 'none', fire, danger: round(answers.danger?.score ?? 0, 2) };
+  const rules = [];
+  // A forced fight (stall rule) always aims at the nearest enemy, which is the
+  // one blocking the player; otherwise the model's target, falling back to nearest.
+  const target = options.forceMode === 'fight'
+    ? (compact.visibleEnemies[0] || null)
+    : (enemyById.get(answers.target?.choice) || compact.visibleEnemies[0] || null);
+  const pointBlank = Boolean(target) && Number(target.distance) <= Number(options.pointBlankDistance ?? 96);
+  let fire = Number(answers.fire?.noul ?? 0) >= Number(options.fireThreshold ?? 0.4);
+  if (pointBlank && !fire) { fire = true; rules.push('pointBlank'); }
+  let mode = answers.mode?.choice;
+  if (options.forceMode && options.forceMode !== mode) { mode = options.forceMode; rules.push('stall'); }
+  else if (options.forceMode) { rules.push('stall'); }
+  if (options.forceMode === 'fight') fire = true;
+  const meta = { source: 'jev', mode, target: target?.id || 'none', fire, danger: round(answers.danger?.score ?? 0, 2), ...(rules.length ? { rules } : {}) };
 
   if (!target || mode === 'advance') {
     if (fire && target && Math.abs(target.bearing) <= aimTolerance) return { ...proposal, attack: true, ...meta };
+    // A point-blank target the player is not aligned with is still worth a
+    // shot: keep advancing, but turn toward it so the next step can fire.
+    if (pointBlank && target && !(options.forceMode)) return { ...proposal, turn: turnToward(target.bearing, 0.4), ...meta };
     return null;
   }
   const aligned = Math.abs(target.bearing) <= aimTolerance;
@@ -138,8 +165,14 @@ export async function createJevPolicy(options = {}) {
     minStepsBetweenCalls: 1,   // 1 = every eligible step
     maxEnemies: 5,
     aimTolerance: 8,
-    fireThreshold: 0.5,
+    fireThreshold: 0.4,
     lowHealth: 40,
+    // safety rules (see SAFETY_RULES)
+    stallWindow: 6,            // consultations without net progress ...
+    stallDistance: 32,         // ... of at least this many map units ...
+    meleeRange: 96,            // ... with an enemy this close -> forced fight
+    dodgeHoldCalls: 4,         // dodge answers per strafe side before flipping
+    pointBlankDistance: 96,    // aligned target this close is always fired at
     model: undefined,
     log: null,                 // JSONL path
     ...options
@@ -148,11 +181,33 @@ export async function createJevPolicy(options = {}) {
   const client = config.dryRun ? null : (config.client || new sdk.TypeSafeClient(config.model ? { defaultModel: config.model } : {}));
   const stats = {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, eligibleSteps: 0, calls: 0, overrides: 0,
-    capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {}
+    capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
+    rules: { stall: 0, dodgeHold: 0, pointBlank: 0 }
   };
   let stepsSinceCall = Infinity;
   let dodgeSide = 1;
+  let dodgeRun = 0;            // consecutive dodge answers on the current side
   let lastDecision = null;
+  const positions = [];        // player position at each consultation, newest last
+
+  // Stall rule: the player has not made net progress across the last
+  // `stallWindow` consultations and the nearest visible enemy is in melee range.
+  function detectStall(state, compact) {
+    const player = state?.player || {};
+    positions.push({ x: Number(player.x), y: Number(player.y), tic: Number(state?.levelTime) });
+    if (positions.length > config.stallWindow) positions.shift();
+    if (positions.length < config.stallWindow) return false;
+    const first = positions[0];
+    const last = positions[positions.length - 1];
+    const moved = Math.hypot(last.x - first.x, last.y - first.y);
+    const nearest = compact.visibleEnemies[0];
+    return Boolean(nearest) && moved < config.stallDistance && Number(nearest.distance) <= config.meleeRange;
+  }
+
+  function ruleOptions(compact, state) {
+    const stalled = detectStall(state, compact);
+    return { ...config, dodgeSide, ...(stalled ? { forceMode: 'fight' } : {}) };
+  }
 
   async function record(entry) {
     if (!config.log) return;
@@ -166,7 +221,7 @@ export async function createJevPolicy(options = {}) {
     stats.eligibleSteps++;
     if (stepsSinceCall < config.minStepsBetweenCalls) {
       // Reuse the last judgment for a short hold without paying again.
-      return lastDecision ? answersToCommand(lastDecision.answers, lastDecision.compact, proposal, { ...config, dodgeSide }) : null;
+      return lastDecision ? answersToCommand(lastDecision.answers, lastDecision.compact, proposal, ruleOptions(lastDecision.compact, state)) : null;
     }
     if (stats.calls >= config.maxCalls) { stats.capped = true; return null; }
 
@@ -200,13 +255,21 @@ export async function createJevPolicy(options = {}) {
     stats.outputTokens += Number(result.usage?.output_tokens || 0);
     const mode = result.answers.mode?.choice;
     stats.modes[mode] = (stats.modes[mode] || 0) + 1;
-    if (mode === 'dodge') dodgeSide *= -1;
+    // dodgeHold rule: keep the strafe side for a run of dodge answers.
+    if (mode === 'dodge') {
+      dodgeRun++;
+      if (dodgeRun > config.dodgeHoldCalls) { dodgeSide *= -1; dodgeRun = 1; } else if (dodgeRun > 1) { stats.rules.dodgeHold++; }
+    } else {
+      dodgeRun = 0;
+    }
     lastDecision = { answers: result.answers, compact };
-    const command = answersToCommand(result.answers, compact, proposal, { ...config, dodgeSide });
+    const options = ruleOptions(compact, state);
+    const command = answersToCommand(result.answers, compact, proposal, options);
     if (command) stats.overrides++;
+    for (const rule of command?.rules || []) stats.rules[rule] = (stats.rules[rule] || 0) + 1;
     await record({
       kind: 'jev_decision', tic: state.levelTime, latencyMs: latency, model: result.model, usage: result.usage,
-      state: compact, answers: result.answers, proposal, command
+      state: compact, answers: result.answers, proposal, command, ...(options.forceMode ? { forced: options.forceMode } : {})
     });
     return command;
   }

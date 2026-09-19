@@ -159,6 +159,20 @@ the model supplies narrow typed judgments):
 | `buildQuestions` | Four parallel questions over that state: `mode` choice (advance / fight / retreat / dodge), `target` choice (one label per visible enemy + none), `fire` noul, `danger` score (safe / caution / critical). |
 | `answersToCommand` | Maps the answers to the same bounded ticcmd vocabulary as the follower: fight turns toward the target then holds ATTACK when aligned within 8 degrees; retreat backs off facing the target; dodge strafes; advance keeps the proposal (and fires if aligned). |
 | `maxCalls` | Hard cost cap per trial; after it the policy silently stops consulting and the report shows `capped: true`. |
+| safety rules | Code-owned overrides applied on top of the answers (below). |
+
+### Safety rules (policy 0.3.0)
+
+Code owns the safety rules; the model only supplies judgments. Three rules
+were added after the first live trial (see "First live result" below):
+
+| Rule | Trigger | Effect | Knobs |
+|---|---|---|---|
+| `stall` | no net progress of `stallDistance` map units across the last `stallWindow` consultations while the nearest visible enemy is within `meleeRange` | mode forced to `fight` at the nearest enemy, fire on; logged as `forced: "fight"` and `command.rules: ["stall"]` | `stallWindow` 6, `stallDistance` 32, `meleeRange` 96 |
+| `dodgeHold` | consecutive `dodge` answers | the strafe side is held for `dodgeHoldCalls` answers before flipping, so a dodge moves the player instead of cancelling itself | `dodgeHoldCalls` 4 |
+| `pointBlank` | a target within `pointBlankDistance` | fired at when aligned whatever the `fire` noul says; when advancing and not aligned, the step turns toward it. The noul threshold is 0.4 (it hovered at 0.45 for an Imp in the player's face) | `pointBlankDistance` 96, `fireThreshold` 0.4 |
+
+`policy.rules` in the report counts how often each rule fired.
 
 Every consultation is written to `<reportDir>/jev.jsonl` (state sent, answers,
 probabilities, usage, latency, resulting command) and the run report carries

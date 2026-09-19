@@ -140,10 +140,15 @@ function modeLanes(trial, maxTic) {
     const mode = d.answers?.mode?.choice;
     if (!MODES.includes(mode)) return '';
     const cls = d.command ? 'dot series' : 'dot hollow';
-    return `<circle class="${cls}" cx="${x(d.tic).toFixed(1)}" cy="${laneY(mode).toFixed(1)}" r="3.5"><title>tic ${d.tic}: ${mode} (${pct(d.answers.mode.probabilities?.[mode])}), ${d.command ? 'override' : 'proposal kept'}</title></circle>`;
+    return `<circle class="${cls}" cx="${x(d.tic).toFixed(1)}" cy="${laneY(mode).toFixed(1)}" r="3.5"><title>tic ${d.tic}: ${mode} (${pct(d.answers.mode.probabilities?.[mode])}), ${d.command ? 'override' : 'proposal kept'}${d.forced ? `, forced ${d.forced} by stall rule` : ''}</title></circle>`;
   }).join('');
+  // A stall-forced fight is drawn on the fight lane as a small square so the
+  // reader can tell a rule from a model answer.
+  const forced = trial.decisions.filter(d => d.forced && d.command?.mode).map(d =>
+    `<rect class="forced" x="${(x(d.tic) - 3).toFixed(1)}" y="${(laneY(d.command.mode) - 3).toFixed(1)}" width="6" height="6"><title>tic ${d.tic}: ${d.command.mode} forced by stall rule (model said ${d.answers?.mode?.choice})</title></rect>`
+  ).join('');
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" data-chart="modes" role="img" aria-label="Jev mode choice per consultation">
-    ${lanes}${xAxis(maxTic, H)}${dots}
+    ${lanes}${xAxis(maxTic, H)}${dots}${forced}
     <g class="cursor" hidden><line x1="0" y1="${PAD.top}" x2="0" y2="${H - PAD.bottom}"/></g>
   </svg>`;
 }
@@ -188,7 +193,7 @@ function decisionTable(trial) {
     const target = a.target?.choice;
     const targetName = d.state?.visibleEnemies?.find(e => e.id === target)?.name || target || '–';
     const cmd = d.command;
-    const cmdText = cmd ? `${cmd.mode} · fwd ${fmt(cmd.forward, 2)} · strafe ${fmt(cmd.strafe ?? 0, 2)} · turn ${fmt(cmd.turn ?? 0, 2)}${cmd.attack ? ' · ATTACK' : ''}` : 'kept proposal';
+    const cmdText = cmd ? `${cmd.mode} · fwd ${fmt(cmd.forward, 2)} · strafe ${fmt(cmd.strafe ?? 0, 2)} · turn ${fmt(cmd.turn ?? 0, 2)}${cmd.attack ? ' · ATTACK' : ''}${cmd.rules?.length ? ` · rule: ${cmd.rules.join('+')}` : ''}` : 'kept proposal';
     return `<tr><td>${d.tic}</td><td>${d.state?.player?.health ?? '–'}</td><td>${d.state?.visibleEnemies?.length ?? 0}</td>
       <td>${esc(mode || (d.kind === 'jev_dry_run' ? 'dry run' : '–'))} <span class="muted">${pct(a.mode?.probabilities?.[mode])}</span></td>
       <td>${esc(targetName)} <span class="muted">${pct(a.target?.probabilities?.[target])}</span></td>
@@ -274,6 +279,8 @@ h2 { font-size: 15px; margin: 28px 0 8px; color: var(--ink-2); font-weight: 600;
 .legend .base::before { background: var(--baseline); }
 .legend .hollow::before { width: 8px; height: 8px; border: 2px solid var(--series); background: var(--surface); border-radius: 50%; }
 .legend .filled::before { width: 8px; height: 8px; border-radius: 50%; border: 2px solid var(--series); }
+.legend .square::before { width: 8px; height: 8px; border-radius: 1px; background: var(--ink-2); }
+.forced { fill: var(--ink-2); }
 svg.chart { width: 100%; height: auto; display: block; min-width: 640px; }
 svg.bars { max-width: 420px; min-width: 0; }
 .chartwrap { overflow-x: auto; }
@@ -317,7 +324,7 @@ details summary { cursor: pointer; color: var(--ink-2); }
     ? deltaTile('Clear time', m.seconds, delta.totalTics == null ? null : delta.totalTics / 35, ' s', 1)
     : plainTile('Time alive', `${fmt(m.seconds, 1)} s`, `did not clear (${esc(trial.run?.failure || 'failed')})`)}
   ${plainTile('Kills', fmt(m.kills), delta.kills == null ? 'not ranked' : `${signed(delta.kills)} vs baseline · not ranked`)}
-  ${plainTile('Jev calls', trial.decisions.length ? `${policy.calls ?? trial.decisions.length}` : '0', policy.overrides != null ? `${policy.overrides} overrides · ${policy.capped ? 'capped' : 'not capped'}` : '')}
+  ${plainTile('Jev calls', trial.decisions.length ? `${policy.calls ?? trial.decisions.length}` : '0', policy.overrides != null ? `${policy.overrides} overrides${policy.rules ? ` · rules: stall ${policy.rules.stall ?? 0}, point-blank ${policy.rules.pointBlank ?? 0}` : ''}${policy.capped ? ' · capped' : ''}` : '')}
   ${plainTile('Estimated cost', policy.estimatedInputCostUsd != null ? `$${fmt(policy.estimatedInputCostUsd, 4)}` : '–', policy.inputTokens != null ? `${fmt(policy.inputTokens)} input tokens · ${policy.avgLatencyMs != null ? `${policy.avgLatencyMs} ms avg` : 'dry run'}` : '')}
 </div>
 
@@ -327,7 +334,7 @@ details summary { cursor: pointer; color: var(--ink-2); }
   <div class="legend"><span>${esc(trial.report.policy)} run</span>${baseline ? `<span class="base">baseline (${esc(baseline.report.policy)})</span>` : ''}</div>
   <div class="chartwrap">${healthChart(trial, baseline, maxTic)}</div>
   <h3 style="margin-top:14px">Jev mode per consultation${firstTic != null ? ` <span class="muted">(tics ${firstTic}–${lastTic})</span>` : ''}</h3>
-  <div class="legend"><span class="filled">override applied</span><span class="hollow">proposal kept</span></div>
+  <div class="legend"><span class="filled">override applied</span><span class="hollow">proposal kept</span><span class="square">forced by stall rule</span></div>
   <div class="chartwrap">${modeLanes(trial, maxTic)}</div>
   <h3 style="margin-top:14px">Danger score (Jev) <span class="muted">· world tics, 35 = 1 s</span></h3>
   <div class="chartwrap">${dangerChart(trial, maxTic)}</div>
