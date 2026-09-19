@@ -92,12 +92,35 @@ service never affects gameplay and every run stays replayable from
 `steps.jsonl`. Set `source` on a returned command (for example `'jev'`) to have
 it recorded in the step log.
 
+## Determinism
+
+The world only advances through exact-tic steps, so a trial is a pure function
+of the engine state at its first step. Two things had to be pinned for that:
+
+1. `coldBoot(..., { pauseOnReady: true })` freezes the world inside the
+   readiness poll instead of after it, cutting the boot race to 0-2 tics.
+2. The runner then issues idle exact-tic steps until `levelTime` equals
+   `START_LEVEL_TIC` (3), so every trial's control loop starts on the same
+   world tic. `report.summary.levelTimeAtPause` shows the raw race per run and
+   `startLevelTic` the normalised value.
+
+Without step 2, runs that froze on tic 0 and tic 1 diverged by ~20 tics.
+
 ## Reference results
 
-Shareware E1M1, god mode, this environment:
+Shareware E1M1, this environment (Chromium headless, Playwright 1.55):
 
 ```text
-route     20 transitions (5 doors, 1 lift), 0 keys
-exit      line 330, special 11 (switch)
-result    CLEARED, 1296 world tics (~37 s game time), 488 steps
+route          20 transitions (5 doors, 1 lift), 0 keys
+exit           line 330, special 11 (switch)
+
+god mode x3    CLEARED 3/3, 1296 world tics each (~37 s game time), 488 steps
+               levelTimeAtPause 2/1/0 -> startLevelTic 3/3/3, deterministic: true
+live monsters  CLEARED 1/1, 1167 world tics, 0 deaths, min health 67
 ```
+
+The live run cleared without any combat policy: the route follower simply
+outran the E1M1 opposition while taking 33 damage. That is the baseline a
+layer-2 policy has to beat (fewer damage, fewer tics, higher clear rate on
+harder maps), and `steps.jsonl` from the live run marks where enemies were
+visible so the policy's decision points can be chosen from data.

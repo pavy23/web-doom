@@ -35,6 +35,10 @@ const DEFAULT_IWAD = path.join(here, '..', 'doom1.wad');
 const DEFAULT_EXPORT_DIR = path.join(here, 'exports');
 const GS_LEVEL = 0;
 const GS_INTERMISSION = 1;
+// Every trial starts its control loop at this level tic. warpAndPause freezes
+// the world within one frame of the level becoming playable, which still
+// leaves a 0-2 tic race; stepping up to a fixed reference tic removes it.
+const START_LEVEL_TIC = 3;
 
 let authoringInstalled = false;
 function ensureAuthoring() {
@@ -215,10 +219,8 @@ export async function runStageAttempt(page, stage, options = {}) {
     })}\n`);
   };
 
-  const initial = await engineState(page);
+  let initial = await engineState(page);
   attempt.startSector = Number(initial.currentSector);
-  // Level tics that ran before the world was frozen; 0-2 is the boot race.
-  attempt.levelTimeAtPause = Number(initial.levelTime ?? -1);
   if (attempt.startSector !== progression.startSector) {
     throw new Error(`Runtime start sector ${attempt.startSector} differs from static plan ${progression.startSector}`);
   }
@@ -226,6 +228,23 @@ export async function runStageAttempt(page, stage, options = {}) {
   await page.evaluate(() => window.DoomControl.setPlaytestPaused(true));
   await page.evaluate(() => window.DoomControl.cancelAgentInput());
   await page.evaluate(() => window.DoomControl.resetPlaytestMetrics());
+
+  // Level tics that ran before the world was frozen; 0-2 is the boot race.
+  // Idle exact-tic steps bring every trial to the same reference tic.
+  attempt.levelTimeAtPause = Number(initial.levelTime ?? -1);
+  if (attempt.levelTimeAtPause >= 0 && attempt.levelTimeAtPause < START_LEVEL_TIC) {
+    let guard = 0;
+    while (Number(initial.levelTime) < START_LEVEL_TIC && guard++ < 4) {
+      const missing = START_LEVEL_TIC - Number(initial.levelTime);
+      const idle = await exactInput(page, { forward: 0, strafe: 0, turn: 0, attack: false, use: false, tics: missing });
+      initial = idle.state;
+    }
+  }
+  attempt.startLevelTic = Number(initial.levelTime ?? -1);
+  if (attempt.startLevelTic !== START_LEVEL_TIC) {
+    throw new Error(`Could not normalise start tic: level tic ${attempt.startLevelTic}, expected ${START_LEVEL_TIC}`);
+  }
+
   if (config.godMode) attempt.cheat = await page.evaluate(() => window.DoomControl.setGodMode(true));
 
   const transitions = progression.transitions;
@@ -360,7 +379,9 @@ export async function runStageClearTrial(input = {}) {
     clearRate: report.runs.length ? passedRuns.length / report.runs.length : 0,
     totalTics: report.runs.map(run => run.totalTics ?? null),
     levelTimeAtPause: report.runs.map(run => run.levelTimeAtPause ?? null),
-    deterministic: passedRuns.length > 1 && passedRuns.every(run => run.totalTics === passedRuns[0].totalTics),
+    startLevelTic: report.runs.map(run => run.startLevelTic ?? null),
+    deterministic: passedRuns.length > 1 && passedRuns.every(run => run.totalTics === passedRuns[0].totalTics
+      && run.startLevelTic === passedRuns[0].startLevelTic),
     deaths: report.runs.map(run => run.telemetry?.deaths ?? null),
     minHealth: report.runs.map(run => run.telemetry?.minHealth ?? null)
   };
