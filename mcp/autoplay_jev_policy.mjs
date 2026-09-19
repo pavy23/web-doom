@@ -14,7 +14,7 @@ import { appendFile } from 'node:fs/promises';
 
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 
-export const JEV_POLICY_VERSION = '0.4.3-jev-policy';
+export const JEV_POLICY_VERSION = '0.5.0-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -306,6 +306,8 @@ export async function createJevPolicy(options = {}) {
     meleeRange: 96,            // ... with an enemy this close -> forced fight
     dodgeHoldCalls: 4,         // dodge answers per strafe side before flipping
     pointBlankDistance: 96,    // aligned target this close is always fired at
+    lootShotgun: true,         // after killing a shotgun guy with the pistol, walk over its dropped shotgun
+    lootTimeoutTics: 140,      // give the detour at most 4 s
     runThreshold: 0.5,         // safeToRun noul at or above this keeps advancing
     runHysteresis: 0.1,        // band around runThreshold before the mode flips
     retreatMaxDistance: 320,   // retreat only from enemies inside this distance
@@ -320,10 +322,56 @@ export async function createJevPolicy(options = {}) {
   const stats = {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
-    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0 }
+    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 }
   };
   let lastMode = null;
   let lastTarget = null;       // the enemy fought at the previous consultation (sticky target)
+  let lastKills = null;
+  let loot = null;             // { x, y, sinceTic, shells } dropped shotgun to walk over
+
+  // World position of an enemy from the player's pose and the enemy's polar
+  // coordinates (relativeAngle > 0 = left = CCW, matching the follower).
+  function enemyWorldPosition(player, enemy) {
+    const heading = (Number(player.angle) + Number(enemy.bearing)) * Math.PI / 180;
+    return { x: Number(player.x) + Number(enemy.distance) * Math.cos(heading), y: Number(player.y) + Number(enemy.distance) * Math.sin(heading) };
+  }
+
+  // Loot rule: a kill while the pistol is out and the last fight target was a
+  // shotgun guy means a shotgun lies where it stood; walk over it. No API
+  // call is spent on these steps. Ends on pickup (shells rise or the weapon
+  // switches), on arrival with nothing there, or on the timeout.
+  async function lootStep(state) {
+    const player = state.player || {};
+    const tic = Number(state.levelTime);
+    const picked = Number(player.weapon) === 2 || Number(player.ammo?.shells ?? 0) > loot.shells;
+    const dist = Math.hypot(loot.x - Number(player.x), loot.y - Number(player.y));
+    if (picked || dist < 20 || tic - loot.sinceTic > config.lootTimeoutTics) {
+      if (picked) stats.rules.lootPicked++; else stats.rules.lootGivenUp++;
+      await record({ kind: 'loot_end', tic, picked, distance: round(dist), tics: tic - loot.sinceTic });
+      loot = null;
+      return null;
+    }
+    let desired = Math.atan2(loot.y - Number(player.y), loot.x - Number(player.x)) * 180 / Math.PI;
+    let delta = desired - Number(player.angle);
+    while (delta > 180) delta -= 360;
+    while (delta < -180) delta += 360;
+    stats.rules.lootSteps++;
+    const meta = { source: 'jev', mode: 'loot', target: 'none', fire: false, danger: 0, rules: ['loot'] };
+    if (Math.abs(delta) > 12) { const aim = aimStep(delta); return { forward: 0, strafe: 0, turn: aim.turn, attack: false, use: false, tics: aim.tics, ...meta }; }
+    return { forward: 0.62, strafe: 0, turn: aimStep(delta).turn, attack: false, use: false, tics: 3, ...meta };
+  }
+
+  async function lootCheck(state) {
+    const player = state?.player || {};
+    const kills = Number(player.kills ?? 0);
+    const killedNow = lastKills != null && kills > lastKills;
+    lastKills = kills;
+    if (!config.lootShotgun) return;
+    if (!loot && killedNow && lastTarget?.name === 'shotgun_guy' && lastTarget.world && Number(player.weapon) === 1) {
+      loot = { ...lastTarget.world, sinceTic: Number(state.levelTime), shells: Number(player.ammo?.shells ?? 0) };
+      await record({ kind: 'loot_start', tic: loot.sinceTic, x: round(loot.x), y: round(loot.y), from: { x: round(player.x), y: round(player.y) } });
+    }
+  }
   let stepsSinceCall = Infinity;
   let dodgeSide = 1;
   let dodgeRun = 0;            // consecutive dodge answers on the current side
@@ -354,9 +402,12 @@ export async function createJevPolicy(options = {}) {
     const stalled = detectStall(state, compact);
     return { ...config, dodgeSide, lastTarget, ...(stalled ? { forceMode: 'fight' } : {}) };
   }
-  function rememberTarget(command, compact) {
-    if (!command || !['fight', 'retreat'].includes(command.mode)) { lastTarget = null; return; }
-    lastTarget = compact.visibleEnemies.find(enemy => enemy.id === command.target) || null;
+  function rememberTarget(command, compact, state) {
+    if (!command || !['fight', 'retreat', 'advance'].includes(command.mode) || !command.attack) {
+      if (!command || !['fight', 'retreat'].includes(command.mode)) { lastTarget = null; return; }
+    }
+    const enemy = compact.visibleEnemies.find(item => item.id === command.target) || null;
+    lastTarget = enemy ? { ...enemy, world: enemyWorldPosition(state.player || {}, enemy) } : null;
   }
 
   async function record(entry) {
@@ -382,6 +433,11 @@ export async function createJevPolicy(options = {}) {
     const consult = shouldConsult(state, config, { lastHealth });
     lastHealth = Number(state?.player?.health ?? lastHealth);
     const lost = recentDamage(state);
+    await lootCheck(state);
+    if (loot) {
+      const lootCommand = await lootStep(state);
+      if (lootCommand) { stats.overrides++; return lootCommand; }
+    }
     if (!consult) return null;
     stats.eligibleSteps++;
     if (stepsSinceCall < config.minStepsBetweenCalls) {
@@ -432,7 +488,7 @@ export async function createJevPolicy(options = {}) {
     lastDecision = { answers: result.answers, compact };
     const options = ruleOptions(compact, state);
     const command = answersToCommand(result.answers, compact, proposal, options);
-    rememberTarget(command, compact);
+    rememberTarget(command, compact, state);
     if (command) stats.overrides++;
     for (const rule of command?.rules || []) stats.rules[rule] = (stats.rules[rule] || 0) + 1;
     await record({
