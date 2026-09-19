@@ -268,6 +268,7 @@ export async function navigateEdge(page, graph, edge, options = {}) {
   let liftLastFloor = null;
   let liftStillTics = 0;      // tics the platform has not moved while we wait on it
   let liftRecross = false;    // step off and back on to re-fire a walk-over lift trigger
+  let liftLeaveSteps = 0;     // consecutive walk-off steps that outranked the policy
   if (edge.kind === 'lift' && edge.tag) {
     if (graph.nodes[edge.from]?.tag === edge.tag) { liftSector = edge.from; liftTargetFloor = graph.nodes[edge.to].floor; }
     else if (graph.nodes[edge.to]?.tag === edge.tag) { liftSector = edge.to; liftTargetFloor = graph.nodes[edge.from].floor; }
@@ -361,20 +362,33 @@ export async function navigateEdge(page, graph, edge, options = {}) {
       if (liftStillTics >= 28) { liftRecross = true; liftStillTics = 0; }
       const aim = Math.abs(delta) > 10 ? (delta > 0 ? -0.3 : 0.3) : 0;
       command = { forward: 0, strafe: 0, turn: aim, attack: false, use: edge.action === 'use', tics: 4, source: 'geometric', lift: 'wait' };
-      transitPriority = true;
+      // The policy may fight from the platform (a stationary override keeps
+      // the USE), but it may not walk the player off it.
+      transitPriority = 'stationary';
+      liftLeaveSteps = 0;
     } else if (liftLevel === true && onPlatform) {
-      // Level: leave now, before it cycles. The policy does not get this step.
-      transitPriority = true;
+      // Level: leave now, before it cycles. The walk-off outranks the policy
+      // for a few steps; if the player is still on the platform after that
+      // something blocks the way (a monster in the portal) and the policy,
+      // whose stall rule fights, gets the step back.
+      liftLeaveSteps++;
+      transitPriority = liftLeaveSteps <= 6;
       command = { ...command, lift: 'leave' };
+    } else {
+      liftLeaveSteps = 0;
     }
 
     // Optional external policy (for example a System One tactical layer) may
     // replace the geometric command for this step. It receives the raw engine
     // state and the deterministic proposal, and must return a full command or
     // a falsy value to keep the proposal.
-    if (typeof options.decide === 'function' && !transitPriority) {
+    if (typeof options.decide === 'function' && transitPriority !== true) {
       const override = await options.decide({ state, edge, proposal: command, portalDistance, targetDistance, delta, usedTics });
-      if (override) command = override;
+      if (override) {
+        const stationary = Number(override.forward || 0) === 0 && Number(override.strafe || 0) === 0;
+        if (transitPriority !== 'stationary') command = override;
+        else if (stationary) command = { ...override, use: command.use, lift: 'wait' };
+      }
     }
 
     const result = await exactInput(page, command);

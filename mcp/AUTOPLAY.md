@@ -627,6 +627,24 @@ is level the walk-off command outranks the policy for that step (a transit
 step the model does not get). E1M2 god mode with the rules: 3005 tics,
 all five lift edges pass. The 10-run re-trial is below.
 
+```text
+                          cleared     95% CI   damage (cleared)     failures
+lift rules v1             5/10 (50%)  24-76%   72-129, median 120   exit lift 49:48 x2 (USE from the platform does
+  (call / hold / leave)                                             nothing: its trigger is the walk-over line),
+                                                                    121:120 x3 (a fight pushed the player back
+                                                                    onto the lift, which rose with it)
+lift rules v2             7/10 (70%)  40-89%   72-144, median 102   exit lift 49:48 died x2 (walk-off blocked by a
+  (+ re-cross a walk-over                                           monster in the portal while the walk-off
+  trigger, + route-position                                         outranked the policy), trigger 777 died x1
+  recovery)
+```
+
+Each lift version removed the failure it targeted and exposed the next
+one. v3 bounds the walk-off priority to six steps (then the policy, whose
+stall rule fights a blocker, gets the step back) and lets a stationary
+fight override stand while waiting on the platform. Damage on cleared
+runs is 72-144 against the baseline's 183, at 1.1-1.3x its time.
+
 Note on determinism: with 0.4.2 and 0.4.3 all three runs were tic-identical
 (the rules decided every step), while the combat-budget trial's runs
 diverged again (Jev's answers mattered). A policy whose runs are identical
