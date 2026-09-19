@@ -1,0 +1,404 @@
+// Autonomous single-player stage-clear runner.
+//
+// Layer 1 of the autoplay stack: deterministic code plans a route from the
+// Player 1 start to the map exit (P1.3 navigation graph), follows it with the
+// exact-tic browser controller, presses the exit switch and confirms that
+// LinuxDOOM left GS_LEVEL. No AI is involved by default. A `decide` hook lets a
+// tactical policy (for example a TypeSafe System One judgment layer) override
+// individual steps without changing the planning or verification code.
+//
+// CLI:
+//   node autoplay_stage_runner.mjs --map E1M1 --runs 3 [--no-god] [--max-edge-tics 280]
+//
+// Every step is appended to <reportDir>/steps.jsonl and a summary is written to
+// <reportDir>/report.json so later policy layers can be compared tic-for-tic.
+
+import { mkdir, readFile, writeFile, appendFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { parseArgs } from 'node:util';
+
+import { GeometryWorkspace } from './geometry.js';
+import { EpisodeWorkspace } from './episode_workspace.js';
+import { installFullTopologyValidator } from './topology_validator.js';
+import { installThingAuthoring } from './thing_authoring.js';
+import { installSemanticGeometry } from './semantic_geometry.js';
+import { buildNavigationGraph, findExitProgression } from './navigation_graph.js';
+import {
+  coldBoot, exactInput, launchChromium, navigateEdge
+} from './navigation_browser_agent.mjs';
+
+export const AUTOPLAY_VERSION = '0.1.0-autoplay';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_IWAD = path.join(here, '..', 'doom1.wad');
+const DEFAULT_EXPORT_DIR = path.join(here, 'exports');
+const GS_LEVEL = 0;
+const GS_INTERMISSION = 1;
+
+let authoringInstalled = false;
+function ensureAuthoring() {
+  if (authoringInstalled) return;
+  installFullTopologyValidator(GeometryWorkspace);
+  installThingAuthoring(GeometryWorkspace);
+  installSemanticGeometry(GeometryWorkspace);
+  authoringInstalled = true;
+}
+
+function headingDegrees(from, to) {
+  let angle = Math.atan2(Number(to.y) - Number(from.y), Number(to.x) - Number(from.x)) * 180 / Math.PI;
+  if (angle < 0) angle += 360;
+  return angle;
+}
+function angleDelta(current, desired) {
+  let delta = Number(desired) - Number(current);
+  while (delta > 180) delta -= 360;
+  while (delta < -180) delta += 360;
+  return delta;
+}
+function distance(a, b) { return Math.hypot(Number(b.x) - Number(a.x), Number(b.y) - Number(a.y)); }
+
+// Extract the requested IWAD map as a rebuilt single-map PWAD. The browser
+// cold-boot path only accepts PWAD candidates, so the original level is passed
+// through the same pinned node-builder pipeline the authoring tools use.
+export async function prepareStagePwad({ iwadPath = DEFAULT_IWAD, map = 'E1M1', exportDir = DEFAULT_EXPORT_DIR } = {}) {
+  ensureAuthoring();
+  const source = await readFile(iwadPath);
+  const episode = new EpisodeWorkspace(source, [map], path.basename(iwadPath));
+  const workspace = episode.workspaces.get(map);
+  const graph = buildNavigationGraph(workspace);
+  const start = graph.things.starts.find(item => item.doomEdNum === 1 && item.sector != null);
+  if (!start) throw new Error(`${map} has no Player 1 start mapped to a sector`);
+  const progression = findExitProgression(graph, start.sector);
+  if (!progression.found) throw new Error(`${map}: ${progression.reason}`);
+
+  const filename = `autoplay-${map.toLowerCase()}.wad`;
+  const candidate = await episode.build({ filename });
+  await mkdir(exportDir, { recursive: true });
+  const wadPath = path.join(exportDir, candidate.filename);
+  await writeFile(wadPath, candidate.bytes);
+  return { map, filename: candidate.filename, wadPath, graph, start, progression };
+}
+
+async function engineState(page) { return page.evaluate(() => window.DoomControl.getState()); }
+async function telemetry(page) { return page.evaluate(() => window.DoomControl.getPlaytestTelemetry()); }
+
+// Level completion is observable without a dedicated engine flag: once the
+// exit special fires, G_Ticker moves gamestate out of GS_LEVEL and the state
+// JSON reports ready=false with the raw gamestate value.
+export async function waitForLevelExit(page, timeout = 6000) {
+  await page.waitForFunction(level => {
+    try {
+      const state = window.DoomControl.getState();
+      return state && state.ready === false && Number(state.gameState) !== level;
+    } catch { return false; }
+  }, GS_LEVEL, { timeout });
+  return engineState(page);
+}
+
+// Walk from the final route sector to the exit line and press it. The exit
+// switch (special 11 / 51) needs USE while facing the line; walk-over exits
+// (52 / 124) only need the crossing.
+export async function approachAndUseExit(page, exit, options = {}) {
+  const maxTics = Number(options.maxTics || 350);
+  const target = exit.midpoint;
+  const trace = [];
+  let usedTics = 0;
+  let lastDistance = Infinity;
+  let stalled = 0;
+  let recoverySide = 1;
+
+  while (usedTics < maxTics) {
+    const state = await engineState(page);
+    if (state?.ready === false && Number(state.gameState) !== GS_LEVEL) {
+      return { passed: true, usedTics, trace, finalState: state };
+    }
+    if (!state?.ready || !state.player) throw new Error('Exit approach lost player state');
+    if (Number(state.player.health || 0) <= 0) return { passed: false, usedTics, trace, failure: 'player_dead', finalState: state };
+
+    const position = { x: Number(state.player.x), y: Number(state.player.y) };
+    const targetDistance = distance(position, target);
+    const desired = headingDegrees(position, target);
+    const delta = angleDelta(Number(state.player.angle), desired);
+    let command;
+
+    if (targetDistance >= lastDistance - 0.75) stalled++;
+    else stalled = Math.max(0, stalled - 1);
+    lastDistance = targetDistance;
+
+    if (stalled >= 7) {
+      command = { forward: 0.25, strafe: 0.55 * recoverySide, turn: -0.18 * recoverySide, use: exit.trigger === 'use', tics: 3 };
+      recoverySide *= -1;
+      stalled = 0;
+    } else if (Math.abs(delta) > 8) {
+      const magnitude = Math.min(0.7, Math.max(0.16, Math.abs(delta) / 90 * 0.55));
+      command = { turn: delta > 0 ? -magnitude : magnitude, use: false, tics: Math.abs(delta) > 50 ? 3 : 2 };
+    } else if (targetDistance < 40) {
+      // Vanilla USE reach is 64 units; keep pushing gently into the line while
+      // holding USE so switch and walk-over exits both trigger.
+      command = { forward: 0.35, turn: 0, use: exit.trigger === 'use', tics: 3 };
+    } else {
+      command = { forward: 0.62, turn: delta > 3 ? -0.08 : delta < -3 ? 0.08 : 0, use: false, tics: 4 };
+    }
+
+    if (typeof options.decide === 'function') {
+      const override = await options.decide({ state, edge: null, exit, proposal: command, targetDistance, delta, usedTics });
+      if (override) command = override;
+    }
+
+    let result;
+    try {
+      result = await exactInput(page, command);
+    } catch (error) {
+      // queueAgentInput rejects with -1 once gamestate leaves GS_LEVEL. That is
+      // the success path when USE fired on the previous step.
+      const state = await engineState(page).catch(() => null);
+      if (state?.ready === false && Number(state.gameState) !== GS_LEVEL) {
+        return { passed: true, usedTics, trace, finalState: state };
+      }
+      throw error;
+    }
+    usedTics += result.tics;
+    if (typeof options.onStep === 'function') {
+      await options.onStep({ edge: null, exit, state, command, result, usedTics, targetDistance, delta });
+    }
+    if (trace.length < 80) trace.push({ tics: usedTics, x: position.x, y: position.y, targetDistance, delta, command });
+
+    if (command.use) {
+      try {
+        const after = await waitForLevelExit(page, 1500);
+        return { passed: true, usedTics, trace, finalState: after };
+      } catch { /* not yet; keep approaching */ }
+    }
+  }
+  const finalState = await engineState(page);
+  return { passed: false, usedTics, trace, failure: 'exit_tic_budget_exhausted', finalState };
+}
+
+// One full stage attempt on an already-open page.
+export async function runStageAttempt(page, stage, options = {}) {
+  const config = { maxTicsPerEdge: 280, godMode: true, ...options };
+  const { graph, progression } = stage;
+  const attempt = {
+    version: AUTOPLAY_VERSION,
+    map: stage.map,
+    godMode: Boolean(config.godMode),
+    startedAt: new Date().toISOString(),
+    passed: false,
+    plannedSectors: progression.sectors,
+    exit: progression.exit,
+    edgeResults: [],
+    steps: 0,
+    totalTics: 0
+  };
+  const stepLog = config.stepLog;
+  let stepIndex = 0;
+  let lastTelemetry = null;
+  const onStep = async (event) => {
+    stepIndex++;
+    attempt.steps = stepIndex;
+    if (event.result?.telemetry?.ready) lastTelemetry = event.result.telemetry;
+    if (!stepLog) return;
+    const player = event.result.state?.player || {};
+    await appendFile(stepLog, `${JSON.stringify({
+      run: config.runIndex ?? 0,
+      step: stepIndex,
+      worldTics: event.result.telemetry?.worldTics ?? null,
+      edge: event.edge ? event.edge.id : 'exit',
+      sector: event.result.state?.currentSector ?? null,
+      x: player.x, y: player.y, angle: player.angle,
+      health: player.health, armor: player.armor,
+      visibleEnemies: event.result.state?.visibleEnemyCount ?? null,
+      doorOpening: event.doorOpening ?? null,
+      command: event.command,
+      source: event.command?.source || 'geometric'
+    })}\n`);
+  };
+
+  const initial = await engineState(page);
+  attempt.startSector = Number(initial.currentSector);
+  // Level tics that ran before the world was frozen; 0-2 is the boot race.
+  attempt.levelTimeAtPause = Number(initial.levelTime ?? -1);
+  if (attempt.startSector !== progression.startSector) {
+    throw new Error(`Runtime start sector ${attempt.startSector} differs from static plan ${progression.startSector}`);
+  }
+
+  await page.evaluate(() => window.DoomControl.setPlaytestPaused(true));
+  await page.evaluate(() => window.DoomControl.cancelAgentInput());
+  await page.evaluate(() => window.DoomControl.resetPlaytestMetrics());
+  if (config.godMode) attempt.cheat = await page.evaluate(() => window.DoomControl.setGodMode(true));
+
+  const transitions = progression.transitions;
+  let index = 0;
+  while (index < transitions.length) {
+    const edge = transitions[index].edge;
+    const next = transitions[index + 1]?.edge || null;
+    const laterSectors = new Set(progression.sectors.slice(index + 2));
+    const result = await navigateEdge(page, graph, edge, {
+      maxTicsPerEdge: config.maxTicsPerEdge,
+      decide: config.decide,
+      onStep,
+      acceptSectors: laterSectors,
+      useNearPortal: Boolean(next && next.action === 'use'),
+      doorSector: edge.action === 'use' ? Number(edge.to) : (next && next.action === 'use' ? Number(next.to) : null)
+    });
+    attempt.totalTics += result.usedTics;
+    attempt.edgeResults.push({
+      edge: edge.id, kind: edge.kind, action: edge.action,
+      passed: result.passed, usedTics: result.usedTics, failure: result.failure || null,
+      endSector: result.finalState?.currentSector ?? null,
+      health: result.finalState?.player?.health ?? null
+    });
+    if (!result.passed) {
+      attempt.failure = result.failure || 'edge_failed';
+      attempt.failedEdge = edge.id;
+      break;
+    }
+    // Continue from wherever the player actually landed on the planned route.
+    const landed = progression.sectors.indexOf(Number(result.reachedSector));
+    index = landed > index ? landed : index + 1;
+  }
+
+  if (!attempt.failure) {
+    const exitResult = await approachAndUseExit(page, progression.exit, { decide: config.decide, onStep });
+    attempt.totalTics += exitResult.usedTics;
+    attempt.exitResult = {
+      passed: exitResult.passed, usedTics: exitResult.usedTics, failure: exitResult.failure || null,
+      finalGameState: exitResult.finalState?.gameState ?? null
+    };
+    attempt.passed = exitResult.passed;
+    if (!exitResult.passed) attempt.failure = exitResult.failure || 'exit_failed';
+    else attempt.levelExitedTo = { episode: exitResult.finalState?.episode, map: exitResult.finalState?.map };
+  }
+
+  // After the exit fires the engine is in intermission and reports no player,
+  // so the last in-level telemetry sample is the run's final measurement.
+  const live = await telemetry(page).catch(() => null);
+  attempt.telemetry = live?.ready ? live : lastTelemetry;
+  attempt.completedAt = new Date().toISOString();
+  return attempt;
+}
+
+export async function runStageClearTrial(input = {}) {
+  const config = {
+    map: 'E1M1',
+    runs: 1,
+    godMode: true,
+    maxTicsPerEdge: 280,
+    iwadPath: DEFAULT_IWAD,
+    exportDir: DEFAULT_EXPORT_DIR,
+    reportDir: path.join(DEFAULT_EXPORT_DIR, 'autoplay', String(input.map || 'E1M1').toLowerCase()),
+    playUrl: `http://127.0.0.1:${Number(process.env.DOOM_MCP_PORT || 3777)}/`,
+    ...input
+  };
+  await mkdir(config.reportDir, { recursive: true });
+  const stepLog = path.join(config.reportDir, 'steps.jsonl');
+  await writeFile(stepLog, '');
+
+  const stage = await prepareStagePwad(config);
+  const wadBase64 = (await readFile(stage.wadPath)).toString('base64');
+  const report = {
+    version: AUTOPLAY_VERSION,
+    map: config.map,
+    godMode: Boolean(config.godMode),
+    runs: [],
+    plan: {
+      startSector: stage.progression.startSector,
+      sectors: stage.progression.sectors,
+      transitions: stage.progression.transitions.map(t => ({ edge: t.edge.id, kind: t.edge.kind, action: t.edge.action })),
+      exit: stage.progression.exit,
+      keys: stage.progression.keys
+    },
+    startedAt: new Date().toISOString(),
+    stepLog
+  };
+
+  const browser = await launchChromium();
+  try {
+    for (let runIndex = 0; runIndex < Number(config.runs); runIndex++) {
+      const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+      const diagnostics = [];
+      page.on('pageerror', error => diagnostics.push({ type: 'pageerror', message: String(error?.message || error) }));
+      page.on('console', message => { if (message.type() === 'error') diagnostics.push({ type: 'console', message: message.text() }); });
+      let attempt;
+      try {
+        await coldBoot(page, {
+          playUrl: config.playUrl, filename: stage.filename, map: config.map,
+          coldBootTimeoutMs: config.coldBootTimeoutMs, pauseOnReady: true
+        }, wadBase64);
+        attempt = await runStageAttempt(page, stage, { ...config, runIndex, stepLog });
+      } catch (error) {
+        attempt = { passed: false, failure: 'browser_trial_error', error: String(error?.stack || error?.message || error) };
+      } finally {
+        if (config.captureFrame !== false) {
+          try {
+            const frame = await page.evaluate(() => window.DoomControl.captureFrame());
+            if (frame?.base64) {
+              const shot = path.join(config.reportDir, `run-${runIndex}.png`);
+              await writeFile(shot, Buffer.from(frame.base64, 'base64'));
+              if (attempt) attempt.screenshot = shot;
+            }
+          } catch {}
+        }
+        await page.close().catch(() => {});
+      }
+      attempt.runIndex = runIndex;
+      attempt.diagnostics = diagnostics;
+      report.runs.push(attempt);
+      console.error(`autoplay ${config.map} run ${runIndex}: ${attempt.passed ? 'CLEARED' : 'FAILED'} ${JSON.stringify({
+        totalTics: attempt.totalTics, steps: attempt.steps, failure: attempt.failure || null, failedEdge: attempt.failedEdge || null
+      })}`);
+    }
+  } finally {
+    await browser.close();
+  }
+
+  const passedRuns = report.runs.filter(run => run.passed);
+  report.summary = {
+    runs: report.runs.length,
+    cleared: passedRuns.length,
+    clearRate: report.runs.length ? passedRuns.length / report.runs.length : 0,
+    totalTics: report.runs.map(run => run.totalTics ?? null),
+    levelTimeAtPause: report.runs.map(run => run.levelTimeAtPause ?? null),
+    deterministic: passedRuns.length > 1 && passedRuns.every(run => run.totalTics === passedRuns[0].totalTics),
+    deaths: report.runs.map(run => run.telemetry?.deaths ?? null),
+    minHealth: report.runs.map(run => run.telemetry?.minHealth ?? null)
+  };
+  report.passed = report.runs.length > 0 && passedRuns.length === report.runs.length;
+  report.completedAt = new Date().toISOString();
+  report.reportPath = path.join(config.reportDir, 'report.json');
+  await writeFile(report.reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  return report;
+}
+
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  const { values } = parseArgs({
+    options: {
+      map: { type: 'string', default: 'E1M1' },
+      runs: { type: 'string', default: '1' },
+      god: { type: 'boolean', default: true },
+      'max-edge-tics': { type: 'string', default: '280' },
+      'report-dir': { type: 'string' }
+    },
+    allowNegative: true
+  });
+  const { startBridge } = await import('./server.js');
+  const bridge = startBridge();
+  try {
+    const report = await runStageClearTrial({
+      map: String(values.map).toUpperCase(),
+      runs: Number(values.runs),
+      godMode: Boolean(values.god),
+      maxTicsPerEdge: Number(values['max-edge-tics']),
+      ...(values['report-dir'] ? { reportDir: path.resolve(values['report-dir']) } : {})
+    });
+    console.error(`autoplay summary: ${JSON.stringify(report.summary)} (report: ${report.reportPath})`);
+    process.exitCode = report.passed ? 0 : 1;
+  } catch (error) {
+    console.error(error?.stack || error);
+    process.exitCode = 1;
+  } finally {
+    bridge.close();
+    process.exit();
+  }
+}

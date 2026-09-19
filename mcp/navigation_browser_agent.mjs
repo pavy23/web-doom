@@ -33,15 +33,19 @@ function crossingPoint(edge, targetCenter) {
   const length = Math.hypot(dx, dy) || 1;
   return { x: Number(edge.midpoint.x) + dx / length * 28, y: Number(edge.midpoint.y) + dy / length * 28 };
 }
-async function launchChromium() {
+export async function launchChromium() {
   const args = ['--autoplay-policy=no-user-gesture-required'];
+  // Optional override for hosts whose preinstalled Chromium build does not
+  // match the pinned Playwright revision (for example a shared CI image).
+  const executablePath = String(process.env.DOOM_MCP_CHROMIUM_EXECUTABLE || '').trim();
+  if (executablePath) return chromium.launch({ headless: true, args, executablePath });
   try { return await chromium.launch({ headless: true, args }); }
   catch (firstError) {
     try { return await chromium.launch({ headless: true, channel: 'chrome', args }); }
     catch { throw new Error(`Unable to launch Chromium: ${firstError?.message || firstError}`); }
   }
 }
-async function waitForRuntime(page, timeout = 120000) {
+export async function waitForRuntime(page, timeout = 120000) {
   await page.waitForFunction(() => typeof Module !== 'undefined'
     && typeof Module.ccall === 'function'
     && typeof window.DoomControl?.getState === 'function'
@@ -115,7 +119,7 @@ async function waitForPlayable(page, expected, timeout = 30000) {
   }, expected, { timeout });
   return page.evaluate(() => window.DoomControl.getState());
 }
-async function warp(page, mapName) {
+export async function warp(page, mapName) {
   const expected = mapWarpArgs(mapName);
   const result = await page.evaluate(({ episode, map }) => Module.ccall(
     'doomctl_warp', 'number', ['number', 'number'], [episode, map]
@@ -123,7 +127,27 @@ async function warp(page, mapName) {
   if (result !== 1) throw new Error(`LinuxDOOM rejected warp to ${mapName}`);
   return waitForPlayable(page, expected);
 }
-async function coldBoot(page, config, wadBase64) {
+// Warp and freeze the world on the first frame the level is playable. The
+// plain warp leaves the simulation running until the caller pauses it, and
+// that wall-clock gap makes two otherwise identical trials diverge by a few
+// tics. Pausing inside the readiness poll keeps the gap to at most one frame.
+export async function warpAndPause(page, mapName, timeout = 30000) {
+  const expected = mapWarpArgs(mapName);
+  const result = await page.evaluate(({ episode, map }) => Module.ccall(
+    'doomctl_warp', 'number', ['number', 'number'], [episode, map]
+  ), expected);
+  if (result !== 1) throw new Error(`LinuxDOOM rejected warp to ${mapName}`);
+  await page.waitForFunction(({ episode, map }) => {
+    try {
+      const state = window.DoomControl.getState();
+      if (!state?.ready || Number(state.episode) !== episode || Number(state.map) !== map) return false;
+      window.DoomControl.setPlaytestPaused(true);
+      return true;
+    } catch { return false; }
+  }, expected, { timeout, polling: 'raf' });
+  return page.evaluate(() => window.DoomControl.getState());
+}
+export async function coldBoot(page, config, wadBase64) {
   await page.goto(config.playUrl || DEFAULT_PLAY_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
   await waitForRuntime(page);
   const navigation = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 120000 });
@@ -136,9 +160,9 @@ async function coldBoot(page, config, wadBase64) {
   await waitForColdBoot(page, config.filename, Number(config.coldBootTimeoutMs || DEFAULT_COLD_BOOT_TIMEOUT_MS));
   await page.waitForSelector('#start.ready:not([disabled])', { timeout: 30000 });
   await page.click('#start');
-  return warp(page, config.map);
+  return config.pauseOnReady ? warpAndPause(page, config.map) : warp(page, config.map);
 }
-async function exactInput(page, command) {
+export async function exactInput(page, command) {
   const tics = Math.max(1, Math.min(12, Math.trunc(command.tics || 1)));
   const before = await page.evaluate(() => window.DoomControl.getPlaytestTelemetry());
   const status = await page.evaluate(() => window.DoomControl.getAgentInputStatus());
@@ -156,7 +180,32 @@ async function exactInput(page, command) {
     tics
   };
 }
-async function navigateEdge(page, graph, edge, options = {}) {
+// Live floor/ceiling opening of one sector (world units). Returns null when
+// the engine cannot report it (for example before the level is ready).
+export async function liveSectorOpening(page, sectorIndex) {
+  const index = Math.trunc(Number(sectorIndex));
+  if (!Number.isFinite(index) || index < 0) return null;
+  return page.evaluate(wanted => {
+    const json = Module.ccall('doomctl_get_sectors_json', 'string', ['number'], [wanted + 1]);
+    const parsed = JSON.parse(json);
+    const row = parsed?.sectors?.find(item => Number(item.index) === wanted);
+    return row ? Number(row.ceiling) - Number(row.floor) : null;
+  }, index);
+}
+
+const PLAYER_HEIGHT_UNITS = 56;
+
+// Vanilla EV_VerticalDoor toggles a door that is already moving: USE while
+// opening starts it closing again. So USE is only pressed when the tracked
+// door is closed or closing, never while it is opening or standing open.
+function decideDoorUse(opening, previousOpening) {
+  if (opening == null) return null;
+  const rising = previousOpening != null && opening > previousOpening + 0.25;
+  if (rising) return false;
+  return opening < PLAYER_HEIGHT_UNITS;
+}
+
+export async function navigateEdge(page, graph, edge, options = {}) {
   const maxTics = Number(options.maxTicsPerEdge || 210);
   const targetNode = graph.nodes[edge.to];
   const cross = crossingPoint(edge, targetNode.center);
@@ -165,12 +214,29 @@ async function navigateEdge(page, graph, edge, options = {}) {
   let lastDistance = Infinity;
   let stalled = 0;
   let recoverySide = 1;
+  // Door awareness: a door edge tracks its own target sector; an edge that
+  // ends in a thin door frame tracks the door behind it (options.doorSector).
+  const doorSector = options.doorSector != null ? Number(options.doorSector)
+    : (edge.action === 'use' ? Number(edge.to) : null);
+  let previousOpening = null;
 
   while (usedTics < maxTics) {
     const state = await page.evaluate(() => window.DoomControl.getState());
     if (!state?.ready || !state.player) throw new Error('Navigation runtime lost player state');
-    if (Number(state.currentSector) === Number(edge.to)) {
-      return { passed: true, edge, usedTics, trace, finalState: state };
+    let wantUse = edge.action === 'use' || Boolean(options.useNearPortal);
+    let doorOpening = null;
+    if (doorSector != null) {
+      doorOpening = await liveSectorOpening(page, doorSector);
+      const decided = decideDoorUse(doorOpening, previousOpening);
+      if (decided != null) wantUse = decided;
+      previousOpening = doorOpening;
+    }
+    // A thin sector (door frame, step lip) can be crossed without the player
+    // centre ever registering inside it; callers may list any later route
+    // sector as an acceptable landing so the follower does not chase it.
+    const reached = Number(state.currentSector);
+    if (reached === Number(edge.to) || (options.acceptSectors && options.acceptSectors.has(reached))) {
+      return { passed: true, edge, usedTics, trace, finalState: state, reachedSector: reached };
     }
     if (Number(state.player.health || 0) <= 0) return { passed: false, edge, usedTics, trace, failure: 'player_dead', finalState: state };
 
@@ -187,7 +253,7 @@ async function navigateEdge(page, graph, edge, options = {}) {
     lastDistance = targetDistance;
 
     if (stalled >= 7) {
-      command = { forward: 0.25, strafe: 0.55 * recoverySide, turn: -0.18 * recoverySide, use: edge.action === 'use', tics: 3 };
+      command = { forward: 0.25, strafe: 0.55 * recoverySide, turn: -0.18 * recoverySide, use: wantUse, tics: 3 };
       recoverySide *= -1;
       stalled = 0;
     } else if (Math.abs(delta) > 10) {
@@ -199,13 +265,28 @@ async function navigateEdge(page, graph, edge, options = {}) {
       command = {
         forward: nearPortal ? 0.72 : 0.62,
         turn: delta > 3 ? -0.08 : delta < -3 ? 0.08 : 0,
-        use: edge.action === 'use' && nearPortal,
+        // useNearPortal covers a door that starts immediately behind this
+        // portal: the closed door blocks the player radius before the centre
+        // can enter the thin door-frame sector, so USE must be pressed here.
+        use: wantUse && nearPortal,
         tics: nearPortal ? 3 : 4
       };
     }
 
+    // Optional external policy (for example a System One tactical layer) may
+    // replace the geometric command for this step. It receives the raw engine
+    // state and the deterministic proposal, and must return a full command or
+    // a falsy value to keep the proposal.
+    if (typeof options.decide === 'function') {
+      const override = await options.decide({ state, edge, proposal: command, portalDistance, targetDistance, delta, usedTics });
+      if (override) command = override;
+    }
+
     const result = await exactInput(page, command);
     usedTics += result.tics;
+    if (typeof options.onStep === 'function') {
+      await options.onStep({ edge, state, command, result, usedTics, portalDistance, targetDistance, delta, doorOpening });
+    }
     if (trace.length < 80) trace.push({
       tics: usedTics,
       sector: result.state.currentSector,
@@ -215,11 +296,14 @@ async function navigateEdge(page, graph, edge, options = {}) {
       portalDistance,
       targetDistance,
       delta,
+      doorOpening,
       command
     });
   }
   const finalState = await page.evaluate(() => window.DoomControl.getState());
-  return { passed: Number(finalState?.currentSector) === Number(edge.to), edge, usedTics, trace, failure: 'edge_tic_budget_exhausted', finalState };
+  const finalSector = Number(finalState?.currentSector);
+  const finalPassed = finalSector === Number(edge.to) || Boolean(options.acceptSectors && options.acceptSectors.has(finalSector));
+  return { passed: finalPassed, edge, usedTics, trace, failure: finalPassed ? undefined : 'edge_tic_budget_exhausted', finalState, reachedSector: finalSector };
 }
 
 export async function runNavigationBrowserTrial(input) {

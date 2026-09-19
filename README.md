@@ -268,6 +268,23 @@ Typical interactive flow:
 
 For automated balancing, use `doom_run_local_bot_deathmatch` in `all_bots` mode.
 
+## Autoplay — autonomous stage clearing
+
+`mcp/autoplay_stage_runner.mjs` clears a single-player level end to end without
+human input: static route planning from the P1.3 navigation graph, exact-tic
+route following, door-state-aware USE, exit switch, and `GS_LEVEL` exit
+verification. It is deterministic and needs no AI service; a `decide` hook is
+the insertion point for a TypeSafe System One tactical policy.
+
+```bash
+cd mcp
+npm run autoplay:e1m1        # 3 god-mode runs + determinism check
+npm run autoplay:e1m1:live   # 1 run with live monsters
+```
+
+See `mcp/AUTOPLAY.md`. The vendored `typesafe-ai` agent skill lives in
+`.claude/skills/typesafe-ai/` (MIT, from typesafe-ai/skills).
+
 ## Reliability layers
 
 ### P0 — atomic authoring
