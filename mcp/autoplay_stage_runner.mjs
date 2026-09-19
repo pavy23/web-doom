@@ -30,9 +30,9 @@ import { EpisodeWorkspace } from './episode_workspace.js';
 import { installFullTopologyValidator } from './topology_validator.js';
 import { installThingAuthoring } from './thing_authoring.js';
 import { installSemanticGeometry } from './semantic_geometry.js';
-import { buildNavigationGraph, findExitProgression, locatePointSector } from './navigation_graph.js';
+import { buildNavigationGraph, findExitProgression, locatePointSector, planLocalPath } from './navigation_graph.js';
 import {
-  coldBoot, exactInput, isCombatCommand, launchChromium, navigateEdge
+  coldBoot, exactInput, isCombatCommand, launchChromium, liveSectorOpening, navigateEdge
 } from './navigation_browser_agent.mjs';
 import { OBJECTIVE_ORDER, OBJECTIVE_VERSION, compareToBaseline, rankRuns, runMetrics } from './autoplay_objective.mjs';
 import { installOverlay, updateOverlay } from './autoplay_overlay.mjs';
@@ -133,7 +133,8 @@ export async function approachAndUseExit(page, exit, options = {}) {
   let combatTics = 0;
   let bestDistance = Infinity;   // progress-based budget, as in navigateEdge
   let ticsSinceProgress = 0;
-  const target = exit.midpoint;
+  const finalTarget = exit.midpoint;
+  let waypoints = null;
   const trace = [];
   let usedTics = 0;
   let lastDistance = Infinity;
@@ -149,6 +150,12 @@ export async function approachAndUseExit(page, exit, options = {}) {
     if (Number(state.player.health || 0) <= 0) return { passed: false, usedTics, trace, failure: 'player_dead', finalState: state };
 
     const position = { x: Number(state.player.x), y: Number(state.player.y) };
+    // Local routing around walls, as in navigateEdge, when a graph is given.
+    if (options.graph && (waypoints == null || stalled >= 7)) {
+      waypoints = planLocalPath(options.graph, Number(state.currentSector), position, exit.midpoint);
+    }
+    while (waypoints && waypoints.length && distance(position, waypoints[0]) < 24) waypoints.shift();
+    const target = waypoints && waypoints.length ? waypoints[0] : finalTarget;
     const targetDistance = distance(position, target);
     const desired = headingDegrees(position, target);
     const delta = angleDelta(Number(state.player.angle), desired);
@@ -199,15 +206,54 @@ export async function approachAndUseExit(page, exit, options = {}) {
     }
     if (trace.length < 80) trace.push({ tics: usedTics, x: position.x, y: position.y, targetDistance, delta, command });
 
-    if (command.use) {
-      try {
-        const after = await waitForLevelExit(page, 1500);
-        return { passed: true, usedTics, trace, finalState: after };
-      } catch { /* not yet; keep approaching */ }
+    if (command.use || exit.trigger === 'walk') {
+      if (typeof options.success === 'function') {
+        // Generic line activation (a tagged switch): the caller decides
+        // what "it worked" means, for example the door sector opening.
+        if (await options.success()) return { passed: true, usedTics, routeTics, combatTics, trace, finalState: await engineState(page) };
+      } else {
+        try {
+          const after = await waitForLevelExit(page, 1500);
+          return { passed: true, usedTics, trace, finalState: after };
+        } catch { /* not yet; keep approaching */ }
+      }
     }
   }
   const finalState = await engineState(page);
-  return { passed: false, usedTics, routeTics, combatTics, trace, failure: combatTics >= maxCombatTics ? 'exit_combat_budget_exhausted' : 'exit_no_progress', finalState };
+  const label = options.failureLabel || 'exit';
+  return { passed: false, usedTics, routeTics, combatTics, trace, failure: combatTics >= maxCombatTics ? `${label}_combat_budget_exhausted` : `${label}_no_progress`, finalState };
+}
+
+// Fire a tagged trigger edge of the progression: walk to the switch (or the
+// walk-over line), use it, and wait for the door sector it opens to have
+// room for the player. Vanilla doors rise 2 units per tic, so a 128-unit
+// door needs ~64 tics after the switch; idle exact-tic steps cover that.
+export async function activateTrigger(page, edge, options = {}) {
+  const doorSector = edge.doorSectors?.[0];
+  const success = async () => {
+    if (doorSector == null) return true;
+    let opening = await liveSectorOpening(page, doorSector);
+    if (opening == null || opening < 8) return false; // not started opening yet
+    for (let i = 0; i < 30 && opening < PLAYER_HEIGHT_UNITS; i++) {
+      await exactInput(page, { tics: 4 });
+      opening = await liveSectorOpening(page, doorSector);
+    }
+    return opening >= PLAYER_HEIGHT_UNITS;
+  };
+  return approachAndUseExit(page, { midpoint: edge.midpoint, trigger: edge.action }, { ...options, success, failureLabel: 'trigger', maxTics: options.maxTicsPerEdge });
+}
+const PLAYER_HEIGHT_UNITS = 56;
+
+// Walk over a key thing. The engine state does not report keycards, so
+// arrival within pickup reach is the success condition (pickup radius is
+// the player's 16-unit radius plus the item's; 28 units is inside it).
+export async function collectKey(page, key, options = {}) {
+  const target = { x: Number(key.x), y: Number(key.y) };
+  const success = async () => {
+    const state = await engineState(page);
+    return distance({ x: Number(state.player.x), y: Number(state.player.y) }, target) < 28;
+  };
+  return approachAndUseExit(page, { midpoint: target, trigger: 'walk' }, { ...options, success, failureLabel: 'key', maxTics: options.maxTics || 350 });
 }
 
 // One full stage attempt on an already-open page.
@@ -287,20 +333,34 @@ export async function runStageAttempt(page, stage, options = {}) {
   if (config.godMode) attempt.cheat = await page.evaluate(() => window.DoomControl.setGodMode(true));
 
   const transitions = progression.transitions;
+  // Skipping ahead (landing in a later route sector) must never jump past a
+  // key pickup or a trigger, and on a route that loops back through earlier
+  // sectors it must only look at the stretch before the next such step.
+  const skipLimit = (from) => {
+    for (let j = from + 1; j < transitions.length; j++) {
+      if (transitions[j].acquiredKeys?.length || transitions[j].firedTag != null || transitions[j].edge.kind === 'trigger') return j;
+    }
+    return transitions.length - 1;
+  };
+  const keyThings = graph.things?.keys || [];
   let index = 0;
   while (index < transitions.length) {
     const edge = transitions[index].edge;
     const next = transitions[index + 1]?.edge || null;
-    const laterSectors = new Set(progression.sectors.slice(index + 2));
-    const result = await navigateEdge(page, graph, edge, {
-      maxTicsPerEdge: config.maxTicsPerEdge,
-      maxCombatTicsPerEdge: config.maxCombatTicsPerEdge,
-      decide: config.decide,
-      onStep,
-      acceptSectors: laterSectors,
-      useNearPortal: Boolean(next && next.action === 'use'),
-      doorSector: edge.action === 'use' ? Number(edge.to) : (next && next.action === 'use' ? Number(next.to) : null)
-    });
+    const limit = skipLimit(index);
+    // route position k holds transitions[k-1].edge.to; allow positions index+2 .. limit+1
+    const laterSectors = new Set(progression.sectors.slice(index + 2, limit + 2));
+    const result = edge.kind === 'trigger'
+      ? await activateTrigger(page, edge, { graph, maxTicsPerEdge: config.maxTicsPerEdge, maxCombatTicsPerEdge: config.maxCombatTicsPerEdge, decide: config.decide, onStep })
+      : await navigateEdge(page, graph, edge, {
+        maxTicsPerEdge: config.maxTicsPerEdge,
+        maxCombatTicsPerEdge: config.maxCombatTicsPerEdge,
+        decide: config.decide,
+        onStep,
+        acceptSectors: laterSectors,
+        useNearPortal: Boolean(next && next.action === 'use'),
+        doorSector: edge.action === 'use' ? Number(edge.to) : (next && next.action === 'use' ? Number(next.to) : null)
+      });
     attempt.totalTics += result.usedTics;
     attempt.edgeResults.push({
       edge: edge.id, kind: edge.kind, action: edge.action,
@@ -314,13 +374,37 @@ export async function runStageAttempt(page, stage, options = {}) {
       attempt.failedEdge = edge.id;
       break;
     }
-    // Continue from wherever the player actually landed on the planned route.
-    const landed = progression.sectors.indexOf(Number(result.reachedSector));
-    index = landed > index ? landed : index + 1;
+    // Continue from wherever the player actually landed on the planned route
+    // (first occurrence after the current position, within the skip window).
+    let landed = -1;
+    for (let k = index + 1; k <= limit + 1 && k < progression.sectors.length; k++) {
+      if (progression.sectors[k] === Number(result.reachedSector)) { landed = k; break; }
+    }
+    const nextIndex = landed > index ? landed : index + 1;
+    // Keys: entering a key's sector is not picking it up. Walk to every key
+    // the crossed transitions expect to have collected.
+    for (let j = index; j < nextIndex && j < transitions.length; j++) {
+      for (const keyName of transitions[j].acquiredKeys || []) {
+        const key = keyThings.find(item => item.key === keyName && item.sector === Number(transitions[j].edge.to));
+        if (!key) continue;
+        const keyResult = await collectKey(page, key, { graph, decide: config.decide, onStep, maxCombatTicsPerEdge: config.maxCombatTicsPerEdge });
+        attempt.totalTics += keyResult.usedTics;
+        attempt.edgeResults.push({
+          edge: `key:${keyName}:${key.sector}`, kind: 'key', action: 'walk',
+          passed: keyResult.passed, usedTics: keyResult.usedTics, routeTics: keyResult.routeTics ?? null, combatTics: keyResult.combatTics ?? null,
+          failure: keyResult.failure || null,
+          endSector: keyResult.finalState?.currentSector ?? null,
+          health: keyResult.finalState?.player?.health ?? null
+        });
+        if (!keyResult.passed) { attempt.failure = keyResult.failure || 'key_failed'; attempt.failedEdge = `key:${keyName}`; }
+      }
+    }
+    if (attempt.failure) break;
+    index = nextIndex;
   }
 
   if (!attempt.failure) {
-    const exitResult = await approachAndUseExit(page, progression.exit, { decide: config.decide, onStep, maxCombatTicsPerEdge: config.maxCombatTicsPerEdge });
+    const exitResult = await approachAndUseExit(page, progression.exit, { graph, decide: config.decide, onStep, maxCombatTicsPerEdge: config.maxCombatTicsPerEdge });
     attempt.totalTics += exitResult.usedTics;
     attempt.exitResult = {
       passed: exitResult.passed, usedTics: exitResult.usedTics, failure: exitResult.failure || null,

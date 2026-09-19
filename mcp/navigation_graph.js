@@ -17,6 +17,17 @@ const DOOR_SPECIALS = Object.freeze({
   34: { action: 'use', behavior: 'open', key: 'yellow' }
 });
 const LIFT_SPECIALS = new Set([62, 88]);
+// Tagged (remote) door triggers: the line opens every sector carrying its
+// tag. 'use' lines are switches, 'walk' lines fire when crossed; `stays`
+// doors stay open, the others close again after ~4 s.
+const REMOTE_DOOR_SPECIALS = Object.freeze({
+  2: { trigger: 'walk', stays: true }, 86: { trigger: 'walk', stays: true },
+  103: { trigger: 'use', stays: true }, 61: { trigger: 'use', stays: true },
+  4: { trigger: 'walk', stays: false }, 90: { trigger: 'walk', stays: false },
+  29: { trigger: 'use', stays: false }, 63: { trigger: 'use', stays: false },
+  108: { trigger: 'walk', stays: false }, 109: { trigger: 'walk', stays: true }, 110: { trigger: 'walk', stays: false },
+  111: { trigger: 'use', stays: false }, 112: { trigger: 'use', stays: true }, 113: { trigger: 'use', stays: false }, 114: { trigger: 'use', stays: true }
+});
 const EXIT_SPECIALS = Object.freeze({
   11: { trigger: 'use', secret: false },
   51: { trigger: 'use', secret: true },
@@ -98,7 +109,33 @@ function sectorCenter(g, sector) {
   };
 }
 function doorSpec(line) { return DOOR_SPECIALS[Number(line.special)] || null; }
-function classifyPortal(g, lineIndex, fromSector, toSector) {
+// Every tagged door trigger on the map, grouped by tag.
+function collectTriggers(g) {
+  const byTag = new Map();
+  const list = [];
+  g.linedefs.forEach((line, lineIndex) => {
+    const spec = REMOTE_DOOR_SPECIALS[Number(line.special)];
+    const tag = Number(line.tag || 0);
+    if (!spec || !tag) return;
+    const front = sideSector(g, line.right);
+    const back = sideSector(g, line.left);
+    if (front == null) return;
+    const trigger = { line: lineIndex, special: Number(line.special), tag, trigger: spec.trigger, stays: spec.stays, sector: front, back, midpoint: lineMidpoint(g, line) };
+    list.push(trigger);
+    if (!byTag.has(tag)) byTag.set(tag, []);
+    byTag.get(tag).push(trigger);
+  });
+  return { list, byTag };
+}
+// A sector that a tagged trigger opens: closed now (no room for the
+// player), tagged, and some trigger on the map carries its tag.
+function remoteDoorTag(g, sectorIndex, triggersByTag) {
+  const sector = g.sectors[sectorIndex];
+  const tag = Number(sector.tag || 0);
+  if (!tag || !triggersByTag.has(tag)) return null;
+  return Number(sector.ceiling) - Number(sector.floor) < PLAYER_HEIGHT ? tag : null;
+}
+function classifyPortal(g, lineIndex, fromSector, toSector, triggersByTag = new Map()) {
   const line = g.linedefs[lineIndex];
   const from = g.sectors[fromSector], to = g.sectors[toSector];
   const midpoint = lineMidpoint(g, line);
@@ -113,10 +150,21 @@ function classifyPortal(g, lineIndex, fromSector, toSector) {
   let passable = false;
   let action = null;
   let requiredKey = null;
+  let requiredTag = null;
   let reason = null;
+  const remoteTag = opening < PLAYER_HEIGHT && !blocking && !door && !lift
+    ? (remoteDoorTag(g, toSector, triggersByTag) ?? remoteDoorTag(g, fromSector, triggersByTag))
+    : null;
 
   if (blocking) {
     reason = 'linedef_blocking_flag';
+  } else if (remoteTag != null && width >= MIN_PORTAL_WIDTH) {
+    // Closed now; a tagged trigger elsewhere opens it. Passable once the
+    // progression has fired that trigger.
+    kind = 'door';
+    passable = true;
+    action = 'remote';
+    requiredTag = remoteTag;
   } else if (door) {
     kind = 'door';
     passable = true;
@@ -146,6 +194,7 @@ function classifyPortal(g, lineIndex, fromSector, toSector) {
     passable,
     action,
     requiredKey,
+    requiredTag,
     reason,
     special: Number(line.special || 0),
     tag: Number(line.tag || 0),
@@ -193,14 +242,15 @@ export function buildNavigationGraph(workspace) {
     special: Number(sector.special || 0),
     tag: Number(sector.tag || 0)
   }));
+  const triggers = collectTriggers(g);
   const edges = [];
   for (let lineIndex = 0; lineIndex < g.linedefs.length; lineIndex++) {
     const line = g.linedefs[lineIndex];
     const right = sideSector(g, line.right);
     const left = sideSector(g, line.left);
     if (right == null || left == null || right === left) continue;
-    edges.push(classifyPortal(g, lineIndex, right, left));
-    edges.push(classifyPortal(g, lineIndex, left, right));
+    edges.push(classifyPortal(g, lineIndex, right, left, triggers.byTag));
+    edges.push(classifyPortal(g, lineIndex, left, right, triggers.byTag));
   }
 
   const things = thingList(workspace).map(thing => ({
@@ -231,7 +281,7 @@ export function buildNavigationGraph(workspace) {
   const outgoing = Object.fromEntries(nodes.map(node => [node.sector, []]));
   for (const edge of edges) outgoing[edge.from].push(edge.id);
   const passableEdges = edges.filter(edge => edge.passable).length;
-  return {
+  const graph = {
     version: NAVIGATION_VERSION,
     map: workspace.mapName,
     constraints: { playerHeight: PLAYER_HEIGHT, maxStepUp: MAX_STEP_UP, minPortalWidth: MIN_PORTAL_WIDTH },
@@ -240,23 +290,174 @@ export function buildNavigationGraph(workspace) {
     outgoing,
     things: { starts, keys },
     exits,
+    triggers: triggers.list,
     summary: {
       sectors: nodes.length,
       directedEdges: edges.length,
       passableEdges,
       blockedEdges: edges.length - passableEdges,
+      remoteDoorEdges: edges.filter(edge => edge.requiredTag != null).length,
+      triggers: triggers.list.length,
       starts: starts.length,
       keys: keys.length,
       exits: exits.length
     }
   };
+  // Raw geometry for local routing; not enumerable so JSON reports stay small.
+  Object.defineProperty(graph, 'geometry', { value: g, enumerable: false });
+  return graph;
 }
 
-function usableEdge(edge, mask, { allowDrops = true } = {}) {
+// ---- Local (within-sector) routing -------------------------------------
+// Sector-level edges assume the player can walk straight from where it is
+// to the next portal. In a non-convex sector that line can cross a wall
+// (E1M2's start room). planLocalPath returns intermediate waypoints found
+// on a visibility graph over the sector's wall corners, pushed inward by
+// the player radius, so the follower goes around instead of into the wall.
+const LOCAL_CLEARANCE = 36;
+function segmentsCross(p, q, a, b) {
+  const d = (q.x - p.x) * (b.y - a.y) - (q.y - p.y) * (b.x - a.x);
+  if (Math.abs(d) < 1e-9) return false;
+  const t = ((a.x - p.x) * (b.y - a.y) - (a.y - p.y) * (b.x - a.x)) / d;
+  const u = ((a.x - p.x) * (q.y - p.y) - (a.y - p.y) * (q.x - p.x)) / d;
+  return t > 0.001 && t < 0.999 && u > 0.001 && u < 0.999;
+}
+// Lines the player cannot walk through: one-sided, blocking-flagged, or
+// two-sided with no room / too high a step.
+export function solidLines(g) {
+  if (g.__solidLines) return g.__solidLines;
+  const out = [];
+  g.linedefs.forEach((line, index) => {
+    const right = sideSector(g, line.right);
+    const left = sideSector(g, line.left);
+    let solid = right == null || left == null || Boolean(Number(line.flags) & ML_BLOCKING);
+    if (!solid && right !== left) {
+      const a = g.sectors[right], b = g.sectors[left];
+      const opening = Math.min(Number(a.ceiling), Number(b.ceiling)) - Math.max(Number(a.floor), Number(b.floor));
+      // doors and lifts open; treat them as passable here
+      const opens = DOOR_SPECIALS[Number(line.special)] || LIFT_SPECIALS.has(Number(line.special)) || REMOTE_DOOR_SPECIALS[Number(line.special)] || (a.tag && Number(a.ceiling) === Number(a.floor)) || (b.tag && Number(b.ceiling) === Number(b.floor));
+      if (!opens && (opening < PLAYER_HEIGHT || Math.abs(Number(a.floor) - Number(b.floor)) > MAX_STEP_UP)) solid = true;
+    }
+    if (solid) out.push({ index, a: g.vertices[line.v1], b: g.vertices[line.v2], right, left });
+  });
+  Object.defineProperty(g, '__solidLines', { value: out, enumerable: false });
+  return out;
+}
+function pointSegmentDistance(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy || 1;
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+function segmentSegmentDistance(p, q, a, b) {
+  if (segmentsCross(p, q, a, b)) return 0;
+  return Math.min(pointSegmentDistance(p, a, b), pointSegmentDistance(q, a, b), pointSegmentDistance(a, p, q), pointSegmentDistance(b, p, q));
+}
+// Solid decorations the player collides with (radius from the vanilla mobj table).
+const SOLID_THING_RADIUS = Object.freeze({ 2035: 10, 2028: 16, 30: 16, 31: 16, 32: 16, 33: 16, 34: 16, 35: 16, 36: 16, 37: 16, 41: 16, 42: 16, 43: 16, 44: 16, 45: 16, 46: 16, 47: 16, 48: 16, 54: 32, 55: 16, 56: 16, 57: 16 });
+export function solidThings(g) {
+  if (g.__solidThings) return g.__solidThings;
+  const out = [];
+  for (const thing of g.things || []) {
+    const type = Number(thing.doomEdNum ?? thing.type);
+    const radius = SOLID_THING_RADIUS[type];
+    if (radius) out.push({ x: Number(thing.x), y: Number(thing.y), radius });
+  }
+  Object.defineProperty(g, '__solidThings', { value: out, enumerable: false });
+  return out;
+}
+const PLAYER_RADIUS = 16;
+// Can a player (radius 16) walk from `from` to `to` without touching a wall
+// or a solid thing? A capsule test, not just a crossing test: a path that
+// grazes a corner or runs along a wall line is not walkable either.
+export function lineOfWalk(g, from, to, lines = solidLines(g), clearance = PLAYER_RADIUS + 2) {
+  for (const line of lines) if (segmentSegmentDistance(from, to, line.a, line.b) < clearance) return false;
+  for (const thing of solidThings(g)) if (pointSegmentDistance(thing, from, to) < thing.radius + PLAYER_RADIUS + 1) return false;
+  return true;
+}
+export function planLocalPath(graph, sector, from, to) {
+  const g = graph.geometry;
+  if (!g) return [];
+  const lines = solidLines(g);
+  if (lineOfWalk(g, from, to, lines)) return [];
+  // Candidate corners: vertices of this sector's solid lines, pushed inward.
+  const candidates = [];
+  const seen = new Set();
+  for (const line of lines) {
+    if (line.right !== sector && line.left !== sector) continue;
+    for (const v of [line.a, line.b]) {
+      for (const [dx, dy] of [[LOCAL_CLEARANCE, 0], [-LOCAL_CLEARANCE, 0], [0, LOCAL_CLEARANCE], [0, -LOCAL_CLEARANCE], [LOCAL_CLEARANCE, LOCAL_CLEARANCE], [-LOCAL_CLEARANCE, LOCAL_CLEARANCE], [LOCAL_CLEARANCE, -LOCAL_CLEARANCE], [-LOCAL_CLEARANCE, -LOCAL_CLEARANCE]]) {
+        const p = { x: Number(v.x) + dx, y: Number(v.y) + dy };
+        const key = `${Math.round(p.x)},${Math.round(p.y)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (!locatePointSectorFast(g, sector, p)) continue;
+        // Not on or within player reach of any wall / solid thing.
+        if (lines.some(line => pointSegmentDistance(p, line.a, line.b) < PLAYER_RADIUS + 2)) continue;
+        if (solidThings(g).some(thing => Math.hypot(thing.x - p.x, thing.y - p.y) < thing.radius + PLAYER_RADIUS + 1)) continue;
+        candidates.push(p);
+      }
+    }
+  }
+  // Dijkstra over the visibility graph {from, candidates, to}.
+  const nodes = [from, ...candidates, to];
+  const n = nodes.length;
+  const best = new Array(n).fill(Infinity);
+  const prev = new Array(n).fill(-1);
+  const done = new Array(n).fill(false);
+  best[0] = 0;
+  for (let iter = 0; iter < n; iter++) {
+    let u = -1;
+    for (let i = 0; i < n; i++) if (!done[i] && (u < 0 || best[i] < best[u])) u = i;
+    if (u < 0 || best[u] === Infinity) break;
+    done[u] = true;
+    if (u === n - 1) break;
+    for (let v = 1; v < n; v++) {
+      if (done[v]) continue;
+      if (!lineOfWalk(g, nodes[u], nodes[v], lines)) continue;
+      const cost = best[u] + dist(nodes[u], nodes[v]);
+      if (cost < best[v]) { best[v] = cost; prev[v] = u; }
+    }
+  }
+  if (best[n - 1] === Infinity) return [];
+  const path = [];
+  for (let cursor = prev[n - 1]; cursor > 0; cursor = prev[cursor]) path.push(nodes[cursor]);
+  return path.reverse();
+}
+function locatePointSectorFast(g, sector, point) {
+  return pointInSector({ geometry: g }, sector, point);
+}
+
+// `tags` is the set of trigger tags already fired (or 'all' to assume every
+// trigger can be fired, for reachability estimates).
+function usableEdge(edge, mask, { allowDrops = true, tags = 'all' } = {}) {
   if (!edge.passable) return false;
   if (edge.kind === 'drop' && !allowDrops) return false;
   if (!maskHas(mask, edge.requiredKey)) return false;
+  if (edge.requiredTag != null && tags !== 'all' && !tags.has(edge.requiredTag)) return false;
   return true;
+}
+// The pseudo-edge a progression records for firing a trigger: the runner
+// walks to the line and uses (or crosses) it. A walk trigger leaves the
+// player in the line's back sector; a switch keeps it where it stands.
+function triggerEdge(graph, trigger) {
+  const to = trigger.trigger === 'walk' && trigger.back != null ? trigger.back : trigger.sector;
+  return {
+    id: `trigger:${trigger.line}`,
+    line: trigger.line,
+    from: trigger.sector,
+    to,
+    kind: 'trigger',
+    action: trigger.trigger,
+    stays: trigger.stays,
+    tag: trigger.tag,
+    special: trigger.special,
+    passable: true,
+    requiredKey: null,
+    requiredTag: null,
+    midpoint: trigger.midpoint,
+    doorSectors: graph.nodes.filter(node => node.tag === trigger.tag).map(node => node.sector)
+  };
 }
 function edgeCost(graph, edge) {
   const a = graph.nodes[edge.from]?.center || edge.midpoint;
@@ -343,9 +544,17 @@ export function findExitProgression(graph, startSector, options = {}) {
     exitBySector.get(sector).push(exit);
   }
 
+  const triggersBySector = new Map();
+  for (const trigger of graph.triggers || []) {
+    if (!triggersBySector.has(trigger.sector)) triggersBySector.set(trigger.sector, []);
+    triggersBySector.get(trigger.sector).push(trigger);
+  }
+  const tagsId = tags => [...tags].sort((a, b) => a - b).join(',');
+
   const initialMask = keyMask(options.keys || []) | keyMask(keysBySector.get(start) || []);
-  const startId = `${start}:${initialMask}`;
-  const queue = [{ sector: start, mask: initialMask, id: startId }];
+  const initialTags = new Set(options.tags || []);
+  const startId = `${start}:${initialMask}:${tagsId(initialTags)}`;
+  const queue = [{ sector: start, mask: initialMask, tags: initialTags, id: startId }];
   const seen = new Set([startId]);
   const prev = new Map();
   let goal = null;
@@ -355,14 +564,26 @@ export function findExitProgression(graph, startSector, options = {}) {
     const exits = exitBySector.get(state.sector) || [];
     const allowedExit = exits.find(exit => options.includeSecret !== false || !exit.secret);
     if (allowedExit) { goal = { ...state, exit: allowedExit }; break; }
-    for (const edge of graph.edges) {
-      if (edge.from !== state.sector || !usableEdge(edge, state.mask, options)) continue;
+    // Fire a trigger that stands in this sector: same keys, one more tag.
+    for (const trigger of triggersBySector.get(state.sector) || []) {
+      if (state.tags.has(trigger.tag)) continue;
+      const edge = triggerEdge(graph, trigger);
+      const nextTags = new Set([...state.tags, trigger.tag]);
       const nextMask = state.mask | keyMask(keysBySector.get(edge.to) || []);
-      const id = `${edge.to}:${nextMask}`;
+      const id = `${edge.to}:${nextMask}:${tagsId(nextTags)}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      prev.set(id, { previous: state.id, edge, acquiredKeys: maskKeys(nextMask & ~state.mask), firedTag: trigger.tag });
+      queue.push({ sector: edge.to, mask: nextMask, tags: nextTags, id });
+    }
+    for (const edge of graph.edges) {
+      if (edge.from !== state.sector || !usableEdge(edge, state.mask, { ...options, tags: state.tags })) continue;
+      const nextMask = state.mask | keyMask(keysBySector.get(edge.to) || []);
+      const id = `${edge.to}:${nextMask}:${tagsId(state.tags)}`;
       if (seen.has(id)) continue;
       seen.add(id);
       prev.set(id, { previous: state.id, edge, acquiredKeys: maskKeys(nextMask & ~state.mask) });
-      queue.push({ sector: edge.to, mask: nextMask, id });
+      queue.push({ sector: edge.to, mask: nextMask, tags: state.tags, id });
     }
   }
   if (!goal) return { found: false, startSector: start, reason: 'no_reachable_exit', exploredStates: seen.size };
@@ -372,7 +593,7 @@ export function findExitProgression(graph, startSector, options = {}) {
   while (cursor !== startId) {
     const row = prev.get(cursor);
     if (!row) throw new Error('Exit progression reconstruction failed');
-    transitions.push({ edge: row.edge, acquiredKeys: row.acquiredKeys });
+    transitions.push({ edge: row.edge, acquiredKeys: row.acquiredKeys, ...(row.firedTag != null ? { firedTag: row.firedTag } : {}) });
     cursor = row.previous;
   }
   transitions.reverse();
@@ -381,6 +602,7 @@ export function findExitProgression(graph, startSector, options = {}) {
     startSector: start,
     finalSector: goal.sector,
     keys: maskKeys(goal.mask),
+    tags: [...goal.tags],
     sectors: [start, ...transitions.map(item => item.edge.to)],
     transitions,
     exit: goal.exit,

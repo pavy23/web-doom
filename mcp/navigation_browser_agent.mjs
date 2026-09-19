@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
-import { findSectorPath } from './navigation_graph.js';
+import { findSectorPath, planLocalPath } from './navigation_graph.js';
 
 const DEFAULT_PLAY_URL = 'http://127.0.0.1:3777/';
 const DEFAULT_COLD_BOOT_TIMEOUT_MS = Math.max(60000, Number(process.env.DOOM_MCP_COLD_BOOT_TIMEOUT_MS || 180000));
@@ -232,6 +232,7 @@ export async function navigateEdge(page, graph, edge, options = {}) {
   // its way along a long edge is not "stuck"; one that never gets closer is.
   let bestPortalDistance = Infinity;
   let ticsSinceProgress = 0;
+  let waypoints = null;
   const targetNode = graph.nodes[edge.to];
   const cross = crossingPoint(edge, targetNode.center);
   const trace = [];
@@ -267,7 +268,13 @@ export async function navigateEdge(page, graph, edge, options = {}) {
 
     const position = { x: Number(state.player.x), y: Number(state.player.y) };
     const portalDistance = distance(position, edge.midpoint);
-    const target = portalDistance < 44 ? cross : edge.midpoint;
+    // Local routing: go around walls inside a non-convex sector. Planned on
+    // the first step and again whenever the follower stalls.
+    if (waypoints == null || stalled >= 7) {
+      waypoints = planLocalPath(graph, Number(state.currentSector), position, edge.midpoint);
+    }
+    while (waypoints.length && distance(position, waypoints[0]) < 24) waypoints.shift();
+    const target = waypoints.length ? waypoints[0] : (portalDistance < 44 ? cross : edge.midpoint);
     const targetDistance = distance(position, target);
     const desired = headingDegrees(position, target);
     const delta = angleDelta(Number(state.player.angle), desired);
