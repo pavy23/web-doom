@@ -44,8 +44,11 @@ export function compactState(state, context = {}) {
   const player = state?.player || {};
   const weaponIndex = Number(player.weapon ?? 1);
   const ammoKind = AMMO_FOR_WEAPON[weaponIndex] || null;
+  // In view or in line of sight, plus anything inside melee range whatever the
+  // view cone says: a monster clawing from the side is the one that matters.
+  const meleeRange = Number(context.meleeRange ?? 96);
   const enemies = (state?.enemies || [])
-    .filter(enemy => enemy.visible || enemy.lineOfSight)
+    .filter(enemy => enemy.visible || enemy.lineOfSight || Number(enemy.distance) <= meleeRange)
     .sort((a, b) => Number(a.distance) - Number(b.distance))
     .slice(0, Number(context.maxEnemies || 5))
     .map((enemy, index) => ({
@@ -151,11 +154,18 @@ export function answersToCommand(answers, compact, proposal, options = {}) {
   return null;
 }
 
-// Decide when a judgment is worth paying for.
-export function shouldConsult(state, options = {}) {
+// Decide when a judgment is worth paying for: an enemy in view, low health,
+// an enemy inside melee range even outside the view cone, or health that just
+// dropped (something unseen is hitting the player). The last two came from a
+// run where an Imp clawed the player from the side for 250 tics while the
+// "visible enemy" gate stayed shut and no rule could fire.
+export function shouldConsult(state, options = {}, memory = {}) {
   const visible = Number(state?.visibleEnemyCount ?? 0);
   const health = Number(state?.player?.health ?? 100);
-  return visible > 0 || health < Number(options.lowHealth ?? 40);
+  const meleeRange = Number(options.meleeRange ?? 96);
+  const inReach = (state?.enemies || []).some(enemy => Number(enemy.distance) <= meleeRange && Number(enemy.health) > 0);
+  const hurt = memory.lastHealth != null && health < Number(memory.lastHealth);
+  return visible > 0 || health < Number(options.lowHealth ?? 40) || inReach || hurt;
 }
 
 export async function createJevPolicy(options = {}) {
@@ -175,6 +185,7 @@ export async function createJevPolicy(options = {}) {
     pointBlankDistance: 96,    // aligned target this close is always fired at
     model: undefined,
     log: null,                 // JSONL path
+    onDecision: null,          // async (entry) => void, called after every consultation (overlay, live views)
     ...options
   };
   const sdk = await import('@typesafe-ai/sdk');
@@ -210,14 +221,19 @@ export async function createJevPolicy(options = {}) {
   }
 
   async function record(entry) {
-    if (!config.log) return;
-    await appendFile(config.log, `${JSON.stringify(entry)}\n`);
+    if (config.log) await appendFile(config.log, `${JSON.stringify({ run: config.runIndex ?? 0, ...entry })}\n`);
+    if (typeof config.onDecision === 'function') {
+      try { await config.onDecision({ ...entry, stats: summary() }); } catch { /* a viewer must never break a trial */ }
+    }
   }
 
+  let lastHealth = null;
   async function decide(context) {
     const { state, proposal } = context;
     stepsSinceCall++;
-    if (!shouldConsult(state, config)) return null;
+    const consult = shouldConsult(state, config, { lastHealth });
+    lastHealth = Number(state?.player?.health ?? lastHealth);
+    if (!consult) return null;
     stats.eligibleSteps++;
     if (stepsSinceCall < config.minStepsBetweenCalls) {
       // Reuse the last judgment for a short hold without paying again.

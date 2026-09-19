@@ -146,8 +146,43 @@ the full decision table. No dependencies, no network, works offline; hover
 gives a shared crosshair across the three time charts.
 
 It reads logs only, so it can be regenerated for any past trial and never
-touches the game runtime. An in-game overlay (drawing the same data on the
-`#hud` layer while the world is paused) is the natural next step for videos.
+touches the game runtime.
+
+## Watching a run live: `--headed` and the in-game overlay
+
+```bash
+npm run autoplay:e1m1:jev:watch     # opens a Chromium window, overlay on
+node autoplay_stage_runner.mjs --map E1M1 --runs 1 --no-god --policy jev --headed
+node autoplay_stage_runner.mjs ... --no-overlay      # overlay off
+```
+
+`--headed` (or `DOOM_MCP_HEADED=1`) launches a visible Chromium window; the
+trial itself is unchanged, since the world only advances through exact-tic
+steps and stays paused while the policy thinks. Expect the game to look
+stop-motion in combat: every Jev consultation holds the world for its
+latency (~160 ms), so a smooth video is better made by replaying the logged
+command sequence than by recording the live trial.
+
+`autoplay_overlay.mjs` installs a panel on the runtime page's `#hud` layer
+(pointer-events: none, DOM only, never touches the engine) and updates it
+from two hooks: the runner's `onStep` (tic, health/armor, sector/edge, step
+source) and the policy's new `onDecision` callback (mode probabilities with
+the applied mode highlighted, target probabilities, fire noul, danger score,
+the resulting command, the safety rules that fired, calls/overrides and cost
+so far). It is on by default because it is also what the run screenshot
+captures: `run-N.png` is now a page screenshot (overlay included) instead of
+the canvas capture, which came back black once the level was left.
+
+## Skill level: `--skill`
+
+`doomctl_warp` starts the map with the engine's current `gameskill`, and the
+classic launcher boots with no `-skill` argument, so trials before this option
+ran at whatever `gameskill` held after boot (recorded as `run.skill` in the
+report from autoplay 0.2.0 on; see "Results" for the value). `--skill 1-5`
+(or `itytd`/`hntr`/`hmp`/`uv`/`nightmare`) wraps `Module.callMain` at cold
+boot to pass `-skill N` to `D_DoomMain`, which is the only way to reach the
+vanilla argument parser without rebuilding the WebAssembly runtime. Verified:
+`--skill 5` boots with `state.skill === 4` (Nightmare).
 
 Design, following the typesafe-ai skill guidance (code owns the workflow,
 the model supplies narrow typed judgments):

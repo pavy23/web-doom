@@ -33,15 +33,19 @@ function crossingPoint(edge, targetCenter) {
   const length = Math.hypot(dx, dy) || 1;
   return { x: Number(edge.midpoint.x) + dx / length * 28, y: Number(edge.midpoint.y) + dy / length * 28 };
 }
-export async function launchChromium() {
+// `headed: true` (or DOOM_MCP_HEADED=1) opens a visible window so a local run
+// can be watched; trials are otherwise identical, since the world only
+// advances through exact-tic steps.
+export async function launchChromium(options = {}) {
   const args = ['--autoplay-policy=no-user-gesture-required'];
+  const headless = !(options.headed ?? /^(1|true|yes)$/i.test(String(process.env.DOOM_MCP_HEADED || '')));
   // Optional override for hosts whose preinstalled Chromium build does not
   // match the pinned Playwright revision (for example a shared CI image).
   const executablePath = String(process.env.DOOM_MCP_CHROMIUM_EXECUTABLE || '').trim();
-  if (executablePath) return chromium.launch({ headless: true, args, executablePath });
-  try { return await chromium.launch({ headless: true, args }); }
+  if (executablePath) return chromium.launch({ headless, args, executablePath });
+  try { return await chromium.launch({ headless, args }); }
   catch (firstError) {
-    try { return await chromium.launch({ headless: true, channel: 'chrome', args }); }
+    try { return await chromium.launch({ headless, channel: 'chrome', args }); }
     catch { throw new Error(`Unable to launch Chromium: ${firstError?.message || firstError}`); }
   }
 }
@@ -159,6 +163,15 @@ export async function coldBoot(page, config, wadBase64) {
   await waitForRuntime(page);
   await waitForColdBoot(page, config.filename, Number(config.coldBootTimeoutMs || DEFAULT_COLD_BOOT_TIMEOUT_MS));
   await page.waitForSelector('#start.ready:not([disabled])', { timeout: 30000 });
+  // Extra LinuxDOOM command-line arguments (for example ['-skill', '4']).
+  // The launcher calls Module.callMain([]) for classic mode; wrapping it is
+  // the only way to reach D_DoomMain's argument parsing without a rebuild.
+  if (Array.isArray(config.bootArgs) && config.bootArgs.length) {
+    await page.evaluate(extra => {
+      const original = Module.callMain.bind(Module);
+      Module.callMain = args => original([...(Array.isArray(args) ? args : []), ...extra]);
+    }, config.bootArgs.map(String));
+  }
   await page.click('#start');
   return config.pauseOnReady ? warpAndPause(page, config.map) : warp(page, config.map);
 }

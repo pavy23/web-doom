@@ -37,7 +37,7 @@ export async function loadTrial(dir) {
     run: report.runs[bestIndex],
     metrics: runMetrics(report.runs[bestIndex]),
     steps: steps.filter(step => Number(step.run ?? 0) === bestIndex),
-    decisions
+    decisions: decisions.filter(row => Number(row.run ?? 0) === bestIndex)
   };
 }
 
@@ -227,6 +227,9 @@ export function renderDashboard(trial, baseline) {
   };
   const verdictLine = comparison ? comparison.verdict : 'no baseline given';
   const title = `${trial.report.map} autoplay · ${trial.report.policy}`;
+  const SKILLS = ["I'm too young to die", 'Hey, not too rough', 'Hurt me plenty', 'Ultra-Violence', 'Nightmare'];
+  const skillText = trial.run?.skill == null ? 'skill unknown' : `skill ${trial.run.skill} (${SKILLS[trial.run.skill] || '?'})`;
+  const runsText = trial.report.runs.length > 1 ? ` Best of ${trial.report.runs.length} runs (run ${rankRuns(trial.report.runs)[0]}).` : '';
 
   return `<!doctype html>
 <html lang="en">
@@ -314,7 +317,7 @@ details summary { cursor: pointer; color: var(--ink-2); }
 <body>
 <main>
 <h1>${esc(title)}</h1>
-<p class="sub">Objective: ${OBJECTIVE_ORDER.join(' › ')} (lower is better). ${baseline ? `Baseline: ${esc(baseline.report.policy)} policy, ${esc(path.basename(baseline.dir))}.` : ''}
+<p class="sub">Objective: ${OBJECTIVE_ORDER.join(' › ')} (lower is better). ${esc(skillText)}.${esc(runsText)} ${baseline ? `Baseline: ${esc(baseline.report.policy)} policy, ${esc(path.basename(baseline.dir))}.` : ''}
   <span class="verdict ${comparison ? (comparison.better ? 'good' : comparison.verdict.startsWith('equal') ? '' : 'bad') : ''}">${esc(verdictLine)}</span></p>
 
 <div class="tiles">

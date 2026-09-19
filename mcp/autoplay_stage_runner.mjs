@@ -11,6 +11,7 @@
 //   node autoplay_stage_runner.mjs --map E1M1 --runs 3 [--no-god] [--max-edge-tics 280]
 //                                  [--policy jev] [--jev-dry-run] [--jev-max-calls 600]
 //                                  [--report-dir DIR] [--baseline other/report.json]
+//                                  [--skill 1-5|uv|nightmare] [--headed] [--no-overlay]
 //
 // Every step is appended to <reportDir>/steps.jsonl and a summary is written to
 // <reportDir>/report.json so later policy layers can be compared tic-for-tic.
@@ -33,6 +34,20 @@ import {
   coldBoot, exactInput, launchChromium, navigateEdge
 } from './navigation_browser_agent.mjs';
 import { OBJECTIVE_ORDER, OBJECTIVE_VERSION, compareToBaseline, rankRuns, runMetrics } from './autoplay_objective.mjs';
+import { installOverlay, updateOverlay } from './autoplay_overlay.mjs';
+
+// LinuxDOOM skill_t: 0 ITYTD, 1 HNTR, 2 HMP, 3 UV, 4 Nightmare. The CLI takes
+// the vanilla 1-5 number or a name; the engine receives "-skill <1-5>".
+export const SKILL_NAMES = ['itytd', 'hntr', 'hmp', 'uv', 'nightmare'];
+export function parseSkill(value) {
+  if (value == null || value === '') return null;
+  const text = String(value).trim().toLowerCase();
+  const byName = SKILL_NAMES.indexOf(text);
+  if (byName >= 0) return byName;
+  const number = Number(text);
+  if (Number.isInteger(number) && number >= 1 && number <= 5) return number - 1;
+  throw new Error(`Unknown skill ${value}: use 1-5 or ${SKILL_NAMES.join('/')}`);
+}
 
 export const AUTOPLAY_VERSION = '0.2.0-autoplay';
 
@@ -208,8 +223,15 @@ export async function runStageAttempt(page, stage, options = {}) {
     stepIndex++;
     attempt.steps = stepIndex;
     if (event.result?.telemetry?.ready) lastTelemetry = event.result.telemetry;
-    if (!stepLog) return;
     const player = event.result.state?.player || {};
+    if (config.overlay !== false) {
+      await updateOverlay(page, { step: {
+        tic: event.result.telemetry?.worldTics ?? null, health: player.health, armor: player.armor,
+        sector: event.result.state?.currentSector ?? null, edge: event.edge ? event.edge.id : 'exit',
+        source: event.command?.source || 'geometric'
+      } }).catch(() => {});
+    }
+    if (!stepLog) return;
     await appendFile(stepLog, `${JSON.stringify({
       run: config.runIndex ?? 0,
       step: stepIndex,
@@ -227,6 +249,7 @@ export async function runStageAttempt(page, stage, options = {}) {
 
   let initial = await engineState(page);
   attempt.startSector = Number(initial.currentSector);
+  attempt.skill = initial.skill ?? null; // LinuxDOOM gameskill: 0 ITYTD .. 4 Nightmare
   if (attempt.startSector !== progression.startSector) {
     throw new Error(`Runtime start sector ${attempt.startSector} differs from static plan ${progression.startSector}`);
   }
@@ -357,6 +380,7 @@ export async function runStageClearTrial(input = {}) {
     version: AUTOPLAY_VERSION,
     map: config.map,
     godMode: Boolean(config.godMode),
+    skill: config.skill ?? null,
     policy: config.policy || 'none',
     baseline: config.baselineReport ? { reportPath: config.baselineReport.reportPath, policy: config.baselineReport.policy || 'none', map: config.baselineReport.map } : null,
     runs: [],
@@ -371,7 +395,7 @@ export async function runStageClearTrial(input = {}) {
     stepLog
   };
 
-  const browser = await launchChromium();
+  const browser = await launchChromium({ headed: Boolean(config.headed) });
   try {
     for (let runIndex = 0; runIndex < Number(config.runs); runIndex++) {
       const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
@@ -383,12 +407,19 @@ export async function runStageClearTrial(input = {}) {
       try {
         if (config.policy === 'jev') {
           const { createJevPolicy } = await import('./autoplay_jev_policy.mjs');
-          policy = await createJevPolicy({ ...(config.jev || {}), log: policyLog });
+          policy = await createJevPolicy({
+            ...(config.jev || {}), log: policyLog, runIndex,
+            onDecision: config.overlay === false ? null : entry => updateOverlay(page, { jev: entry })
+          });
         }
         await coldBoot(page, {
           playUrl: config.playUrl, filename: stage.filename, map: config.map,
-          coldBootTimeoutMs: config.coldBootTimeoutMs, pauseOnReady: true
+          coldBootTimeoutMs: config.coldBootTimeoutMs, pauseOnReady: true,
+          bootArgs: config.skill == null ? [] : ['-skill', String(Number(config.skill) + 1)]
         }, wadBase64);
+        if (config.overlay !== false) {
+          await installOverlay(page, { title: `AUTOPLAY ${config.map} · ${config.policy || 'none'} · run ${runIndex}` });
+        }
         attempt = await runStageAttempt(page, stage, {
           ...config, runIndex, stepLog, decide: policy ? policy.decide : config.decide
         });
@@ -397,14 +428,21 @@ export async function runStageClearTrial(input = {}) {
         attempt = { passed: false, failure: 'browser_trial_error', error: String(error?.stack || error?.message || error) };
       } finally {
         if (config.captureFrame !== false) {
+          // A page screenshot keeps the overlay and works after the level has
+          // been left; the canvas capture (toDataURL) comes back black then.
+          const shot = path.join(config.reportDir, `run-${runIndex}.png`);
           try {
-            const frame = await page.evaluate(() => window.DoomControl.captureFrame());
-            if (frame?.base64) {
-              const shot = path.join(config.reportDir, `run-${runIndex}.png`);
-              await writeFile(shot, Buffer.from(frame.base64, 'base64'));
-              if (attempt) attempt.screenshot = shot;
-            }
-          } catch {}
+            await page.screenshot({ path: shot });
+            if (attempt) attempt.screenshot = shot;
+          } catch {
+            try {
+              const frame = await page.evaluate(() => window.DoomControl.captureFrame());
+              if (frame?.base64) {
+                await writeFile(shot, Buffer.from(frame.base64, 'base64'));
+                if (attempt) attempt.screenshot = shot;
+              }
+            } catch {}
+          }
         }
         await page.close().catch(() => {});
       }
@@ -413,6 +451,7 @@ export async function runStageClearTrial(input = {}) {
       report.runs.push(attempt);
       if (policy && !attempt.policy) attempt.policy = policy.summary();
       console.error(`autoplay ${config.map} run ${runIndex}: ${attempt.passed ? 'CLEARED' : 'FAILED'} ${JSON.stringify({
+        skill: attempt.skill ?? null,
         totalTics: attempt.totalTics, steps: attempt.steps, failure: attempt.failure || null, failedEdge: attempt.failedEdge || null,
         deaths: attempt.telemetry?.deaths ?? null, damageTaken: attempt.telemetry?.damageTaken ?? null, kills: attempt.telemetry?.kills ?? null,
         ...(attempt.policy ? { jevCalls: attempt.policy.calls, jevOverrides: attempt.policy.overrides, jevInputTokens: attempt.policy.inputTokens, jevCostUsd: attempt.policy.estimatedInputCostUsd } : {})
@@ -463,7 +502,10 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       'jev-dry-run': { type: 'boolean', default: false },
       'jev-max-calls': { type: 'string', default: '600' },
       'jev-model': { type: 'string' },
-      baseline: { type: 'string' }
+      baseline: { type: 'string' },
+      skill: { type: 'string' },
+      headed: { type: 'boolean', default: false },
+      overlay: { type: 'boolean', default: true }
     },
     allowNegative: true
   });
@@ -473,6 +515,9 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
     const baselineReport = values.baseline ? await loadBaselineReport(path.resolve(values.baseline)) : null;
     const report = await runStageClearTrial({
       baselineReport,
+      skill: parseSkill(values.skill),
+      headed: Boolean(values.headed),
+      overlay: Boolean(values.overlay),
       map: String(values.map).toUpperCase(),
       runs: Number(values.runs),
       godMode: Boolean(values.god),
