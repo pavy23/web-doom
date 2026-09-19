@@ -606,6 +606,27 @@ what the policy is measured on. Second, the E1M2 HMP baseline
 the route crosses several health pickups (health rises 20 -> 95 once),
 so on E1M2 the policy is measured on damage and time, not on clearing.
 
+### E1M2 at HMP, policy 0.6.2, 10 runs
+
+```text
+                         cleared     95% CI   damage (cleared)   tics (cleared)      failures
+baseline (no policy)     1/1                  183                3247
+jev 0.6.2, before lift   3/10 (30%)  11-60%   69 / 120 / 126     3524-3795 (100 s)   6 of 7 on the lift edge 137:121
+  rules                                                                              (no progress x3, died on it x3),
+                                                                                     1 on the exit lift 49:48
+```
+
+The cleared runs beat the baseline on damage by 57-114 hp. The failures
+were one mechanism: sector 137 is a lift (floor 248 -> 0). The follower
+rides it down in 27 tics; the policy, seeing four enemies below, answered
+`fight` on the platform (forward 0), the lift cycled back up, and when it
+came level again the fight command replaced the walk-off. Fix in layer 1:
+`navigateEdge` reads the platform's live floor; away from the target
+floor it calls the lift (USE on switch lifts) and holds, and when the lift
+is level the walk-off command outranks the policy for that step (a transit
+step the model does not get). E1M2 god mode with the rules: 3005 tics,
+all five lift edges pass. The 10-run re-trial is below.
+
 Note on determinism: with 0.4.2 and 0.4.3 all three runs were tic-identical
 (the rules decided every step), while the combat-budget trial's runs
 diverged again (Jev's answers mattered). A policy whose runs are identical
