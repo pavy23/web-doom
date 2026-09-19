@@ -256,7 +256,7 @@ export async function navigateEdge(page, graph, edge, options = {}) {
     // sector as an acceptable landing so the follower does not chase it.
     const reached = Number(state.currentSector);
     if (reached === Number(edge.to) || (options.acceptSectors && options.acceptSectors.has(reached))) {
-      return { passed: true, edge, usedTics, trace, finalState: state, reachedSector: reached };
+      return { passed: true, edge, usedTics, routeTics, combatTics, trace, finalState: state, reachedSector: reached };
     }
     if (Number(state.player.health || 0) <= 0) return { passed: false, edge, usedTics, trace, failure: 'player_dead', finalState: state };
 

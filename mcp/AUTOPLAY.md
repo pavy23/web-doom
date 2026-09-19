@@ -389,16 +389,40 @@ tic 792). One iteration per row; every failure mode is in the logs.
 ```
 
 The first UV clear where the baseline dies: `better: cleared where the
-baseline did not`. It is 1 in 3, at 13 hp, and 1.4x the skill-0 clear time,
-so it is a proof that the layers fit together, not a solved map. The hangar
-edge (`7:54:385`, 4-5 shotgun guys in the open) costs 51-63 hp with a pistol
-whichever policy version fights it; the courtyard then finishes a player who
-arrives under ~45 hp. What would move the clear rate, in order: pick up the
-shotgun (the route ignores items; the hangar fight with a shotgun is 2-3
-blasts per enemy instead of 3-6 pistol shots each), fight the hangar from
-the doorway instead of the open floor (a "hold position at cover" mode the
-mapper does not have), and treat health under ~40 before the courtyard as a
-reason to retreat to the previous sector rather than advance.
+baseline did not`. It was 1 in 3, at 13 hp, and 1.4x the skill-0 clear
+time. The hangar edge (`7:54:385`, 4-5 shotgun guys in the open) cost 51-63
+hp with a pistol whichever policy version fought it; the courtyard then
+finished a player who arrived under ~45 hp.
+
+```text
+0.5.0  shotgun loot                  3/3  CLEARED: 1699 / 1603 / 1673 tics (46-49 s),
+       (walk over the shotgun a           damage 41 / 42 / 54, min health 60 / 59 / 47,
+       killed shotgun guy drops)          16 kills each, 255-283 calls, $0.016-0.018 per run
+                                         loot picked 2/2 in every run, ~21 tics per pickup
+                                         hangar edge now costs 24 hp (94 -> 70) instead of 51-63
+```
+
+### Loot rule (policy 0.5.0)
+
+The map's own shotgun (`THINGS` doomednum 2001 at 3264,-3936) lies in a
+secret area off the route, but at UV sixteen shotgun guys each drop a
+shotgun where they die. When `player.kills` rises while the pistol is out
+and the last fight target was a shotgun guy, the policy turns its last
+polar position (player pose + distance/bearing) into a world waypoint and
+walks there for at most `lootTimeoutTics` (140, 4 s), spending no API
+calls. It ends on pickup (shells rise or the weapon switches to 2), on
+arrival with nothing there, or on the timeout; `jev.jsonl` gets
+`loot_start` / `loot_end` rows and `policy.rules` counts `lootSteps`,
+`lootPicked`, `lootGivenUp`. The first pickup lands at tic ~376 in every
+run, right after the first shotgun guy on the route, so the hangar is
+fought with a shotgun.
+
+Remaining candidates, in order: fight the hangar from the doorway instead
+of the open floor (a "hold position at cover" mode the mapper does not
+have), and treat health under ~40 before the courtyard as a reason to
+retreat to the previous sector rather than advance. Clear time (46-49 s vs
+the skill-0 baseline's 33 s) is the next metric to work on once damage is
+stable.
 
 Note on determinism: with 0.4.2 and 0.4.3 all three runs were tic-identical
 (the rules decided every step), while the combat-budget trial's runs
