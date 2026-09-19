@@ -14,7 +14,7 @@ import { appendFile } from 'node:fs/promises';
 
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 
-export const JEV_POLICY_VERSION = '0.6.1-jev-policy';
+export const JEV_POLICY_VERSION = '0.6.2-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -315,7 +315,13 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
   const aligned = Math.abs(target.bearing) <= aimTolerance;
   if (mode === 'fight') {
     if (!aligned) return { forward: 0, strafe: 0, turn: turnToward(target.bearing), attack: false, use: false, tics: aimTics(target.bearing), ...meta };
-    return { forward: 0, strafe: 0, turn: 0, attack: fire, use: false, tics: 3, ...meta };
+    // fightFires: having chosen to stand and fight, an aligned shot at an
+    // enemy that can hit back is never withheld. With one shell left the
+    // model answered fire 0.2 and the player stood still, aimed, unhurt and
+    // silent, for 130 tics while a zombieman walked up to it.
+    let attack = fire;
+    if (!attack && target.canHitPlayerNow) { attack = true; rules.push('fightFires'); meta.rules = rules; meta.fire = true; }
+    return { forward: 0, strafe: 0, turn: 0, attack, use: false, tics: 3, ...meta };
   }
   if (mode === 'retreat') {
     // Backing away from an enemy that is already out of its effective range
@@ -405,7 +411,7 @@ export async function createJevPolicy(options = {}) {
   const stats = {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, rulesOnly: config.rulesOnly, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
-    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
+    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
     loot: { shotgun: 0, health: 0, shells: 0 }
   };
   const takenItems = new Set();

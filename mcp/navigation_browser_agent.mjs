@@ -310,7 +310,10 @@ export async function navigateEdge(page, graph, edge, options = {}) {
     const result = await exactInput(page, command);
     usedTics += result.tics;
     if (isCombatCommand(command)) combatTics += result.tics; else routeTics += result.tics;
-    if (portalDistance < bestPortalDistance - 4) { bestPortalDistance = portalDistance; ticsSinceProgress = 0; } else ticsSinceProgress += result.tics;
+    // Only route steps count against the no-progress budget; a standing
+    // fight is budgeted by combatTics.
+    if (portalDistance < bestPortalDistance - 4) { bestPortalDistance = portalDistance; ticsSinceProgress = 0; }
+    else if (!isCombatCommand(command)) ticsSinceProgress += result.tics;
     if (typeof options.onStep === 'function') {
       await options.onStep({ edge, state, command, result, usedTics, routeTics, combatTics, ticsSinceProgress, portalDistance, targetDistance, delta, doorOpening });
     }

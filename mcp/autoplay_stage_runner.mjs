@@ -192,7 +192,8 @@ export async function approachAndUseExit(page, exit, options = {}) {
     }
     usedTics += result.tics;
     if (isCombatCommand(command)) combatTics += result.tics; else routeTics += result.tics;
-    if (targetDistance < bestDistance - 4) { bestDistance = targetDistance; ticsSinceProgress = 0; } else ticsSinceProgress += result.tics;
+    if (targetDistance < bestDistance - 4) { bestDistance = targetDistance; ticsSinceProgress = 0; }
+    else if (!isCombatCommand(command)) ticsSinceProgress += result.tics;
     if (typeof options.onStep === 'function') {
       await options.onStep({ edge: null, exit, state, command, result, usedTics, routeTics, combatTics, ticsSinceProgress, targetDistance, delta });
     }
