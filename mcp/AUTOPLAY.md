@@ -580,6 +580,32 @@ handles "a few hitscan enemies and an imp in a corridor" reliably and
 "sixteen shotgun guys in an open hangar with a pistol" one time in ten.
 HNTR (skill 1: the 4-monster layout at full damage) has not been run.
 
+## E1M2: what layer 1 needed to learn
+
+`--map E1M2` failed at planning with `no_reachable_exit`. Four gaps, all
+in the deterministic layer, none in the policy:
+
+| Gap | Symptom | Fix |
+|---|---|---|
+| Tagged (remote) doors | sector 124 is closed (ceiling on floor), tag 12; the switch that opens it is line 777 (special 103, S1 open-stay) in sector 120. The graph knew only doors with the special on the door line itself. | `REMOTE_DOOR_SPECIALS` (2/4/29/61/63/86/90/103/108-114) become **trigger pseudo-edges**; a closed tagged sector some trigger opens is a `door/remote` edge with `requiredTag`. The progression tracks fired tags next to keys; `activateTrigger` walks to the line, uses it and waits for the door sector to open. |
+| Key pickup | the route enters the red key's sector (62) and leaves; sector-level routing never walked over the key | `collectKey` walks to the key thing after entering its sector; the engine state has no keycard field, so arrival within 28 units is the success test |
+| Skip-ahead on a looping route | E1M2 goes out for the key and back through the start sector. "Already in a later route sector" saw the start sector at position 32 and skipped the whole key detour in 0 tics, then died at the red door | skipping is bounded by the next key / trigger step and only looks forward |
+| Non-convex sectors | the start room's straight line from the player to the door portal ran into an inner corner (walls x=128 and y=-96) and a barrel; the follower stalled for 390 tics | `planLocalPath`: a visibility graph over the sector's wall corners (pushed 36 units inward) with a **capsule** walkability test (player radius against walls and solid things); `navigateEdge` and the approach helpers follow its waypoints, replanning on a stall |
+
+Result: E1M2 clears in god mode (3182 tics, 91 s; red key, switch,
+remote door, exit lift). E1M1's plan is unchanged (20 transitions).
+
+Two things to know. First, E1M1's god-mode reference run changed: local
+routing shortens the route (the exit corridor is reached at tic 974
+instead of 1063) and at that timing an imp stands in the corridor; the
+deterministic follower has no way past a monster body and now fails that
+run with `edge_no_progress`. Policy runs handle it (the stall rule forces
+a fight), so this is a documented layer-1 limit, not a regression in
+what the policy is measured on. Second, the E1M2 HMP baseline
+(`npm run autoplay:e1m2:hmp:baseline`) **clears** with 183 damage taken:
+the route crosses several health pickups (health rises 20 -> 95 once),
+so on E1M2 the policy is measured on damage and time, not on clearing.
+
 Note on determinism: with 0.4.2 and 0.4.3 all three runs were tic-identical
 (the rules decided every step), while the combat-budget trial's runs
 diverged again (Jev's answers mattered). A policy whose runs are identical
