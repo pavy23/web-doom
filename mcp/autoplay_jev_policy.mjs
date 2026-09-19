@@ -390,6 +390,8 @@ export async function createJevPolicy(options = {}) {
     shellsLootBelow: 6,        // walk to shells when the shotgun has fewer than this
     itemLootRadius: 256,       // only items this close (straight line; walls end it via the stall check)
     threatPriority: true,      // retarget to the most dangerous enemy in reach when not locked on
+    pipelineLagTics: 0,        // > 0: pipelined consultation, answers applied this many tics after their state
+    pipelineMaxAgeTics: 35,    // re-apply the latest decision for at most this long without a new one
     runThreshold: 0.5,         // safeToRun noul at or above this keeps advancing
     runHysteresis: 0.1,        // band around runThreshold before the mode flips
     retreatMaxDistance: 320,   // retreat only from enemies inside this distance
@@ -412,7 +414,8 @@ export async function createJevPolicy(options = {}) {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, rulesOnly: config.rulesOnly, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
     rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
-    loot: { shotgun: 0, health: 0, shells: 0 }
+    loot: { shotgun: 0, health: 0, shells: 0 },
+    pipeline: { lagTics: options.pipelineLagTics || 0, inflightLaunched: 0, applied: 0, reused: 0, stalls: 0, stallMsTotal: 0, lagTicsTotal: 0 }
   };
   const takenItems = new Set();
   let lastItemCount = null;
@@ -639,6 +642,15 @@ export async function createJevPolicy(options = {}) {
       return null;
     }
 
+    if (config.pipelineLagTics > 0) return pipelinedDecide(request, compact, state, proposal, context);
+
+    const result = await ask(request, state);
+    if (!result) return null;
+    return applyResult(result, compact, state, proposal, context, { requestTic: state.levelTime });
+  }
+
+  // One systemOne call with bookkeeping; null on error.
+  async function ask(request, state) {
     const started = Date.now();
     let result;
     try {
@@ -649,11 +661,18 @@ export async function createJevPolicy(options = {}) {
       if (config.stopOnError) throw error;
       return null;
     }
-    const latency = Date.now() - started;
+    result.latencyMs = Date.now() - started;
     stats.calls++;
-    stats.latencyMsTotal += latency;
+    stats.latencyMsTotal += result.latencyMs;
     stats.inputTokens += Number(result.usage?.input_tokens || 0);
     stats.outputTokens += Number(result.usage?.output_tokens || 0);
+    return result;
+  }
+
+  // Turn a resolved answer into the command for the step it is applied on.
+  // `compact` is the state of that step (in pipeline mode: newer than the
+  // state the answer was computed for).
+  async function applyResult(result, compact, state, proposal, context, meta = {}) {
     result.answers = resolveMode(result.answers, { ...config, lastMode });
     const mode = result.answers.mode?.choice;
     lastMode = mode;
@@ -665,22 +684,66 @@ export async function createJevPolicy(options = {}) {
     } else {
       dodgeRun = 0;
     }
-    lastDecision = { answers: result.answers, compact };
+    lastDecision = { answers: result.answers, compact, tic: Number(state.levelTime) };
     const options = ruleOptions(compact, state, context);
     const command = answersToCommand(result.answers, compact, proposal, options);
     rememberTarget(command, compact, state);
     if (command) stats.overrides++;
     for (const rule of command?.rules || []) stats.rules[rule] = (stats.rules[rule] || 0) + 1;
     await record({
-      kind: 'jev_decision', tic: state.levelTime, latencyMs: latency, model: result.model, usage: result.usage,
-      state: compact, answers: result.answers, proposal, command, ...(options.forceMode ? { forced: options.forceMode } : {})
+      kind: 'jev_decision', tic: state.levelTime, latencyMs: result.latencyMs, model: result.model, usage: result.usage,
+      state: compact, answers: result.answers, proposal, command, ...(options.forceMode ? { forced: options.forceMode } : {}), ...meta
     });
     return command;
+  }
+
+  // Pipelined consultation: the request for this step's state is sent
+  // without waiting; the world keeps stepping and the answer is applied
+  // `pipelineLagTics` later (waiting only if it has not arrived by then, so
+  // the trial stays a function of the answers, not of the network). Between
+  // arrivals the latest decision is re-applied to the current state.
+  let inflight = null;   // { tic, compact, promise }
+  async function pipelinedDecide(request, compact, state, proposal, context) {
+    const tic = Number(state.levelTime);
+    let command = null;
+    let applied = false;
+    if (inflight && tic >= inflight.tic + config.pipelineLagTics) {
+      const waitStart = Date.now();
+      const result = await inflight.promise;
+      const stallMs = Date.now() - waitStart;
+      stats.pipeline.applied++;
+      if (stallMs > 5) { stats.pipeline.stalls++; stats.pipeline.stallMsTotal += stallMs; }
+      stats.pipeline.lagTicsTotal += tic - inflight.tic;
+      const requestTic = inflight.tic;
+      inflight = null;
+      if (result) { command = await applyResult(result, compact, state, proposal, context, { requestTic, appliedTic: tic, stallMs }); applied = true; }
+    }
+    if (!inflight && stats.calls + stats.pipeline.inflightLaunched < config.maxCalls + stats.pipeline.applied) {
+      // Launch the next request on the current state (in flight while the
+      // world advances; the in-flight slot itself spaces the calls out).
+      const launchState = state;
+      inflight = { tic, compact, promise: ask(request, launchState) };
+      stats.pipeline.inflightLaunched++;
+      stepsSinceCall = 0;
+    }
+    if (applied) return command;
+    // No new answer this step: re-apply the latest one to the current state
+    // unless it is older than a second of game time.
+    if (lastDecision && tic - lastDecision.tic <= config.pipelineMaxAgeTics) {
+      const options = ruleOptions(compact, state, context);
+      const reused = answersToCommand(lastDecision.answers, compact, proposal, options);
+      rememberTarget(reused, compact, state);
+      if (reused) { stats.overrides++; stats.pipeline.reused++; }
+      for (const rule of reused?.rules || []) stats.rules[rule] = (stats.rules[rule] || 0) + 1;
+      return reused;
+    }
+    return null;
   }
 
   function summary() {
     return {
       ...stats,
+      pipeline: { ...stats.pipeline, avgStallMs: stats.pipeline.stalls ? round(stats.pipeline.stallMsTotal / stats.pipeline.stalls) : 0, avgLagTics: stats.pipeline.applied ? round(stats.pipeline.lagTicsTotal / stats.pipeline.applied, 1) : null },
       avgLatencyMs: stats.calls && !config.dryRun ? round(stats.latencyMsTotal / stats.calls) : null,
       estimatedInputCostUsd: round(stats.inputTokens / 1e6 * INPUT_TOKEN_PRICE_USD_PER_MILLION, 4)
     };

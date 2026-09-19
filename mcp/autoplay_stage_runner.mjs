@@ -621,6 +621,8 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       'jev-dry-run': { type: 'boolean', default: false },
       'jev-max-calls': { type: 'string', default: '600' },
       'jev-model': { type: 'string' },
+      'jev-pipeline': { type: 'string' },      // lag in tics; answers apply this long after their state
+      'jev-min-steps': { type: 'string', default: '1' },
       baseline: { type: 'string' },
       skill: { type: 'string' },
       headed: { type: 'boolean', default: false },
@@ -643,7 +645,11 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       maxTicsPerEdge: Number(values['max-edge-tics']),
       maxCombatTicsPerEdge: Number(values['max-combat-tics']),
       policy: String(values.policy),
-      jev: { dryRun: Boolean(values['jev-dry-run']), maxCalls: Number(values['jev-max-calls']), model: values['jev-model'] },
+      jev: {
+        dryRun: Boolean(values['jev-dry-run']), maxCalls: Number(values['jev-max-calls']), model: values['jev-model'],
+        pipelineLagTics: values['jev-pipeline'] ? Number(values['jev-pipeline']) : 0,
+        minStepsBetweenCalls: Number(values['jev-min-steps'])
+      },
       ...(values['report-dir'] ? { reportDir: path.resolve(values['report-dir']) } : {})
     });
     const { objective, ...rest } = report.summary;
