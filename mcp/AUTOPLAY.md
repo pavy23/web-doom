@@ -310,8 +310,54 @@ objective encodes.
 All of the above ran at **skill 0** (the launcher boots without `-skill`, so
 `gameskill` stayed at its zero initial value). E1M1 on that skill is easy
 enough that the baseline clears it without shooting, so the policy's margin
-here is small by design. `--skill uv` / `--skill nightmare` is where the
-tactics start to matter, and where the next baseline should be taken.
+here is small by design.
+
+### Ultra-Violence (skill 3, `--skill uv`)
+
+```text
+baseline (no policy)   FAILED player_dead at edge 60:56:194, tic 792, kills 5
+                       health 61 -> 0 in the courtyard (sectors 71/60, 6 enemies in view)
+jev policy 0.3 v3      FAILED 3/3: died at 72:74:309 (tic 947, 8 kills) and twice at
+                       60:56:194 (tic 869, 4 kills); 216-221 calls, ~$0.0125 per run
+modes answered         advance 215-220 of 216-221 per run; dodge once; fight/retreat never
+rules fired            stall 32-71, pointBlank 7-28 per run
+```
+
+At UV the route follower cannot outrun E1M1 any more, and the policy does
+not add a tactic: Jev answered `advance` at practically every consultation,
+so every shot fired came from the code-owned rules, and those only fire when
+already aligned or after a stall. The player was shot to death by shotgun
+guys at 40-130 units while advancing or while the route follower turned in
+place (geometric `turn` steps with no override, because `advance` + not
+aligned keeps the proposal). This is the first result where the model's
+judgment, not a missing rule, is the limiting factor.
+
+Averaged over the 658 UV consultations the `mode` probabilities were
+advance 0.73, dodge 0.22, fight 0.05, retreat 0.00, and they did not move
+with three or more enemies in view (646 of the 658). `danger` reached the
+critical band (>= 1.5) 12 times. The argmax mapping then turns a steady
+0.73 into `advance` every single time.
+
+Next steps, in order of expected effect:
+
+1. **State**: add what makes the danger visible. Health lost over the last
+   ~2 s, how many enemies have line of sight and are within firing range,
+   a per-type threat note (a shotgun guy at 50 units is the E1M1 killer),
+   and the weapon's ammo as "shots left". Today the model sees a health
+   number and a list of names with distances.
+2. **Questions**: replace the argmax over four modes with a gate. Ask a
+   `noul` "is it safe to keep running past these enemies right now?" and
+   only when it says no ask which of fight / retreat / dodge; a 0.27 mass
+   on "not advance" is a signal the argmax throws away.
+3. **Prompt bias**: the mode context says running past is free when
+   enemies are far or behind; at UV they are neither. Drop that sentence
+   and let the state carry it.
+4. **Mapping**: `advance` + not aligned currently keeps the route
+   follower's slow turn-in-place while being shot; a code rule that fights
+   the nearest enemy with line of sight when health dropped in the last
+   window (not only when stalled) would cover the geometric turning steps.
+5. **Skill 2 (HMP)** as the intermediate benchmark: UV kills the baseline
+   outright, so there is no partial-credit signal there yet.
 
 ## Determinism
 
