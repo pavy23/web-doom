@@ -14,7 +14,7 @@ import { appendFile } from 'node:fs/promises';
 
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 
-export const JEV_POLICY_VERSION = '0.4.0-jev-policy';
+export const JEV_POLICY_VERSION = '0.4.1-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -33,7 +33,17 @@ export const INPUT_TOKEN_PRICE_USD_PER_MILLION = 0.042; // published launch pric
 
 const WEAPON_NAMES = ['fist', 'pistol', 'shotgun', 'chaingun', 'rocket launcher', 'plasma rifle', 'BFG', 'chainsaw', 'super shotgun'];
 const AMMO_FOR_WEAPON = { 1: 'bullets', 2: 'shells', 3: 'bullets', 4: 'rockets', 5: 'cells', 6: 'cells', 8: 'shells' };
-const FIRING_RANGE = 640; // units inside which E1M1's hitscan enemies land most of their shots
+// Distance inside which each monster actually lands damage on a moving
+// player. Vanilla hitscan accuracy falls off with range and the shotgun's
+// pellet spread makes it harmless past ~300 units; imp fireballs are slow
+// enough to sidestep beyond ~450. A single 640 cut-off made the model treat
+// a shotgun guy at 630 units as a shooter and retreat from it.
+const EFFECTIVE_RANGE = { zombieman: 480, shotgun_guy: 320, imp: 450, demon: 80, spectre: 80, lost_soul: 400, cacodemon: 500 };
+const DEFAULT_EFFECTIVE_RANGE = 400;
+function effectiveRange(name) {
+  const key = String(name || '').toLowerCase().replace(/\s+/g, '_');
+  return EFFECTIVE_RANGE[key] ?? DEFAULT_EFFECTIVE_RANGE;
+}
 
 // What each monster does to the player, in the model's terms. Vanilla damage
 // figures (Doom wiki): zombieman 3-15 per shot, shotgun guy 3 pellets x 3-15,
@@ -80,7 +90,7 @@ export function compactState(state, context = {}) {
       bearingNote: 'degrees, positive = to the left, 0 = straight ahead',
       inView: Boolean(enemy.visible),
       lineOfSight: Boolean(enemy.lineOfSight),
-      canHitPlayerNow: Boolean(enemy.lineOfSight) && Number(enemy.distance) <= FIRING_RANGE
+      canHitPlayerNow: Boolean(enemy.lineOfSight) && Number(enemy.distance) <= effectiveRange(enemy.name)
     }));
   const shooters = enemies.filter(enemy => enemy.canHitPlayerNow).length;
   const recentDamage = Number(context.recentDamage ?? 0);
@@ -97,8 +107,8 @@ export function compactState(state, context = {}) {
     },
     threat: {
       enemiesThatCanHitPlayerNow: shooters,
-      note: shooters === 0 ? 'nothing can reach the player at the moment'
-        : `${shooters} enem${shooters === 1 ? 'y has' : 'ies have'} a clear shot; running past hitscan enemies inside ${FIRING_RANGE} units means taking their fire`
+      note: shooters === 0 ? 'no enemy is close enough to hurt the player at the moment'
+        : `${shooters} enem${shooters === 1 ? 'y is' : 'ies are'} close enough to land hits (canHitPlayerNow); hitscan enemies inside their effective range hit a running player too`
     },
     route: {
       phase: context.edge ? `moving to route sector ${context.edge.to} via a ${context.edge.kind}` : 'approaching the exit switch',
@@ -153,7 +163,14 @@ export function resolveMode(answers, options = {}) {
   const safe = Number(answers.safeToRun?.noul ?? 1);
   const response = answers.response?.choice || 'fight';
   const responseProbs = answers.response?.probabilities || { [response]: 1 };
-  const mode = safe >= Number(options.runThreshold ?? 0.5) ? 'advance' : response;
+  // Hysteresis: leaving `advance` needs the gate below threshold - band,
+  // returning to it needs threshold + band. Without it the gate flipped
+  // 0.85 <-> 0.2 on consecutive steps and the player oscillated in place.
+  const threshold = Number(options.runThreshold ?? 0.5);
+  const band = Number(options.runHysteresis ?? 0.1);
+  const wasAdvancing = options.lastMode == null || options.lastMode === 'advance';
+  const advance = wasAdvancing ? safe >= threshold - band : safe >= threshold + band;
+  const mode = advance ? 'advance' : response;
   const probabilities = { advance: round(safe, 3) };
   for (const key of ['fight', 'retreat', 'dodge']) probabilities[key] = round((1 - safe) * Number(responseProbs[key] ?? 0), 3);
   return { ...answers, mode: { type: 'choice', choice: mode, confidence: round(Math.abs(safe - 0.5) * 2, 2), probabilities, derivedFrom: 'safeToRun+response' } };
@@ -199,6 +216,16 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
     return { forward: 0, strafe: 0, turn: 0, attack: fire, use: false, tics: 3, ...meta };
   }
   if (mode === 'retreat') {
+    // Backing away from an enemy that is already out of its effective range
+    // gives up route progress for nothing: keep the route command instead
+    // (and shoot if aligned). The model asked to retreat from a shotgun guy
+    // at 600 units for 280 tics before this guard existed.
+    if (Number(target.distance) > Number(options.retreatMaxDistance ?? 320)) {
+      rules.push('noRetreatFar');
+      meta.rules = rules;
+      meta.mode = 'advance';
+      return fire && aligned ? { ...proposal, attack: true, ...meta } : null;
+    }
     return { forward: -0.6, strafe: 0, turn: aligned ? 0 : turnToward(target.bearing, 0.4), attack: fire && aligned, use: false, tics: 4, ...meta };
   }
   if (mode === 'dodge') {
@@ -238,6 +265,8 @@ export async function createJevPolicy(options = {}) {
     dodgeHoldCalls: 4,         // dodge answers per strafe side before flipping
     pointBlankDistance: 96,    // aligned target this close is always fired at
     runThreshold: 0.5,         // safeToRun noul at or above this keeps advancing
+    runHysteresis: 0.1,        // band around runThreshold before the mode flips
+    retreatMaxDistance: 320,   // retreat only from enemies inside this distance
     recentWindowTics: 70,      // "health lost in the last 2 s" window
     model: undefined,
     log: null,                 // JSONL path
@@ -249,8 +278,9 @@ export async function createJevPolicy(options = {}) {
   const stats = {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
-    rules: { stall: 0, dodgeHold: 0, pointBlank: 0 }
+    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0 }
   };
+  let lastMode = null;
   let stepsSinceCall = Infinity;
   let dodgeSide = 1;
   let dodgeRun = 0;            // consecutive dodge answers on the current side
@@ -341,8 +371,9 @@ export async function createJevPolicy(options = {}) {
     stats.latencyMsTotal += latency;
     stats.inputTokens += Number(result.usage?.input_tokens || 0);
     stats.outputTokens += Number(result.usage?.output_tokens || 0);
-    result.answers = resolveMode(result.answers, config);
+    result.answers = resolveMode(result.answers, { ...config, lastMode });
     const mode = result.answers.mode?.choice;
+    lastMode = mode;
     stats.modes[mode] = (stats.modes[mode] || 0) + 1;
     // dodgeHold rule: keep the strafe side for a run of dodge answers.
     if (mode === 'dodge') {
