@@ -191,7 +191,8 @@ the model supplies narrow typed judgments):
 |---|---|
 | `shouldConsult` | Gate: only steps with a visible enemy or health below 40 ask the model. Everything else keeps the deterministic proposal for free. |
 | `compactState` | Named-field state: player health/armor/weapon/ammo, route phase and waypoint bearing, up to 5 nearest visible enemies with distance and bearing (positive = left). |
-| `buildQuestions` | Four parallel questions over that state: `mode` choice (advance / fight / retreat / dodge), `target` choice (one label per visible enemy + none), `fire` noul, `danger` score (safe / caution / critical). |
+| `buildQuestions` | Five parallel questions over that state (policy 0.4.0): `safeToRun` noul (keep running past these enemies?), `response` choice (fight / retreat / dodge, used when the gate says no), `target` choice (one label per visible enemy + none), `fire` noul, `danger` score (safe / caution / critical). `resolveMode` folds the first two into the 4-way `mode` the mapper, logs, dashboard and overlay read: `advance` when `safeToRun >= runThreshold` (0.5), else the response; its probabilities are the joint distribution. Up to 0.3.x `mode` was a single 4-way choice. |
+| state (0.4.0) | Besides health/armor/weapon, the model gets `healthLostInLast2s` with a plain-language note, `shotsLeft`, a `threat` block (how many enemies have a clear shot inside 640 units) and, per enemy, a `threat` note with vanilla damage figures and `canHitPlayerNow`. Added after UV showed the 0.3 state (a health number and names with distances) never moved the model off `advance`. |
 | `answersToCommand` | Maps the answers to the same bounded ticcmd vocabulary as the follower: fight turns toward the target then holds ATTACK when aligned within 8 degrees; retreat backs off facing the target; dodge strafes; advance keeps the proposal (and fires if aligned). |
 | `maxCalls` | Hard cost cap per trial; after it the policy silently stops consulting and the report shows `capped: true`. |
 | safety rules | Code-owned overrides applied on top of the answers (below). |
@@ -338,7 +339,8 @@ with three or more enemies in view (646 of the 658). `danger` reached the
 critical band (>= 1.5) 12 times. The argmax mapping then turns a steady
 0.73 into `advance` every single time.
 
-Next steps, in order of expected effect:
+Next steps, in order of expected effect (1-3 became policy 0.4.0, results
+below):
 
 1. **State**: add what makes the danger visible. Health lost over the last
    ~2 s, how many enemies have line of sight and are within firing range,

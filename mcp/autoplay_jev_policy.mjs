@@ -14,7 +14,7 @@ import { appendFile } from 'node:fs/promises';
 
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 
-export const JEV_POLICY_VERSION = '0.3.0-jev-policy';
+export const JEV_POLICY_VERSION = '0.4.0-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -33,6 +33,25 @@ export const INPUT_TOKEN_PRICE_USD_PER_MILLION = 0.042; // published launch pric
 
 const WEAPON_NAMES = ['fist', 'pistol', 'shotgun', 'chaingun', 'rocket launcher', 'plasma rifle', 'BFG', 'chainsaw', 'super shotgun'];
 const AMMO_FOR_WEAPON = { 1: 'bullets', 2: 'shells', 3: 'bullets', 4: 'rockets', 5: 'cells', 6: 'cells', 8: 'shells' };
+const FIRING_RANGE = 640; // units inside which E1M1's hitscan enemies land most of their shots
+
+// What each monster does to the player, in the model's terms. Vanilla damage
+// figures (Doom wiki): zombieman 3-15 per shot, shotgun guy 3 pellets x 3-15,
+// imp fireball 3-24 / claw 3-24, demon bite 4-40. Names as doom_control.c emits them.
+const THREAT_NOTES = {
+  zombieman: 'hitscan pistol, 3-15 damage per shot, dies to 4 pistol shots',
+  shotgun_guy: 'hitscan shotgun, up to 45 damage per blast, the deadliest thing on E1M1 inside 200 units; dies to 3 pistol shots',
+  imp: 'throws slow fireballs (3-24, can be dodged), claws in melee (3-24); dies to 6 pistol shots',
+  demon: 'fast melee only, 4-40 per bite, takes 15 pistol shots; keep away',
+  spectre: 'invisible demon, fast melee only; keep away',
+  lost_soul: 'flying charger, 3-24 per hit',
+  cacodemon: 'flying, slow fireballs 5-40; very tough',
+  baron_of_hell: 'very tough, avoid with a weak weapon'
+};
+function threatNote(name) {
+  const key = String(name || '').toLowerCase().replace(/\s+/g, '_');
+  return THREAT_NOTES[key] || 'unknown monster';
+}
 
 function round(value, digits = 0) {
   const factor = 10 ** digits;
@@ -54,21 +73,32 @@ export function compactState(state, context = {}) {
     .map((enemy, index) => ({
       id: `enemy_${index}`,
       name: enemy.name,
+      threat: threatNote(enemy.name),
       health: Number(enemy.health),
       distance: round(enemy.distance),
       bearing: round(enemy.relativeAngle),
       bearingNote: 'degrees, positive = to the left, 0 = straight ahead',
       inView: Boolean(enemy.visible),
-      lineOfSight: Boolean(enemy.lineOfSight)
+      lineOfSight: Boolean(enemy.lineOfSight),
+      canHitPlayerNow: Boolean(enemy.lineOfSight) && Number(enemy.distance) <= FIRING_RANGE
     }));
+  const shooters = enemies.filter(enemy => enemy.canHitPlayerNow).length;
+  const recentDamage = Number(context.recentDamage ?? 0);
   return {
     game: 'DOOM (1993) single player. The player must reach the level exit alive.',
     objective: OBJECTIVE_BRIEF,
     player: {
       health: Number(player.health),
       armor: Number(player.armor),
+      healthLostInLast2s: recentDamage,
+      healthNote: recentDamage > 0 ? 'the player is being hit right now' : 'not taking damage at the moment',
       weapon: WEAPON_NAMES[weaponIndex] || `weapon ${weaponIndex}`,
-      ammoForWeapon: ammoKind ? Number(player.ammo?.[ammoKind]) : null
+      shotsLeft: ammoKind ? Number(player.ammo?.[ammoKind]) : null
+    },
+    threat: {
+      enemiesThatCanHitPlayerNow: shooters,
+      note: shooters === 0 ? 'nothing can reach the player at the moment'
+        : `${shooters} enem${shooters === 1 ? 'y has' : 'ies have'} a clear shot; running past hitscan enemies inside ${FIRING_RANGE} units means taking their fire`
     },
     route: {
       phase: context.edge ? `moving to route sector ${context.edge.to} via a ${context.edge.kind}` : 'approaching the exit switch',
@@ -87,12 +117,19 @@ export function buildQuestions(compact, primitives) {
     enemy.id, `${enemy.name} at ${enemy.distance} units, bearing ${enemy.bearing}, health ${enemy.health}`
   ]));
   targetLabels.none = 'no enemy is worth shooting right now';
+  // Two-stage mode: a gate ("keep running?") and, for the no case, the
+  // response. A single 4-way argmax sat at advance 0.73 for 658 UV
+  // consultations in a row while the player died; the 0.27 on "not advance"
+  // is the signal, so it gets its own question and its own threshold.
   return {
-    mode: choice({
-      question: 'What should the player do for the next fraction of a second?',
-      context: `${OBJECTIVE_BRIEF} The player is following a known route to the exit. Enemies in DOOM approach and shoot; a Zombieman or Imp dies to a few pistol shots, a Demon must be shot many times and is fast, a Baron of Hell should be avoided with a weak weapon. Stopping to fight costs time and exposes the player to every enemy in view; running past costs nothing when the enemies are far or behind.`
+    safeToRun: noul({
+      question: 'Is it safe for the player to keep running along the route right now, without stopping to deal with these enemies?',
+      context: `${OBJECTIVE_BRIEF} The player is following a known route to the exit. Judge from the threat block, each enemy's threat note, distance and line of sight, and the health lost in the last two seconds.`
+    }),
+    response: choice({
+      question: 'If the player should NOT keep running, what is the best response for the next fraction of a second?',
+      context: 'Fighting stops the player and exposes it to every enemy with a clear shot, but kills the threat. Retreating opens distance while keeping the target in front. Dodging keeps route progress but only helps against projectiles, not hitscan weapons.'
     }, {
-      advance: 'keep moving along the route toward the exit and ignore the enemies',
       fight: 'stop moving, face the chosen enemy and shoot until it dies',
       retreat: 'move backwards away from the enemies while facing them',
       dodge: 'keep advancing but strafe sideways to avoid projectiles'
@@ -107,6 +144,21 @@ export function buildQuestions(compact, primitives) {
   };
 }
 
+// Fold the two-stage answers into the `mode` shape the mapper, the log, the
+// dashboard and the overlay already read: advance when the gate says running
+// is safe (noul >= runThreshold), otherwise the chosen response. The
+// probabilities are the joint distribution so the 4-way view stays honest.
+export function resolveMode(answers, options = {}) {
+  if (answers.mode?.choice) return answers; // already 4-way (older logs, tests)
+  const safe = Number(answers.safeToRun?.noul ?? 1);
+  const response = answers.response?.choice || 'fight';
+  const responseProbs = answers.response?.probabilities || { [response]: 1 };
+  const mode = safe >= Number(options.runThreshold ?? 0.5) ? 'advance' : response;
+  const probabilities = { advance: round(safe, 3) };
+  for (const key of ['fight', 'retreat', 'dodge']) probabilities[key] = round((1 - safe) * Number(responseProbs[key] ?? 0), 3);
+  return { ...answers, mode: { type: 'choice', choice: mode, confidence: round(Math.abs(safe - 0.5) * 2, 2), probabilities, derivedFrom: 'safeToRun+response' } };
+}
+
 function turnToward(bearing, max = 0.7) {
   // relativeAngle > 0 is to the left (geometric CCW); agent +turn is right.
   // The floor of 0.2 keeps a forced fight from spending 50 tics aligning.
@@ -115,7 +167,8 @@ function turnToward(bearing, max = 0.7) {
 }
 
 // Map typed answers onto a bounded ticcmd. Returns null to keep the proposal.
-export function answersToCommand(answers, compact, proposal, options = {}) {
+export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
+  const answers = resolveMode(rawAnswers, options);
   const aimTolerance = Number(options.aimTolerance ?? 8);
   const enemyById = new Map(compact.visibleEnemies.map(enemy => [enemy.id, enemy]));
   const rules = [];
@@ -184,6 +237,8 @@ export async function createJevPolicy(options = {}) {
     meleeRange: 96,            // ... with an enemy this close -> forced fight
     dodgeHoldCalls: 4,         // dodge answers per strafe side before flipping
     pointBlankDistance: 96,    // aligned target this close is always fired at
+    runThreshold: 0.5,         // safeToRun noul at or above this keeps advancing
+    recentWindowTics: 70,      // "health lost in the last 2 s" window
     model: undefined,
     log: null,                 // JSONL path
     onDecision: null,          // async (entry) => void, called after every consultation (overlay, live views)
@@ -235,11 +290,21 @@ export async function createJevPolicy(options = {}) {
   }
 
   let lastHealth = null;
+  const healthHistory = [];   // { tic, health } per step, for the recent-damage window
+  function recentDamage(state) {
+    const tic = Number(state?.levelTime ?? 0);
+    const health = Number(state?.player?.health ?? 0);
+    healthHistory.push({ tic, health });
+    while (healthHistory.length && healthHistory[0].tic < tic - config.recentWindowTics) healthHistory.shift();
+    const peak = Math.max(...healthHistory.map(h => h.health));
+    return Math.max(0, peak - health);
+  }
   async function decide(context) {
     const { state, proposal } = context;
     stepsSinceCall++;
     const consult = shouldConsult(state, config, { lastHealth });
     lastHealth = Number(state?.player?.health ?? lastHealth);
+    const lost = recentDamage(state);
     if (!consult) return null;
     stats.eligibleSteps++;
     if (stepsSinceCall < config.minStepsBetweenCalls) {
@@ -248,7 +313,7 @@ export async function createJevPolicy(options = {}) {
     }
     if (stats.calls >= config.maxCalls) { stats.capped = true; return null; }
 
-    const compact = compactState(state, { ...context, maxEnemies: config.maxEnemies });
+    const compact = compactState(state, { ...context, maxEnemies: config.maxEnemies, meleeRange: config.meleeRange, recentDamage: lost });
     const questions = buildQuestions(compact, sdk);
     const request = { state: compact, questions, ...(config.model ? { model: config.model } : {}) };
     stepsSinceCall = 0;
@@ -276,6 +341,7 @@ export async function createJevPolicy(options = {}) {
     stats.latencyMsTotal += latency;
     stats.inputTokens += Number(result.usage?.input_tokens || 0);
     stats.outputTokens += Number(result.usage?.output_tokens || 0);
+    result.answers = resolveMode(result.answers, config);
     const mode = result.answers.mode?.choice;
     stats.modes[mode] = (stats.modes[mode] || 0) + 1;
     // dodgeHold rule: keep the strafe side for a run of dodge answers.
