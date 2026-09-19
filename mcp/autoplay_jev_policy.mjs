@@ -14,7 +14,7 @@ import { appendFile } from 'node:fs/promises';
 
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 
-export const JEV_POLICY_VERSION = '0.5.1-jev-policy';
+export const JEV_POLICY_VERSION = '0.5.2-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -333,7 +333,10 @@ export async function createJevPolicy(options = {}) {
     meleeRange: 96,            // ... with an enemy this close -> forced fight
     dodgeHoldCalls: 4,         // dodge answers per strafe side before flipping
     pointBlankDistance: 96,    // aligned target this close is always fired at
-    coverHold: true,           // back up to the edge entry point when fighting 2+ shooters near it
+    coverHold: false,          // back up to the edge entry point when fighting 2+ shooters near it.
+                               // Off: the entry point is not a doorway in the LOS sense, and the
+                               // UV trial with it on went 1/3 (from 3/3) with the player shot
+                               // while backing up in the open. Needs map LOS geometry to be real.
     coverMaxDistance: 300,     // only when the entry point is this close
     coverArrive: 40,           // ... and stop backing up inside this distance of it
     lootShotgun: true,         // after killing a shotgun guy with the pistol, walk over its dropped shotgun
