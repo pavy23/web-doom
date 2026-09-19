@@ -299,7 +299,8 @@ export async function runStageAttempt(page, stage, options = {}) {
     attempt.totalTics += result.usedTics;
     attempt.edgeResults.push({
       edge: edge.id, kind: edge.kind, action: edge.action,
-      passed: result.passed, usedTics: result.usedTics, failure: result.failure || null,
+      passed: result.passed, usedTics: result.usedTics, routeTics: result.routeTics ?? null, combatTics: result.combatTics ?? null,
+      failure: result.failure || null,
       endSector: result.finalState?.currentSector ?? null,
       health: result.finalState?.player?.health ?? null
     });

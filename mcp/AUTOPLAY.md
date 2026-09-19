@@ -110,6 +110,12 @@ node autoplay_stage_runner.mjs --map E1M1 --runs 3 --no-god --policy jev --jev-m
   --report-dir exports/autoplay/e1m1-jev --baseline exports/autoplay/e1m1/report.json
 ```
 
+Budgets: `--max-edge-tics` (280) bounds the route-following steps of one
+edge; `--max-combat-tics` (600) separately bounds the fight/retreat steps a
+policy spends there (a policy command with `forward <= 0`). Each edge result
+reports `routeTics` and `combatTics`; `totalTics` in the objective counts
+both, so a long fight still ranks below a quick pass.
+
 ## Objective: what a better run means
 
 `autoplay_objective.mjs` holds one definition used by both the report and the
@@ -354,6 +360,51 @@ below):
 3. **Prompt bias**: the mode context says running past is free when
    enemies are far or behind; at UV they are neither. Drop that sentence
    and let the state carry it.
+### UV with policy 0.4.x (gate question, threat state) and a combat budget
+
+Each version ran the same 3-run UV trial against the UV baseline (dies at
+tic 792). One iteration per row; every failure mode is in the logs.
+
+```text
+0.4.0  gate + threat block           0/3  edge budget at 3:4:151 (tic ~500)
+       safeToRun followed the "shooters" count, which flipped 0/1 as a
+       shotgun guy crossed a single 640-unit cut-off -> advance/retreat
+       oscillation in place, 0 deaths, 0-58 damage
+0.4.1  per-type effective range,     0/3  edge budget at 7:54:385 (hangar), 21-33 damage
+       retreat guard, hysteresis         retreat 67 of 111 answers; fight target
+                                         re-picked "nearest" each step -> aim thrash
+0.4.2  sticky target, hitscanFight,  0/3  edge budget at 7:54:385, 72 damage, 3 kills
+       0.08 turn floor                   115 of 156 fight steps spent aiming:
+                                         measured 7.0 deg per turn unit per tic,
+                                         so 0.08 x 1 tic = 0.5 deg
+0.4.3  exact aim (aimStep)           0/3  edge budget at 7:54:385, 45 damage, 5 kills
+                                         fights now end; the 280-tic route budget
+                                         (baseline needs 133 there running) does not
+                                         leave room for 4-5 shotgun guys with a pistol
+0.4.3 + combat budget                1/3  run 0 CLEARED: 1779 tics (50.8 s), 87 damage,
+       (--max-combat-tics 600,           min health 13, 19 kills, 480 calls, $0.028
+       fight/retreat steps counted       runs 1-2 died in the courtyard (60:56:194),
+       apart from --max-edge-tics)       the baseline's death spot, at 43-44 hp after
+                                         the hangar cost 51-63 hp
+```
+
+The first UV clear where the baseline dies: `better: cleared where the
+baseline did not`. It is 1 in 3, at 13 hp, and 1.4x the skill-0 clear time,
+so it is a proof that the layers fit together, not a solved map. The hangar
+edge (`7:54:385`, 4-5 shotgun guys in the open) costs 51-63 hp with a pistol
+whichever policy version fights it; the courtyard then finishes a player who
+arrives under ~45 hp. What would move the clear rate, in order: pick up the
+shotgun (the route ignores items; the hangar fight with a shotgun is 2-3
+blasts per enemy instead of 3-6 pistol shots each), fight the hangar from
+the doorway instead of the open floor (a "hold position at cover" mode the
+mapper does not have), and treat health under ~40 before the courtyard as a
+reason to retreat to the previous sector rather than advance.
+
+Note on determinism: with 0.4.2 and 0.4.3 all three runs were tic-identical
+(the rules decided every step), while the combat-budget trial's runs
+diverged again (Jev's answers mattered). A policy whose runs are identical
+is a policy the model is not steering.
+
 4. **Mapping**: `advance` + not aligned currently keeps the route
    follower's slow turn-in-place while being shot; a code rule that fights
    the nearest enemy with line of sight when health dropped in the last
