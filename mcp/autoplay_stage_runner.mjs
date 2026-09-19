@@ -10,9 +10,13 @@
 // CLI:
 //   node autoplay_stage_runner.mjs --map E1M1 --runs 3 [--no-god] [--max-edge-tics 280]
 //                                  [--policy jev] [--jev-dry-run] [--jev-max-calls 600]
+//                                  [--report-dir DIR] [--baseline other/report.json]
 //
 // Every step is appended to <reportDir>/steps.jsonl and a summary is written to
 // <reportDir>/report.json so later policy layers can be compared tic-for-tic.
+// Runs are ranked by the objective in autoplay_objective.mjs (deaths, then
+// damage taken, then world tics); --baseline adds the deltas against another
+// trial's best run, typically the deterministic follower on the same map.
 
 import { mkdir, readFile, writeFile, appendFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -28,8 +32,9 @@ import { buildNavigationGraph, findExitProgression } from './navigation_graph.js
 import {
   coldBoot, exactInput, launchChromium, navigateEdge
 } from './navigation_browser_agent.mjs';
+import { OBJECTIVE_ORDER, OBJECTIVE_VERSION, compareToBaseline, rankRuns, runMetrics } from './autoplay_objective.mjs';
 
-export const AUTOPLAY_VERSION = '0.1.0-autoplay';
+export const AUTOPLAY_VERSION = '0.2.0-autoplay';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_IWAD = path.join(here, '..', 'doom1.wad');
@@ -299,6 +304,35 @@ export async function runStageAttempt(page, stage, options = {}) {
   return attempt;
 }
 
+// Objective block of the summary: the ranked order of this trial's runs, the
+// best run's metrics and, when a baseline report was given, the deltas.
+function summariseObjective(runs, baselineReport) {
+  const ranking = rankRuns(runs);
+  return {
+    version: OBJECTIVE_VERSION,
+    order: OBJECTIVE_ORDER,
+    ranking,
+    best: ranking.length ? { runIndex: ranking[0], ...runMetrics(runs[ranking[0]]) } : null,
+    perRun: runs.map(run => runMetrics(run)),
+    ...(baselineReport ? { baseline: compareToBaseline(runs, baselineReport) } : {})
+  };
+}
+
+export async function loadBaselineReport(file) {
+  if (!file) return null;
+  let text;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    console.error(`autoplay: baseline ${file} not found, ranking without a comparison`);
+    return null;
+  }
+  const report = JSON.parse(text);
+  if (!Array.isArray(report.runs)) throw new Error(`Baseline ${file} is not an autoplay report`);
+  return { ...report, reportPath: file };
+}
+
 export async function runStageClearTrial(input = {}) {
   const config = {
     map: 'E1M1',
@@ -324,6 +358,7 @@ export async function runStageClearTrial(input = {}) {
     map: config.map,
     godMode: Boolean(config.godMode),
     policy: config.policy || 'none',
+    baseline: config.baselineReport ? { reportPath: config.baselineReport.reportPath, policy: config.baselineReport.policy || 'none', map: config.baselineReport.map } : null,
     runs: [],
     plan: {
       startSector: stage.progression.startSector,
@@ -379,6 +414,7 @@ export async function runStageClearTrial(input = {}) {
       if (policy && !attempt.policy) attempt.policy = policy.summary();
       console.error(`autoplay ${config.map} run ${runIndex}: ${attempt.passed ? 'CLEARED' : 'FAILED'} ${JSON.stringify({
         totalTics: attempt.totalTics, steps: attempt.steps, failure: attempt.failure || null, failedEdge: attempt.failedEdge || null,
+        deaths: attempt.telemetry?.deaths ?? null, damageTaken: attempt.telemetry?.damageTaken ?? null, kills: attempt.telemetry?.kills ?? null,
         ...(attempt.policy ? { jevCalls: attempt.policy.calls, jevOverrides: attempt.policy.overrides, jevInputTokens: attempt.policy.inputTokens, jevCostUsd: attempt.policy.estimatedInputCostUsd } : {})
       })}`);
     }
@@ -399,6 +435,8 @@ export async function runStageClearTrial(input = {}) {
     deaths: report.runs.map(run => run.telemetry?.deaths ?? null),
     minHealth: report.runs.map(run => run.telemetry?.minHealth ?? null),
     damageTaken: report.runs.map(run => run.telemetry?.damageTaken ?? null),
+    kills: report.runs.map(run => run.telemetry?.kills ?? null),
+    objective: summariseObjective(report.runs, config.baselineReport),
     ...(config.policy === 'jev' ? {
       jevCalls: report.runs.map(run => run.policy?.calls ?? null),
       jevOverrides: report.runs.map(run => run.policy?.overrides ?? null),
@@ -424,14 +462,17 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       policy: { type: 'string', default: 'none' },
       'jev-dry-run': { type: 'boolean', default: false },
       'jev-max-calls': { type: 'string', default: '600' },
-      'jev-model': { type: 'string' }
+      'jev-model': { type: 'string' },
+      baseline: { type: 'string' }
     },
     allowNegative: true
   });
   const { startBridge } = await import('./server.js');
   const bridge = startBridge();
   try {
+    const baselineReport = values.baseline ? await loadBaselineReport(path.resolve(values.baseline)) : null;
     const report = await runStageClearTrial({
+      baselineReport,
       map: String(values.map).toUpperCase(),
       runs: Number(values.runs),
       godMode: Boolean(values.god),
@@ -440,7 +481,10 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       jev: { dryRun: Boolean(values['jev-dry-run']), maxCalls: Number(values['jev-max-calls']), model: values['jev-model'] },
       ...(values['report-dir'] ? { reportDir: path.resolve(values['report-dir']) } : {})
     });
-    console.error(`autoplay summary: ${JSON.stringify(report.summary)} (report: ${report.reportPath})`);
+    const { objective, ...rest } = report.summary;
+    console.error(`autoplay summary: ${JSON.stringify(rest)} (report: ${report.reportPath})`);
+    console.error(`autoplay objective (${objective.order.join(' > ')}): best run ${JSON.stringify(objective.best)}`);
+    if (objective.baseline) console.error(`autoplay vs baseline ${objective.baseline.baselinePolicy}: ${objective.baseline.verdict} ${JSON.stringify(objective.baseline.delta)}`);
     process.exitCode = report.passed ? 0 : 1;
   } catch (error) {
     console.error(error?.stack || error);

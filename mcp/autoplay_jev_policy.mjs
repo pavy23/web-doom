@@ -12,7 +12,9 @@
 
 import { appendFile } from 'node:fs/promises';
 
-export const JEV_POLICY_VERSION = '0.1.0-jev-policy';
+import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
+
+export const JEV_POLICY_VERSION = '0.2.0-jev-policy';
 export const INPUT_TOKEN_PRICE_USD_PER_MILLION = 0.042; // published launch price; verify in console
 
 const WEAPON_NAMES = ['fist', 'pistol', 'shotgun', 'chaingun', 'rocket launcher', 'plasma rifle', 'BFG', 'chainsaw', 'super shotgun'];
@@ -44,6 +46,7 @@ export function compactState(state, context = {}) {
     }));
   return {
     game: 'DOOM (1993) single player. The player must reach the level exit alive.',
+    objective: OBJECTIVE_BRIEF,
     player: {
       health: Number(player.health),
       armor: Number(player.armor),
@@ -70,7 +73,7 @@ export function buildQuestions(compact, primitives) {
   return {
     mode: choice({
       question: 'What should the player do for the next fraction of a second?',
-      context: 'The player is following a known route to the exit. Enemies in DOOM approach and shoot; a Zombieman or Imp dies to a few pistol shots, a Demon must be shot many times and is fast, a Baron of Hell should be avoided with a weak weapon.'
+      context: `${OBJECTIVE_BRIEF} The player is following a known route to the exit. Enemies in DOOM approach and shoot; a Zombieman or Imp dies to a few pistol shots, a Demon must be shot many times and is fast, a Baron of Hell should be avoided with a weak weapon. Stopping to fight costs time and exposes the player to every enemy in view; running past costs nothing when the enemies are far or behind.`
     }, {
       advance: 'keep moving along the route toward the exit and ignore the enemies',
       fight: 'stop moving, face the chosen enemy and shoot until it dies',
@@ -79,7 +82,7 @@ export function buildQuestions(compact, primitives) {
     }),
     target: choice('If the player shoots, which enemy is the best target?', targetLabels),
     fire: noul('Should the player pull the trigger right now with the current weapon and ammo?'),
-    danger: score('How dangerous is the situation for the player?', [
+    danger: score('How much damage is the player likely to take in the next few seconds if nothing changes?', [
       'safe: no enemy can hurt the player soon',
       'caution: an enemy may deal minor damage',
       'critical: the player may die within seconds without acting'

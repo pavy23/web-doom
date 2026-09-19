@@ -103,9 +103,51 @@ before a trial spends anything.
 export TYPESAFE_API_KEY=...            # never commit it; console.typesafe.ai
 npm run autoplay:jev:smoke             # one systemOne call, prints answers + usage
 npm run autoplay:e1m1:jev:dry          # full trial, records what WOULD be sent, no API calls
-npm run autoplay:e1m1:jev              # full trial with live Jev decisions
-node autoplay_stage_runner.mjs --map E1M1 --runs 3 --no-god --policy jev --jev-max-calls 600
+npm run autoplay:e1m1:live             # deterministic baseline -> exports/autoplay/e1m1
+npm run autoplay:e1m1:jev              # live Jev trial -> exports/autoplay/e1m1-jev, ranked against the baseline
+npm run autoplay:dashboard             # exports/autoplay/e1m1-jev/dashboard.html
+node autoplay_stage_runner.mjs --map E1M1 --runs 3 --no-god --policy jev --jev-max-calls 600 \
+  --report-dir exports/autoplay/e1m1-jev --baseline exports/autoplay/e1m1/report.json
 ```
+
+## Objective: what a better run means
+
+`autoplay_objective.mjs` holds one definition used by both the report and the
+policy prompt, so the metric a trial is judged on and the goal Jev is briefed
+with cannot drift apart.
+
+Runs are ranked lexicographically:
+
+| Rank | Metric | Source |
+|---|---|---|
+| 1 | `deaths` | telemetry; a run that did not clear ranks last |
+| 2 | `damageTaken` | telemetry (health points lost) |
+| 3 | `totalTics` | world tics to leave `GS_LEVEL` (35 = 1 s) |
+
+Kills, ammo and items are reported but do not rank a run: killing is only
+worth the time when it lowers the damage the player would otherwise take.
+The same sentence is sent to Jev as `state.objective` and inside the `mode`
+question's context (`OBJECTIVE_BRIEF`).
+
+`report.summary.objective` carries the ranking, the best run's metrics and,
+with `--baseline other/report.json`, the deltas of this trial's best run
+against the baseline's best run plus a one-line verdict
+(`better: damageTaken 33 -> 10`, `worse: did not clear`, ...). The CLI prints
+both lines after the summary.
+
+## Dashboard
+
+`autoplay_dashboard.mjs <reportDir> [--baseline DIR] [--out FILE]` renders one
+self-contained HTML page from `report.json`, `steps.jsonl` and `jev.jsonl`:
+objective tiles with baseline deltas, player health of both runs on one time
+axis, the Jev mode chosen at every consultation (one lane per mode, filled dot
+= override applied, hollow = proposal kept), the danger score, mode counts and
+the full decision table. No dependencies, no network, works offline; hover
+gives a shared crosshair across the three time charts.
+
+It reads logs only, so it can be regenerated for any past trial and never
+touches the game runtime. An in-game overlay (drawing the same data on the
+`#hud` layer while the world is paused) is the natural next step for videos.
 
 Design, following the typesafe-ai skill guidance (code owns the workflow,
 the model supplies narrow typed judgments):
@@ -121,7 +163,8 @@ the model supplies narrow typed judgments):
 Every consultation is written to `<reportDir>/jev.jsonl` (state sent, answers,
 probabilities, usage, latency, resulting command) and the run report carries
 `policy` stats: calls, overrides, input tokens, estimated input cost at the
-published $0.042 per million input tokens.
+published $0.042 per million input tokens (input side only; output tokens are
+counted but not priced here).
 
 Dry-run reference on the live E1M1 baseline run:
 
@@ -133,6 +176,35 @@ estimated cost      ~$0.003 per E1M1 clear
 
 Real token counts come from `usage.input_tokens` once the API is reachable;
 the dry-run figure is an approximation.
+
+### First live result (policy 0.2.0, jev-1.13.0)
+
+```text
+baseline (no policy)   CLEARED, 1167 tics, damage 33, min health 67, kills 0
+jev policy             FAILED player_dead, 1140 tics alive, damage 100, kills 1
+                       239 calls (165 eligible steps in the baseline; the stall
+                       added consultations), 51 overrides, 239k input tokens,
+                       ~$0.010, 160 ms avg latency
+modes chosen           advance 191, dodge 48, fight 0, retreat 0
+fire noul              never above 0.49 (threshold 0.5), so no shot was fired
+```
+
+Where it went wrong: edge `72:74:309`, the corridor before the exit door. The
+baseline follower crosses sector 72 in 33 tics. With Jev, an Imp closed to
+melee range (42-50 units, bearing within 15 degrees) and every consultation
+returned `dodge` (strafe, alternating side each call) or `advance` with
+`fire` just under threshold. The alternating strafe cancelled out, the player
+stayed pinned in sector 72 for 273 tics and was clawed to death without ever
+shooting. The dashboard makes this visible as a flat health staircase against
+a dense `dodge` lane and a rising danger score.
+
+What this says about the policy, not the model: the code owns the safety
+rules, and two are missing. (1) A stall rule: no progress along the edge for
+N steps with an enemy inside melee range must force `fight` regardless of the
+answers. (2) Dodge must hold one side for several calls instead of flipping
+every call. The fire threshold (0.5 on a `noul` that hovers at 0.45 for an Imp
+in the player's face) is the third candidate. These are the next tuning
+targets; the objective and dashboard above exist to measure them.
 
 ## Determinism
 
