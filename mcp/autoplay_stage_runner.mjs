@@ -12,6 +12,7 @@
 //                                  [--policy jev] [--jev-dry-run] [--jev-max-calls 600]
 //                                  [--report-dir DIR] [--baseline other/report.json]
 //                                  [--skill 1-5|uv|nightmare] [--headed] [--no-overlay]
+//                                  [--max-combat-tics 600]   (fight/retreat steps per edge, separate from --max-edge-tics)
 //
 // Every step is appended to <reportDir>/steps.jsonl and a summary is written to
 // <reportDir>/report.json so later policy layers can be compared tic-for-tic.
@@ -31,7 +32,7 @@ import { installThingAuthoring } from './thing_authoring.js';
 import { installSemanticGeometry } from './semantic_geometry.js';
 import { buildNavigationGraph, findExitProgression } from './navigation_graph.js';
 import {
-  coldBoot, exactInput, launchChromium, navigateEdge
+  coldBoot, exactInput, isCombatCommand, launchChromium, navigateEdge
 } from './navigation_browser_agent.mjs';
 import { OBJECTIVE_ORDER, OBJECTIVE_VERSION, compareToBaseline, rankRuns, runMetrics } from './autoplay_objective.mjs';
 import { installOverlay, updateOverlay } from './autoplay_overlay.mjs';
@@ -126,6 +127,9 @@ export async function waitForLevelExit(page, timeout = 6000) {
 // (52 / 124) only need the crossing.
 export async function approachAndUseExit(page, exit, options = {}) {
   const maxTics = Number(options.maxTics || 350);
+  const maxCombatTics = Number(options.maxCombatTicsPerEdge ?? 600);
+  let routeTics = 0;
+  let combatTics = 0;
   const target = exit.midpoint;
   const trace = [];
   let usedTics = 0;
@@ -133,7 +137,7 @@ export async function approachAndUseExit(page, exit, options = {}) {
   let stalled = 0;
   let recoverySide = 1;
 
-  while (usedTics < maxTics) {
+  while (routeTics < maxTics && combatTics < maxCombatTics) {
     const state = await engineState(page);
     if (state?.ready === false && Number(state.gameState) !== GS_LEVEL) {
       return { passed: true, usedTics, trace, finalState: state };
@@ -184,8 +188,9 @@ export async function approachAndUseExit(page, exit, options = {}) {
       throw error;
     }
     usedTics += result.tics;
+    if (isCombatCommand(command)) combatTics += result.tics; else routeTics += result.tics;
     if (typeof options.onStep === 'function') {
-      await options.onStep({ edge: null, exit, state, command, result, usedTics, targetDistance, delta });
+      await options.onStep({ edge: null, exit, state, command, result, usedTics, routeTics, combatTics, targetDistance, delta });
     }
     if (trace.length < 80) trace.push({ tics: usedTics, x: position.x, y: position.y, targetDistance, delta, command });
 
@@ -197,7 +202,7 @@ export async function approachAndUseExit(page, exit, options = {}) {
     }
   }
   const finalState = await engineState(page);
-  return { passed: false, usedTics, trace, failure: 'exit_tic_budget_exhausted', finalState };
+  return { passed: false, usedTics, routeTics, combatTics, trace, failure: combatTics >= maxCombatTics ? 'exit_combat_budget_exhausted' : 'exit_tic_budget_exhausted', finalState };
 }
 
 // One full stage attempt on an already-open page.
@@ -284,6 +289,7 @@ export async function runStageAttempt(page, stage, options = {}) {
     const laterSectors = new Set(progression.sectors.slice(index + 2));
     const result = await navigateEdge(page, graph, edge, {
       maxTicsPerEdge: config.maxTicsPerEdge,
+      maxCombatTicsPerEdge: config.maxCombatTicsPerEdge,
       decide: config.decide,
       onStep,
       acceptSectors: laterSectors,
@@ -308,7 +314,7 @@ export async function runStageAttempt(page, stage, options = {}) {
   }
 
   if (!attempt.failure) {
-    const exitResult = await approachAndUseExit(page, progression.exit, { decide: config.decide, onStep });
+    const exitResult = await approachAndUseExit(page, progression.exit, { decide: config.decide, onStep, maxCombatTicsPerEdge: config.maxCombatTicsPerEdge });
     attempt.totalTics += exitResult.usedTics;
     attempt.exitResult = {
       passed: exitResult.passed, usedTics: exitResult.usedTics, failure: exitResult.failure || null,
@@ -497,6 +503,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       runs: { type: 'string', default: '1' },
       god: { type: 'boolean', default: true },
       'max-edge-tics': { type: 'string', default: '280' },
+      'max-combat-tics': { type: 'string', default: '600' },
       'report-dir': { type: 'string' },
       policy: { type: 'string', default: 'none' },
       'jev-dry-run': { type: 'boolean', default: false },
@@ -522,6 +529,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       runs: Number(values.runs),
       godMode: Boolean(values.god),
       maxTicsPerEdge: Number(values['max-edge-tics']),
+      maxCombatTicsPerEdge: Number(values['max-combat-tics']),
       policy: String(values.policy),
       jev: { dryRun: Boolean(values['jev-dry-run']), maxCalls: Number(values['jev-max-calls']), model: values['jev-model'] },
       ...(values['report-dir'] ? { reportDir: path.resolve(values['report-dir']) } : {})
