@@ -14,7 +14,7 @@ import { appendFile } from 'node:fs/promises';
 
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 
-export const JEV_POLICY_VERSION = '0.4.1-jev-policy';
+export const JEV_POLICY_VERSION = '0.4.2-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -138,7 +138,7 @@ export function buildQuestions(compact, primitives) {
     }),
     response: choice({
       question: 'If the player should NOT keep running, what is the best response for the next fraction of a second?',
-      context: 'Fighting stops the player and exposes it to every enemy with a clear shot, but kills the threat. Retreating opens distance while keeping the target in front. Dodging keeps route progress but only helps against projectiles, not hitscan weapons.'
+      context: 'Fighting stops the player and exposes it to every enemy with a clear shot, but kills the threat. Retreating opens distance while keeping the target in front; it helps against melee monsters and slow projectiles, but hitscan enemies (zombieman, shotgun guy) hit just as often at range, so against them it only prolongs the exposure. Dodging keeps route progress but only helps against projectiles.'
     }, {
       fight: 'stop moving, face the chosen enemy and shoot until it dies',
       retreat: 'move backwards away from the enemies while facing them',
@@ -178,9 +178,35 @@ export function resolveMode(answers, options = {}) {
 
 function turnToward(bearing, max = 0.7) {
   // relativeAngle > 0 is to the left (geometric CCW); agent +turn is right.
-  // The floor of 0.2 keeps a forced fight from spending 50 tics aligning.
-  const magnitude = Math.min(max, Math.max(0.2, Math.abs(bearing) / 90 * 0.7));
+  // Proportional with a low floor: a 0.2 floor over 2 tics swung ~25 degrees
+  // and overshot the 8-degree aim window from both sides for 50 tics.
+  const magnitude = Math.min(max, Math.max(0.08, Math.abs(bearing) / 90 * 0.7));
   return bearing > 0 ? -magnitude : magnitude;
+}
+// Tics for an aiming step: short near alignment so the turn cannot overshoot.
+function aimTics(bearing) {
+  return Math.abs(bearing) <= 20 ? 1 : 2;
+}
+
+// Monsters whose attack is hitscan: distance and backing away do not reduce
+// their hit chance, only killing them or breaking line of sight does.
+const HITSCAN = new Set(['zombieman', 'shotgun_guy', 'chaingun_guy', 'heavy_weapon_dude', 'spider_mastermind']);
+function isHitscan(name) {
+  return HITSCAN.has(String(name || '').toLowerCase().replace(/\s+/g, '_'));
+}
+
+// Sticky target: once fighting an enemy, keep it while a same-named enemy is
+// still near where it was (bearing / distance continuity). Enemy ids are
+// nearest-first indices and re-sort every step, so two shotgun guys at
+// similar range swapped id every consultation and the aim thrashed.
+export function pickTarget(compact, wanted, last) {
+  const enemies = compact.visibleEnemies;
+  if (last) {
+    const same = enemies.filter(enemy => enemy.name === last.name && Number(enemy.health) > 0
+      && Math.abs(Number(enemy.bearing) - Number(last.bearing)) <= 30 && Math.abs(Number(enemy.distance) - Number(last.distance)) <= 90);
+    if (same.length) return same.sort((a, b) => Math.abs(a.bearing - last.bearing) - Math.abs(b.bearing - last.bearing))[0];
+  }
+  return enemies.find(enemy => enemy.id === wanted) || enemies[0] || null;
 }
 
 // Map typed answers onto a bounded ticcmd. Returns null to keep the proposal.
@@ -192,8 +218,9 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
   // A forced fight (stall rule) always aims at the nearest enemy, which is the
   // one blocking the player; otherwise the model's target, falling back to nearest.
   const target = options.forceMode === 'fight'
-    ? (compact.visibleEnemies[0] || null)
-    : (enemyById.get(answers.target?.choice) || compact.visibleEnemies[0] || null);
+    ? pickTarget(compact, null, options.lastTarget)
+    : pickTarget(compact, answers.target?.choice, options.lastTarget);
+  void enemyById;
   const pointBlank = Boolean(target) && Number(target.distance) <= Number(options.pointBlankDistance ?? 96);
   let fire = Number(answers.fire?.noul ?? 0) >= Number(options.fireThreshold ?? 0.4);
   if (pointBlank && !fire) { fire = true; rules.push('pointBlank'); }
@@ -201,6 +228,12 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
   if (options.forceMode && options.forceMode !== mode) { mode = options.forceMode; rules.push('stall'); }
   else if (options.forceMode) { rules.push('stall'); }
   if (options.forceMode === 'fight') fire = true;
+  // Retreating from a hitscan enemy that can already hit the player only
+  // prolongs the exposure (its hit chance does not fall with distance):
+  // shoot it instead. Retreat stays for projectile and melee monsters.
+  if (mode === 'retreat' && target && isHitscan(target.name) && target.canHitPlayerNow) {
+    mode = 'fight'; fire = true; rules.push('hitscanFight');
+  }
   const meta = { source: 'jev', mode, target: target?.id || 'none', fire, danger: round(answers.danger?.score ?? 0, 2), ...(rules.length ? { rules } : {}) };
 
   if (!target || mode === 'advance') {
@@ -212,7 +245,7 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
   }
   const aligned = Math.abs(target.bearing) <= aimTolerance;
   if (mode === 'fight') {
-    if (!aligned) return { forward: 0, strafe: 0, turn: turnToward(target.bearing), attack: false, use: false, tics: 2, ...meta };
+    if (!aligned) return { forward: 0, strafe: 0, turn: turnToward(target.bearing), attack: false, use: false, tics: aimTics(target.bearing), ...meta };
     return { forward: 0, strafe: 0, turn: 0, attack: fire, use: false, tics: 3, ...meta };
   }
   if (mode === 'retreat') {
@@ -278,9 +311,10 @@ export async function createJevPolicy(options = {}) {
   const stats = {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
-    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0 }
+    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0 }
   };
   let lastMode = null;
+  let lastTarget = null;       // the enemy fought at the previous consultation (sticky target)
   let stepsSinceCall = Infinity;
   let dodgeSide = 1;
   let dodgeRun = 0;            // consecutive dodge answers on the current side
@@ -309,7 +343,11 @@ export async function createJevPolicy(options = {}) {
 
   function ruleOptions(compact, state) {
     const stalled = detectStall(state, compact);
-    return { ...config, dodgeSide, ...(stalled ? { forceMode: 'fight' } : {}) };
+    return { ...config, dodgeSide, lastTarget, ...(stalled ? { forceMode: 'fight' } : {}) };
+  }
+  function rememberTarget(command, compact) {
+    if (!command || !['fight', 'retreat'].includes(command.mode)) { lastTarget = null; return; }
+    lastTarget = compact.visibleEnemies.find(enemy => enemy.id === command.target) || null;
   }
 
   async function record(entry) {
@@ -385,6 +423,7 @@ export async function createJevPolicy(options = {}) {
     lastDecision = { answers: result.answers, compact };
     const options = ruleOptions(compact, state);
     const command = answersToCommand(result.answers, compact, proposal, options);
+    rememberTarget(command, compact);
     if (command) stats.overrides++;
     for (const rule of command?.rules || []) stats.rules[rule] = (stats.rules[rule] || 0) + 1;
     await record({
