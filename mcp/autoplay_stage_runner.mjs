@@ -30,7 +30,7 @@ import { EpisodeWorkspace } from './episode_workspace.js';
 import { installFullTopologyValidator } from './topology_validator.js';
 import { installThingAuthoring } from './thing_authoring.js';
 import { installSemanticGeometry } from './semantic_geometry.js';
-import { buildNavigationGraph, findExitProgression } from './navigation_graph.js';
+import { buildNavigationGraph, findExitProgression, locatePointSector } from './navigation_graph.js';
 import {
   coldBoot, exactInput, isCombatCommand, launchChromium, navigateEdge
 } from './navigation_browser_agent.mjs';
@@ -104,7 +104,7 @@ export async function prepareStagePwad({ iwadPath = DEFAULT_IWAD, map = 'E1M1', 
   await mkdir(exportDir, { recursive: true });
   const wadPath = path.join(exportDir, candidate.filename);
   await writeFile(wadPath, candidate.bytes);
-  return { map, filename: candidate.filename, wadPath, graph, start, progression };
+  return { map, filename: candidate.filename, wadPath, graph, start, progression, workspace };
 }
 
 async function engineState(page) { return page.evaluate(() => window.DoomControl.getState()); }
@@ -385,8 +385,13 @@ export async function runStageClearTrial(input = {}) {
   const policyLog = path.join(config.reportDir, 'jev.jsonl');
   const usesPolicy = config.policy === 'jev' || config.policy === 'rules';
   if (usesPolicy) await writeFile(policyLog, '');
-  // Static pickups for the policy's item loot, filtered by the trial's skill.
-  const mapItems = usesPolicy ? await loadMapItems(config.iwadPath, config.map, { skill: config.skill ?? 0 }) : [];
+  // Static pickups for the policy's item loot, filtered by the trial's skill
+  // and tagged with the sector they lie in, so the policy can restrict a
+  // detour to items in the player's own sector (no wall in between).
+  const mapItems = usesPolicy
+    ? (await loadMapItems(config.iwadPath, config.map, { skill: config.skill ?? 0 }))
+      .map(item => ({ ...item, sector: locatePointSector(stage.workspace, { x: item.x, y: item.y }) }))
+    : [];
   const report = {
     version: AUTOPLAY_VERSION,
     map: config.map,

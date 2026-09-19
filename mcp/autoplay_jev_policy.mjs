@@ -14,7 +14,7 @@ import { appendFile } from 'node:fs/promises';
 
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 
-export const JEV_POLICY_VERSION = '0.6.0-jev-policy';
+export const JEV_POLICY_VERSION = '0.6.1-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -376,6 +376,9 @@ export async function createJevPolicy(options = {}) {
     lootShotgun: true,         // after killing a shotgun guy with the pistol, walk over its dropped shotgun
     lootTimeoutTics: 140,      // give a detour at most 4 s
     items: [],                 // static map pickups (autoplay_items.mjs) for health / shells loot
+    itemLootSameSectorOnly: true, // only items in the player's current sector: 12 of 16 straight-line
+                                  // detours in the 0.6.0 trial ended at a wall
+    lootShells: false,         // shells detours: 7 of 9 blocked in 0.6.0, low value with 4-shell drops around
     healthLootBelow: 50,       // walk to a health item below this ...
     healthLootDesperate: 30,   // ... even under fire below this
     shellsLootBelow: 6,        // walk to shells when the shotgun has fewer than this
@@ -415,8 +418,10 @@ export async function createJevPolicy(options = {}) {
   function nearestItem(state, kind) {
     const player = state.player || {};
     let best = null;
+    const sector = Number(state.currentSector);
     for (const item of config.items || []) {
       if (item.kind !== kind || takenItems.has(item.id)) continue;
+      if (config.itemLootSameSectorOnly && item.sector != null && Number(item.sector) !== sector) continue;
       const distance = Math.hypot(item.x - Number(player.x), item.y - Number(player.y));
       if (distance <= config.itemLootRadius && (!best || distance < best.distance)) best = { ...item, distance };
     }
@@ -524,7 +529,7 @@ export async function createJevPolicy(options = {}) {
       const item = nearestItem(state, 'health');
       if (item) return startLoot(state, 'health', item.x, item.y, item.id);
     }
-    if (Number(player.weapon) === 2 && Number(player.ammo?.shells ?? 0) < config.shellsLootBelow && shooters === 0) {
+    if (config.lootShells && Number(player.weapon) === 2 && Number(player.ammo?.shells ?? 0) < config.shellsLootBelow && shooters === 0) {
       const item = nearestItem(state, 'shells');
       if (item) return startLoot(state, 'shells', item.x, item.y, item.id);
     }

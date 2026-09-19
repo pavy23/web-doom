@@ -486,6 +486,30 @@ Reducing that spread (which enemy to shoot first, whether to fight from
 the corridor before the hangar opens up) is the next tuning target, and it
 has to be judged on 10-run damage distributions, not on a best run.
 
+### Policy 0.6.0: map item loot and threat-first targeting (UV, 10 runs)
+
+```text
+trial                 cleared     95% CI   hangar hp lost   courtyard hp lost   deaths / budget
+0.5.2 (10 runs)       2/10 (20%)  6-51%    54 [27-72]       16 [0-43], 7 reached  courtyard x4, hangar budget x2, other x2
+0.6.0 (10 runs)       2/10 (20%)  6-51%    54 [24-94]       12 [0-24], 5 reached  hangar dead x1 + budget x3, courtyard x1, other x3
+```
+
+No change in clear rate; the failures moved from the courtyard to the
+hangar. The audit of `loot_end` rows says why: of 7 health detours 2
+picked and 5 ended `blocked` (no progress, a wall between the player and
+the item), of 9 shells detours 2 picked and 7 blocked. Items are targeted
+in a straight line and the map's pickups mostly sit in alcoves and side
+rooms; the 371 loot steps in 10 runs (~37 per run) were spent on route
+budget, and three runs exhausted the hangar edge's route budget where 0.5.2
+lost two. `threatTarget` fired once in 10 runs: the sticky target rule
+takes precedence and almost every fight already has a locked target.
+
+Kept: the shotgun drop loot (16/16 picked). Health and shells loot need
+reachability (same sector, or a sector-route check through the navigation
+graph) before they help; straight-line loot is off by default from 0.6.1.
+Threat-first targeting stays on; it costs nothing and applies when a fight
+starts without a lock.
+
 Clear time (46-57 s on cleared UV runs vs the skill-0 baseline's 33 s)
 stays the metric after damage variance is under control.
 
