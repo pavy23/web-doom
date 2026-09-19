@@ -278,8 +278,10 @@ the insertion point for a TypeSafe System One tactical policy.
 
 ```bash
 cd mcp
-npm run autoplay:e1m1        # 3 god-mode runs + determinism check
-npm run autoplay:e1m1:live   # 1 run with live monsters
+npm run autoplay:e1m1          # 3 god-mode runs + determinism check
+npm run autoplay:e1m1:live     # 1 run with live monsters, no AI
+npm run autoplay:jev:smoke     # one TypeSafe Jev call (needs TYPESAFE_API_KEY)
+npm run autoplay:e1m1:jev      # live run with Jev tactical decisions
 ```
 
 See `mcp/AUTOPLAY.md`. The vendored `typesafe-ai` agent skill lives in

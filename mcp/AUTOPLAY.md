@@ -92,6 +92,48 @@ service never affects gameplay and every run stays replayable from
 `steps.jsonl`. Set `source` on a returned command (for example `'jev'`) to have
 it recorded in the step log.
 
+## Layer 2: Jev tactical policy
+
+`autoplay_jev_policy.mjs` implements the `decide` hook with TypeSafe System
+One judgments. `autoplay_jev_smoke.mjs` makes one real call over a recorded
+scene so credentials, network, answer schema and per-call cost are confirmed
+before a trial spends anything.
+
+```bash
+export TYPESAFE_API_KEY=...            # never commit it; console.typesafe.ai
+npm run autoplay:jev:smoke             # one systemOne call, prints answers + usage
+npm run autoplay:e1m1:jev:dry          # full trial, records what WOULD be sent, no API calls
+npm run autoplay:e1m1:jev              # full trial with live Jev decisions
+node autoplay_stage_runner.mjs --map E1M1 --runs 3 --no-god --policy jev --jev-max-calls 600
+```
+
+Design, following the typesafe-ai skill guidance (code owns the workflow,
+the model supplies narrow typed judgments):
+
+| Piece | What it does |
+|---|---|
+| `shouldConsult` | Gate: only steps with a visible enemy or health below 40 ask the model. Everything else keeps the deterministic proposal for free. |
+| `compactState` | Named-field state: player health/armor/weapon/ammo, route phase and waypoint bearing, up to 5 nearest visible enemies with distance and bearing (positive = left). |
+| `buildQuestions` | Four parallel questions over that state: `mode` choice (advance / fight / retreat / dodge), `target` choice (one label per visible enemy + none), `fire` noul, `danger` score (safe / caution / critical). |
+| `answersToCommand` | Maps the answers to the same bounded ticcmd vocabulary as the follower: fight turns toward the target then holds ATTACK when aligned within 8 degrees; retreat backs off facing the target; dodge strafes; advance keeps the proposal (and fires if aligned). |
+| `maxCalls` | Hard cost cap per trial; after it the policy silently stops consulting and the report shows `capped: true`. |
+
+Every consultation is written to `<reportDir>/jev.jsonl` (state sent, answers,
+probabilities, usage, latency, resulting command) and the run report carries
+`policy` stats: calls, overrides, input tokens, estimated input cost at the
+published $0.042 per million input tokens.
+
+Dry-run reference on the live E1M1 baseline run:
+
+```text
+eligible steps      165 of 420 (enemies visible)
+approx input tokens 76,933 (~430 per call, chars/4 estimate)
+estimated cost      ~$0.003 per E1M1 clear
+```
+
+Real token counts come from `usage.input_tokens` once the API is reachable;
+the dry-run figure is an approximation.
+
 ## Determinism
 
 The world only advances through exact-tic steps, so a trial is a pure function

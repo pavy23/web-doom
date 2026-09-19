@@ -9,6 +9,7 @@
 //
 // CLI:
 //   node autoplay_stage_runner.mjs --map E1M1 --runs 3 [--no-god] [--max-edge-tics 280]
+//                                  [--policy jev] [--jev-dry-run] [--jev-max-calls 600]
 //
 // Every step is appended to <reportDir>/steps.jsonl and a summary is written to
 // <reportDir>/report.json so later policy layers can be compared tic-for-tic.
@@ -316,10 +317,13 @@ export async function runStageClearTrial(input = {}) {
 
   const stage = await prepareStagePwad(config);
   const wadBase64 = (await readFile(stage.wadPath)).toString('base64');
+  const policyLog = path.join(config.reportDir, 'jev.jsonl');
+  if (config.policy === 'jev') await writeFile(policyLog, '');
   const report = {
     version: AUTOPLAY_VERSION,
     map: config.map,
     godMode: Boolean(config.godMode),
+    policy: config.policy || 'none',
     runs: [],
     plan: {
       startSector: stage.progression.startSector,
@@ -340,12 +344,20 @@ export async function runStageClearTrial(input = {}) {
       page.on('pageerror', error => diagnostics.push({ type: 'pageerror', message: String(error?.message || error) }));
       page.on('console', message => { if (message.type() === 'error') diagnostics.push({ type: 'console', message: message.text() }); });
       let attempt;
+      let policy = null;
       try {
+        if (config.policy === 'jev') {
+          const { createJevPolicy } = await import('./autoplay_jev_policy.mjs');
+          policy = await createJevPolicy({ ...(config.jev || {}), log: policyLog });
+        }
         await coldBoot(page, {
           playUrl: config.playUrl, filename: stage.filename, map: config.map,
           coldBootTimeoutMs: config.coldBootTimeoutMs, pauseOnReady: true
         }, wadBase64);
-        attempt = await runStageAttempt(page, stage, { ...config, runIndex, stepLog });
+        attempt = await runStageAttempt(page, stage, {
+          ...config, runIndex, stepLog, decide: policy ? policy.decide : config.decide
+        });
+        if (policy) attempt.policy = policy.summary();
       } catch (error) {
         attempt = { passed: false, failure: 'browser_trial_error', error: String(error?.stack || error?.message || error) };
       } finally {
@@ -364,8 +376,10 @@ export async function runStageClearTrial(input = {}) {
       attempt.runIndex = runIndex;
       attempt.diagnostics = diagnostics;
       report.runs.push(attempt);
+      if (policy && !attempt.policy) attempt.policy = policy.summary();
       console.error(`autoplay ${config.map} run ${runIndex}: ${attempt.passed ? 'CLEARED' : 'FAILED'} ${JSON.stringify({
-        totalTics: attempt.totalTics, steps: attempt.steps, failure: attempt.failure || null, failedEdge: attempt.failedEdge || null
+        totalTics: attempt.totalTics, steps: attempt.steps, failure: attempt.failure || null, failedEdge: attempt.failedEdge || null,
+        ...(attempt.policy ? { jevCalls: attempt.policy.calls, jevOverrides: attempt.policy.overrides, jevInputTokens: attempt.policy.inputTokens, jevCostUsd: attempt.policy.estimatedInputCostUsd } : {})
       })}`);
     }
   } finally {
@@ -383,7 +397,14 @@ export async function runStageClearTrial(input = {}) {
     deterministic: passedRuns.length > 1 && passedRuns.every(run => run.totalTics === passedRuns[0].totalTics
       && run.startLevelTic === passedRuns[0].startLevelTic),
     deaths: report.runs.map(run => run.telemetry?.deaths ?? null),
-    minHealth: report.runs.map(run => run.telemetry?.minHealth ?? null)
+    minHealth: report.runs.map(run => run.telemetry?.minHealth ?? null),
+    damageTaken: report.runs.map(run => run.telemetry?.damageTaken ?? null),
+    ...(config.policy === 'jev' ? {
+      jevCalls: report.runs.map(run => run.policy?.calls ?? null),
+      jevOverrides: report.runs.map(run => run.policy?.overrides ?? null),
+      jevInputTokens: report.runs.reduce((sum, run) => sum + Number(run.policy?.inputTokens || 0), 0),
+      jevEstimatedCostUsd: report.runs.reduce((sum, run) => sum + Number(run.policy?.estimatedInputCostUsd || 0), 0)
+    } : {})
   };
   report.passed = report.runs.length > 0 && passedRuns.length === report.runs.length;
   report.completedAt = new Date().toISOString();
@@ -399,7 +420,11 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       runs: { type: 'string', default: '1' },
       god: { type: 'boolean', default: true },
       'max-edge-tics': { type: 'string', default: '280' },
-      'report-dir': { type: 'string' }
+      'report-dir': { type: 'string' },
+      policy: { type: 'string', default: 'none' },
+      'jev-dry-run': { type: 'boolean', default: false },
+      'jev-max-calls': { type: 'string', default: '600' },
+      'jev-model': { type: 'string' }
     },
     allowNegative: true
   });
@@ -411,6 +436,8 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       runs: Number(values.runs),
       godMode: Boolean(values.god),
       maxTicsPerEdge: Number(values['max-edge-tics']),
+      policy: String(values.policy),
+      jev: { dryRun: Boolean(values['jev-dry-run']), maxCalls: Number(values['jev-max-calls']), model: values['jev-model'] },
       ...(values['report-dir'] ? { reportDir: path.resolve(values['report-dir']) } : {})
     });
     console.error(`autoplay summary: ${JSON.stringify(report.summary)} (report: ${report.reportPath})`);
