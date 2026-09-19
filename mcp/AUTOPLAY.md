@@ -529,7 +529,27 @@ exit approach likewise. Total tics are unchanged and still ranked by the
 objective. Trials before this change are not comparable on the
 budget-failure rows.
 
-Clear time (46-62 s on cleared UV runs vs the skill-0 baseline's 33 s)
+```text
+0.6.1 + progress budget      1/10   7 runs cut at 70 hp: the no-progress budget counted standing
+  (runner 0.3.0, first cut)         fights; and with 1 shell the model answered fire 0.2 and the
+                                    player stood aligned and silent for 130 tics
+0.6.2 (fightFires; combat    1/10   8 of 10 runs tic-identical (1294 tics, 17 kills): standing
+  steps outside the                 in the exit corridor trading shots with one zombieman ahead
+  no-progress budget)               while another shot from behind (-128 deg). The clear (run 6)
+                                    is the best UV run so far: 24 damage, min health 76, 1338 tics.
+```
+
+Six policy versions at UV (0.5.2 through 0.6.2) sit at 1-2 clears in 10.
+Each rule fixed the failure it was written for and the runs then failed
+somewhere else, and whenever a rule decided most steps the runs became
+tic-identical: the model was no longer steering. The productive next step
+is not another rule. It is either (a) give the model the decision the
+rules keep taking, with better state (an enemy-behind flag, "you are
+standing still", shots fired without effect), and measure whether its
+answers change; or (b) accept the rules as the policy and tune them on
+the 10-run damage distributions. Both are measurable with the tools here.
+
+Clear time (38-62 s on cleared UV runs vs the skill-0 baseline's 33 s)
 stays the metric after damage variance is under control.
 
 Note on determinism: with 0.4.2 and 0.4.3 all three runs were tic-identical
