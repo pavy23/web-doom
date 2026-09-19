@@ -212,13 +212,29 @@ stayed pinned in sector 72 for 273 tics and was clawed to death without ever
 shooting. The dashboard makes this visible as a flat health staircase against
 a dense `dodge` lane and a rising danger score.
 
-What this says about the policy, not the model: the code owns the safety
-rules, and two are missing. (1) A stall rule: no progress along the edge for
-N steps with an enemy inside melee range must force `fight` regardless of the
-answers. (2) Dodge must hold one side for several calls instead of flipping
-every call. The fire threshold (0.5 on a `noul` that hovers at 0.45 for an Imp
-in the player's face) is the third candidate. These are the next tuning
-targets; the objective and dashboard above exist to measure them.
+What this said about the policy, not the model: the code owns the safety
+rules, and three were missing. They became the `stall`, `dodgeHold` and
+`pointBlank` rules of policy 0.3.0 (see "Safety rules" above).
+
+### Second live result (policy 0.3.0 with safety rules, jev-1.13.0)
+
+```text
+baseline (no policy)   CLEARED, 1167 tics, damage 33, min health 67, kills 0
+jev policy 0.3.0       CLEARED, 1136 tics, damage 18, min health 82, kills 1
+                       155 calls, 9 overrides (8 aligned shots, 1 point-blank,
+                       1 stall-forced fight), 155k input tokens, ~$0.0065
+verdict                better: damageTaken 33 -> 18; tics -31; deaths 0 = 0
+modes chosen           advance 155 (no dodge/fight/retreat answers this run)
+```
+
+Better than the baseline on every ranked metric. Note what did the work: the
+model answered `advance` at every consultation, so the gain came from the
+code-owned rules and the lower fire threshold letting the aligned shots
+through, not from a change of tactic. Two caveats. Jev answers are not
+deterministic, so this is one sample; three or more runs are needed before
+calling the improvement stable. And E1M1 is easy enough that the baseline
+clears it without shooting, so the policy's margin here is small by design;
+harder maps are where the tactics matter.
 
 ## Determinism
 
