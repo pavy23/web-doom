@@ -14,7 +14,7 @@ import { appendFile } from 'node:fs/promises';
 
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 
-export const JEV_POLICY_VERSION = '0.4.2-jev-policy';
+export const JEV_POLICY_VERSION = '0.4.3-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -176,16 +176,25 @@ export function resolveMode(answers, options = {}) {
   return { ...answers, mode: { type: 'choice', choice: mode, confidence: round(Math.abs(safe - 0.5) * 2, 2), probabilities, derivedFrom: 'safeToRun+response' } };
 }
 
-function turnToward(bearing, max = 0.7) {
-  // relativeAngle > 0 is to the left (geometric CCW); agent +turn is right.
-  // Proportional with a low floor: a 0.2 floor over 2 tics swung ~25 degrees
-  // and overshot the 8-degree aim window from both sides for 50 tics.
-  const magnitude = Math.min(max, Math.max(0.08, Math.abs(bearing) / 90 * 0.7));
-  return bearing > 0 ? -magnitude : magnitude;
+// Measured from step logs (angle delta over pure-turn steps, n=191):
+// one turn unit for one tic rotates 7.0 degrees (median; p10-p90 6.1-7.0).
+export const DEGREES_PER_TURN_TIC = 7;
+const MAX_TURN = 0.7;
+
+// Exact aim: the turn and tic count that put the bearing at zero in one
+// step, capped at 4 tics (~20 degrees); larger bearings take another step.
+// relativeAngle > 0 is to the left (geometric CCW); agent +turn is right.
+export function aimStep(bearing) {
+  const degrees = Math.abs(Number(bearing) || 0);
+  const tics = Math.max(1, Math.min(4, Math.ceil(degrees / (DEGREES_PER_TURN_TIC * MAX_TURN))));
+  const magnitude = Math.min(MAX_TURN, degrees / (DEGREES_PER_TURN_TIC * tics));
+  return { turn: bearing > 0 ? -magnitude : magnitude, tics };
 }
-// Tics for an aiming step: short near alignment so the turn cannot overshoot.
+function turnToward(bearing, max = MAX_TURN) {
+  return Math.max(-max, Math.min(max, aimStep(bearing).turn));
+}
 function aimTics(bearing) {
-  return Math.abs(bearing) <= 20 ? 1 : 2;
+  return aimStep(bearing).tics;
 }
 
 // Monsters whose attack is hitscan: distance and backing away do not reduce
