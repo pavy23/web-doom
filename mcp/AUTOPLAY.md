@@ -283,11 +283,35 @@ modes chosen           advance 155 (no dodge/fight/retreat answers this run)
 Better than the baseline on every ranked metric. Note what did the work: the
 model answered `advance` at every consultation, so the gain came from the
 code-owned rules and the lower fire threshold letting the aligned shots
-through, not from a change of tactic. Two caveats. Jev answers are not
-deterministic, so this is one sample; three or more runs are needed before
-calling the improvement stable. And E1M1 is easy enough that the baseline
-clears it without shooting, so the policy's margin here is small by design;
-harder maps are where the tactics matter.
+through, not from a change of tactic. Jev answers are not deterministic, so
+this was one sample; the 3-run trials below are the stability check.
+
+### 3-run trials (policy 0.3.x, skill 0, `npm run autoplay:e1m1:jev:x3`)
+
+```text
+rules v1 (view-cone gate)      cleared 2/3   damage 12 / 64 / 12   tics 1165 / 1204 / 1165
+                               run 1: Imp clawed from outside the view cone for
+                               250 tics, gate shut, no rule could fire
+rules v2 (widened gate, turn)  cleared 0/3   all three identical: edge 7:54:385, tic 619
+                               rule-driven stall on a Zombieman behind the player
+rules v3 (front-half / hurt)   cleared 3/3   damage 27 / 27 / 26   tics 1206 / 1206 / 1195
+                               baseline: damage 33, tics 1167 -> better on damage,
+                               ~30 tics (0.9 s) slower; 184-201 calls, ~$0.008 per run
+```
+
+v3 is the current policy. It is the first version that clears every run, and
+it beats the baseline on the ranked metrics (deaths 0 = 0, damage 26 < 33),
+paying about a second of clear time for the fights it picks (13-25 stall
+hits and 1-13 point-blank shots per run). The best single runs of v1 were
+better (12 damage) but v1 failed one run in three; a policy that cannot lose
+a run beats one with a better average, which is what the lexicographic
+objective encodes.
+
+All of the above ran at **skill 0** (the launcher boots without `-skill`, so
+`gameskill` stayed at its zero initial value). E1M1 on that skill is easy
+enough that the baseline clears it without shooting, so the policy's margin
+here is small by design. `--skill uv` / `--skill nightmare` is where the
+tactics start to matter, and where the next baseline should be taken.
 
 ## Determinism
 
