@@ -51,7 +51,7 @@ export function parseSkill(value) {
   throw new Error(`Unknown skill ${value}: use 1-5 or ${SKILL_NAMES.join('/')}`);
 }
 
-export const AUTOPLAY_VERSION = '0.2.0-autoplay';
+export const AUTOPLAY_VERSION = '0.3.0-autoplay';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_IWAD = path.join(here, '..', 'doom1.wad');
@@ -131,6 +131,8 @@ export async function approachAndUseExit(page, exit, options = {}) {
   const maxCombatTics = Number(options.maxCombatTicsPerEdge ?? 600);
   let routeTics = 0;
   let combatTics = 0;
+  let bestDistance = Infinity;   // progress-based budget, as in navigateEdge
+  let ticsSinceProgress = 0;
   const target = exit.midpoint;
   const trace = [];
   let usedTics = 0;
@@ -138,7 +140,7 @@ export async function approachAndUseExit(page, exit, options = {}) {
   let stalled = 0;
   let recoverySide = 1;
 
-  while (routeTics < maxTics && combatTics < maxCombatTics) {
+  while (ticsSinceProgress < maxTics && combatTics < maxCombatTics) {
     const state = await engineState(page);
     if (state?.ready === false && Number(state.gameState) !== GS_LEVEL) {
       return { passed: true, usedTics, trace, finalState: state };
@@ -190,8 +192,9 @@ export async function approachAndUseExit(page, exit, options = {}) {
     }
     usedTics += result.tics;
     if (isCombatCommand(command)) combatTics += result.tics; else routeTics += result.tics;
+    if (targetDistance < bestDistance - 4) { bestDistance = targetDistance; ticsSinceProgress = 0; } else ticsSinceProgress += result.tics;
     if (typeof options.onStep === 'function') {
-      await options.onStep({ edge: null, exit, state, command, result, usedTics, routeTics, combatTics, targetDistance, delta });
+      await options.onStep({ edge: null, exit, state, command, result, usedTics, routeTics, combatTics, ticsSinceProgress, targetDistance, delta });
     }
     if (trace.length < 80) trace.push({ tics: usedTics, x: position.x, y: position.y, targetDistance, delta, command });
 
@@ -203,7 +206,7 @@ export async function approachAndUseExit(page, exit, options = {}) {
     }
   }
   const finalState = await engineState(page);
-  return { passed: false, usedTics, routeTics, combatTics, trace, failure: combatTics >= maxCombatTics ? 'exit_combat_budget_exhausted' : 'exit_tic_budget_exhausted', finalState };
+  return { passed: false, usedTics, routeTics, combatTics, trace, failure: combatTics >= maxCombatTics ? 'exit_combat_budget_exhausted' : 'exit_no_progress', finalState };
 }
 
 // One full stage attempt on an already-open page.

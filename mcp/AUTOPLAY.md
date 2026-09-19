@@ -510,7 +510,26 @@ graph) before they help; straight-line loot is off by default from 0.6.1.
 Threat-first targeting stays on; it costs nothing and applies when a fight
 starts without a lock.
 
-Clear time (46-57 s on cleared UV runs vs the skill-0 baseline's 33 s)
+```text
+0.6.1 (10 runs)       1/10 (10%)  2-40%    51 [36-94]       5 [0-20], 4 reached   hangar route budget x5 (3 of them at 52 hp), courtyard x1, other x4
+```
+
+Same-sector loot fired twice in ten runs (both after the courtyard) and
+changed nothing upstream. 0.5.2 / 0.6.0 / 0.6.1 are statistically the same
+policy at 2/10, 2/10, 1/10. What 0.6.1 did expose is the runner: five runs
+ended on the hangar edge's *route* budget, three of them with the player
+at 52 hp and the fight going well. Advancing-while-shooting and aiming
+steps count as route tics, so a policy that fights its way across a long
+edge is cut off by a budget sized for a runner that never stops.
+
+The budget's job is to detect a stuck follower, so from autoplay 0.3.0 it
+counts **tics without progress**: the edge fails when `--max-edge-tics`
+pass without the distance to the portal reaching a new minimum, and the
+exit approach likewise. Total tics are unchanged and still ranked by the
+objective. Trials before this change are not comparable on the
+budget-failure rows.
+
+Clear time (46-62 s on cleared UV runs vs the skill-0 baseline's 33 s)
 stays the metric after damage variance is under control.
 
 Note on determinism: with 0.4.2 and 0.4.3 all three runs were tic-identical

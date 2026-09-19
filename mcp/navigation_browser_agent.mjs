@@ -227,6 +227,11 @@ export async function navigateEdge(page, graph, edge, options = {}) {
   const maxCombatTics = Number(options.maxCombatTicsPerEdge ?? 600);
   let routeTics = 0;
   let combatTics = 0;
+  // The route budget counts tics without progress: it resets whenever the
+  // distance to the portal reaches a new minimum. A follower that fights
+  // its way along a long edge is not "stuck"; one that never gets closer is.
+  let bestPortalDistance = Infinity;
+  let ticsSinceProgress = 0;
   const targetNode = graph.nodes[edge.to];
   const cross = crossingPoint(edge, targetNode.center);
   const trace = [];
@@ -240,7 +245,7 @@ export async function navigateEdge(page, graph, edge, options = {}) {
     : (edge.action === 'use' ? Number(edge.to) : null);
   let previousOpening = null;
 
-  while (routeTics < maxTics && combatTics < maxCombatTics) {
+  while (ticsSinceProgress < maxTics && combatTics < maxCombatTics) {
     const state = await page.evaluate(() => window.DoomControl.getState());
     if (!state?.ready || !state.player) throw new Error('Navigation runtime lost player state');
     let wantUse = edge.action === 'use' || Boolean(options.useNearPortal);
@@ -305,8 +310,9 @@ export async function navigateEdge(page, graph, edge, options = {}) {
     const result = await exactInput(page, command);
     usedTics += result.tics;
     if (isCombatCommand(command)) combatTics += result.tics; else routeTics += result.tics;
+    if (portalDistance < bestPortalDistance - 4) { bestPortalDistance = portalDistance; ticsSinceProgress = 0; } else ticsSinceProgress += result.tics;
     if (typeof options.onStep === 'function') {
-      await options.onStep({ edge, state, command, result, usedTics, routeTics, combatTics, portalDistance, targetDistance, delta, doorOpening });
+      await options.onStep({ edge, state, command, result, usedTics, routeTics, combatTics, ticsSinceProgress, portalDistance, targetDistance, delta, doorOpening });
     }
     if (trace.length < 80) trace.push({
       tics: usedTics,
@@ -324,8 +330,8 @@ export async function navigateEdge(page, graph, edge, options = {}) {
   const finalState = await page.evaluate(() => window.DoomControl.getState());
   const finalSector = Number(finalState?.currentSector);
   const finalPassed = finalSector === Number(edge.to) || Boolean(options.acceptSectors && options.acceptSectors.has(finalSector));
-  const failure = finalPassed ? undefined : (combatTics >= maxCombatTics ? 'edge_combat_budget_exhausted' : 'edge_tic_budget_exhausted');
-  return { passed: finalPassed, edge, usedTics, routeTics, combatTics, trace, failure, finalState, reachedSector: finalSector };
+  const failure = finalPassed ? undefined : (combatTics >= maxCombatTics ? 'edge_combat_budget_exhausted' : 'edge_no_progress');
+  return { passed: finalPassed, edge, usedTics, routeTics, combatTics, ticsSinceProgress, trace, failure, finalState, reachedSector: finalSector };
 }
 
 // A policy command that holds position or backs off (fight, retreat) rather
