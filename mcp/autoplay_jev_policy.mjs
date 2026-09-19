@@ -14,7 +14,7 @@ import { appendFile } from 'node:fs/promises';
 
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 
-export const JEV_POLICY_VERSION = '0.5.2-jev-policy';
+export const JEV_POLICY_VERSION = '0.6.0-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -144,7 +144,10 @@ export function buildQuestions(compact, primitives) {
       retreat: 'move backwards away from the enemies while facing them',
       dodge: 'keep advancing but strafe sideways to avoid projectiles'
     }),
-    target: choice('If the player shoots, which enemy is the best target?', targetLabels),
+    target: choice({
+      question: 'If the player shoots, which enemy is the best target?',
+      context: 'Prefer the enemy that can hurt the player most in the next second: a shotgun guy or a melee monster in reach before an imp at range, an imp before a zombieman. Among equals, the closest.'
+    }, targetLabels),
     fire: noul('Should the player pull the trigger right now with the current weapon and ammo?'),
     danger: score('How much damage is the player likely to take in the next few seconds if nothing changes?', [
       'safe: no enemy can hurt the player soon',
@@ -209,13 +212,34 @@ function isHitscan(name) {
 // nearest-first indices and re-sort every step, so two shotgun guys at
 // similar range swapped id every consultation and the aim thrashed.
 export function pickTarget(compact, wanted, last) {
+  return pickTargetInfo(compact, wanted, last).enemy;
+}
+export function pickTargetInfo(compact, wanted, last) {
   const enemies = compact.visibleEnemies;
   if (last) {
     const same = enemies.filter(enemy => enemy.name === last.name && Number(enemy.health) > 0
       && Math.abs(Number(enemy.bearing) - Number(last.bearing)) <= 30 && Math.abs(Number(enemy.distance) - Number(last.distance)) <= 90);
-    if (same.length) return same.sort((a, b) => Math.abs(a.bearing - last.bearing) - Math.abs(b.bearing - last.bearing))[0];
+    if (same.length) return { enemy: same.sort((a, b) => Math.abs(a.bearing - last.bearing) - Math.abs(b.bearing - last.bearing))[0], sticky: true };
   }
-  return enemies.find(enemy => enemy.id === wanted) || enemies[0] || null;
+  return { enemy: enemies.find(enemy => enemy.id === wanted) || enemies[0] || null, sticky: false };
+}
+
+// How much an enemy can hurt the player right now. Shotgun guys and melee
+// monsters in reach outrank everything; imps only matter up close (their
+// fireballs are slow); zombiemen are the least of it.
+export function threatRank(enemy) {
+  const name = String(enemy.name || '').toLowerCase().replace(/\s+/g, '_');
+  const distance = Number(enemy.distance);
+  if (name === 'shotgun_guy') return 3;
+  if ((name === 'demon' || name === 'spectre') && distance <= 160) return 4;
+  if (name === 'imp') return distance <= 128 ? 3 : 1;
+  if (name === 'zombieman') return 2;
+  return 1;
+}
+export function topThreat(compact) {
+  const able = compact.visibleEnemies.filter(enemy => enemy.canHitPlayerNow && Number(enemy.health) > 0);
+  if (!able.length) return null;
+  return able.sort((a, b) => threatRank(b) - threatRank(a) || Number(a.distance) - Number(b.distance))[0];
 }
 
 // Map typed answers onto a bounded ticcmd. Returns null to keep the proposal.
@@ -226,10 +250,19 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
   const rules = [];
   // A forced fight (stall rule) always aims at the nearest enemy, which is the
   // one blocking the player; otherwise the model's target, falling back to nearest.
-  const target = options.forceMode === 'fight'
-    ? pickTarget(compact, null, options.lastTarget)
-    : pickTarget(compact, answers.target?.choice, options.lastTarget);
+  const picked = options.forceMode === 'fight'
+    ? pickTargetInfo(compact, null, options.lastTarget)
+    : pickTargetInfo(compact, answers.target?.choice, options.lastTarget);
+  let target = picked.enemy;
   void enemyById;
+  // threatTarget: when not already locked on a target, shoot what can hurt
+  // the player most right now (a shotgun guy before a zombieman at the same
+  // range). The hangar's 27-72 hp spread came largely from the order enemies
+  // were shot in.
+  if (options.threatPriority !== false && !picked.sticky && target) {
+    const threat = topThreat(compact);
+    if (threat && threat.id !== target.id && threatRank(threat) > threatRank(target)) { target = threat; rules.push('threatTarget'); }
+  }
   const pointBlank = Boolean(target) && Number(target.distance) <= Number(options.pointBlankDistance ?? 96);
   let fire = Number(answers.fire?.noul ?? 0) >= Number(options.fireThreshold ?? 0.4);
   if (pointBlank && !fire) { fire = true; rules.push('pointBlank'); }
@@ -341,7 +374,13 @@ export async function createJevPolicy(options = {}) {
     coverMaxDistance: 300,     // only when the entry point is this close
     coverArrive: 40,           // ... and stop backing up inside this distance of it
     lootShotgun: true,         // after killing a shotgun guy with the pistol, walk over its dropped shotgun
-    lootTimeoutTics: 140,      // give the detour at most 4 s
+    lootTimeoutTics: 140,      // give a detour at most 4 s
+    items: [],                 // static map pickups (autoplay_items.mjs) for health / shells loot
+    healthLootBelow: 50,       // walk to a health item below this ...
+    healthLootDesperate: 30,   // ... even under fire below this
+    shellsLootBelow: 6,        // walk to shells when the shotgun has fewer than this
+    itemLootRadius: 256,       // only items this close (straight line; walls end it via the stall check)
+    threatPriority: true,      // retarget to the most dangerous enemy in reach when not locked on
     runThreshold: 0.5,         // safeToRun noul at or above this keeps advancing
     runHysteresis: 0.1,        // band around runThreshold before the mode flips
     retreatMaxDistance: 320,   // retreat only from enemies inside this distance
@@ -363,8 +402,26 @@ export async function createJevPolicy(options = {}) {
   const stats = {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, rulesOnly: config.rulesOnly, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
-    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 }
+    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
+    loot: { shotgun: 0, health: 0, shells: 0 }
   };
+  const takenItems = new Set();
+  let lastItemCount = null;
+  // Enemies that can hit the player right now, from the raw state (cheap,
+  // used before any consultation to decide whether a detour is safe).
+  function shootersNow(state) {
+    return (state?.enemies || []).filter(enemy => enemy.lineOfSight && Number(enemy.health) > 0 && Number(enemy.distance) <= effectiveRange(enemy.name)).length;
+  }
+  function nearestItem(state, kind) {
+    const player = state.player || {};
+    let best = null;
+    for (const item of config.items || []) {
+      if (item.kind !== kind || takenItems.has(item.id)) continue;
+      const distance = Math.hypot(item.x - Number(player.x), item.y - Number(player.y));
+      if (distance <= config.itemLootRadius && (!best || distance < best.distance)) best = { ...item, distance };
+    }
+    return best;
+  }
   let edgeEntry = null;        // { edgeId, x, y }: where the player entered the current edge (its doorway)
   function coverInfo(context) {
     const edgeId = context.edge?.id || 'exit';
@@ -395,14 +452,27 @@ export async function createJevPolicy(options = {}) {
   // shotgun guy means a shotgun lies where it stood; walk over it. No API
   // call is spent on these steps. Ends on pickup (shells rise or the weapon
   // switches), on arrival with nothing there, or on the timeout.
+  function lootPicked(state) {
+    const player = state.player || {};
+    const shells = Number(player.ammo?.shells ?? 0);
+    if (loot.kind === 'shotgun') return Number(player.weapon) === 2 || shells > loot.base.shells;
+    if (loot.kind === 'health') return Number(player.health) > loot.base.health;
+    if (loot.kind === 'shells') return shells > loot.base.shells;
+    return Number(player.items ?? 0) > loot.base.items;
+  }
   async function lootStep(state) {
     const player = state.player || {};
     const tic = Number(state.levelTime);
-    const picked = Number(player.weapon) === 2 || Number(player.ammo?.shells ?? 0) > loot.shells;
+    const picked = lootPicked(state);
     const dist = Math.hypot(loot.x - Number(player.x), loot.y - Number(player.y));
-    if (picked || dist < 20 || tic - loot.sinceTic > config.lootTimeoutTics) {
-      if (picked) stats.rules.lootPicked++; else stats.rules.lootGivenUp++;
-      await record({ kind: 'loot_end', tic, picked, distance: round(dist), tics: tic - loot.sinceTic });
+    // No progress toward the item for several steps means a wall is in the
+    // way (items are targeted in a straight line): give it up.
+    loot.noProgress = dist >= loot.lastDist - 1 ? loot.noProgress + 1 : 0;
+    loot.lastDist = dist;
+    if (picked || dist < 20 || tic - loot.sinceTic > config.lootTimeoutTics || loot.noProgress >= 8) {
+      if (picked) { stats.rules.lootPicked++; stats.loot[loot.kind] = (stats.loot[loot.kind] || 0) + 1; } else stats.rules.lootGivenUp++;
+      if (loot.itemId) takenItems.add(loot.itemId); // picked, or not there / unreachable: do not try again
+      await record({ kind: 'loot_end', tic, lootKind: loot.kind, picked, distance: round(dist), tics: tic - loot.sinceTic, reason: picked ? 'picked' : dist < 20 ? 'arrived_empty' : loot.noProgress >= 8 ? 'blocked' : 'timeout' });
       loot = null;
       return null;
     }
@@ -416,15 +486,47 @@ export async function createJevPolicy(options = {}) {
     return { forward: 0.62, strafe: 0, turn: aimStep(delta).turn, attack: false, use: false, tics: 3, ...meta };
   }
 
+  async function startLoot(state, kind, x, y, itemId = null) {
+    const player = state.player || {};
+    loot = {
+      kind, x, y, itemId, sinceTic: Number(state.levelTime), lastDist: Infinity, noProgress: 0,
+      base: { shells: Number(player.ammo?.shells ?? 0), health: Number(player.health), items: Number(player.items ?? 0) }
+    };
+    await record({ kind: 'loot_start', tic: loot.sinceTic, lootKind: kind, itemId, x: round(x), y: round(y), from: { x: round(player.x), y: round(player.y) }, health: player.health, shells: loot.base.shells });
+  }
+
   async function lootCheck(state) {
     const player = state?.player || {};
     const kills = Number(player.kills ?? 0);
     const killedNow = lastKills != null && kills > lastKills;
     lastKills = kills;
-    if (!config.lootShotgun) return;
-    if (!loot && killedNow && lastTarget?.name === 'shotgun_guy' && lastTarget.world && Number(player.weapon) === 1) {
-      loot = { ...lastTarget.world, sinceTic: Number(state.levelTime), shells: Number(player.ammo?.shells ?? 0) };
-      await record({ kind: 'loot_start', tic: loot.sinceTic, x: round(loot.x), y: round(loot.y), from: { x: round(player.x), y: round(player.y) } });
+    // Items the route walked over by itself: mark the nearest one taken so
+    // it is never targeted later.
+    const itemCount = Number(player.items ?? 0);
+    if (lastItemCount != null && itemCount > lastItemCount && !loot) {
+      let nearest = null;
+      for (const item of config.items || []) {
+        if (takenItems.has(item.id)) continue;
+        const d = Math.hypot(item.x - Number(player.x), item.y - Number(player.y));
+        if (d <= 64 && (!nearest || d < nearest.d)) nearest = { id: item.id, d };
+      }
+      if (nearest) takenItems.add(nearest.id);
+    }
+    lastItemCount = itemCount;
+    if (loot) return;
+    if (config.lootShotgun && killedNow && lastTarget?.name === 'shotgun_guy' && lastTarget.world && Number(player.weapon) === 1) {
+      return startLoot(state, 'shotgun', lastTarget.world.x, lastTarget.world.y);
+    }
+    if (!(config.items || []).length) return;
+    const health = Number(player.health);
+    const shooters = shootersNow(state);
+    if (health < config.healthLootBelow && (shooters === 0 || health < config.healthLootDesperate)) {
+      const item = nearestItem(state, 'health');
+      if (item) return startLoot(state, 'health', item.x, item.y, item.id);
+    }
+    if (Number(player.weapon) === 2 && Number(player.ammo?.shells ?? 0) < config.shellsLootBelow && shooters === 0) {
+      const item = nearestItem(state, 'shells');
+      if (item) return startLoot(state, 'shells', item.x, item.y, item.id);
     }
   }
   let stepsSinceCall = Infinity;

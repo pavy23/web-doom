@@ -36,6 +36,7 @@ import {
 } from './navigation_browser_agent.mjs';
 import { OBJECTIVE_ORDER, OBJECTIVE_VERSION, compareToBaseline, rankRuns, runMetrics } from './autoplay_objective.mjs';
 import { installOverlay, updateOverlay } from './autoplay_overlay.mjs';
+import { loadMapItems } from './autoplay_items.mjs';
 
 // LinuxDOOM skill_t: 0 ITYTD, 1 HNTR, 2 HMP, 3 UV, 4 Nightmare. The CLI takes
 // the vanilla 1-5 number or a name; the engine receives "-skill <1-5>".
@@ -382,7 +383,10 @@ export async function runStageClearTrial(input = {}) {
   const stage = await prepareStagePwad(config);
   const wadBase64 = (await readFile(stage.wadPath)).toString('base64');
   const policyLog = path.join(config.reportDir, 'jev.jsonl');
-  if (config.policy === 'jev' || config.policy === 'rules') await writeFile(policyLog, '');
+  const usesPolicy = config.policy === 'jev' || config.policy === 'rules';
+  if (usesPolicy) await writeFile(policyLog, '');
+  // Static pickups for the policy's item loot, filtered by the trial's skill.
+  const mapItems = usesPolicy ? await loadMapItems(config.iwadPath, config.map, { skill: config.skill ?? 0 }) : [];
   const report = {
     version: AUTOPLAY_VERSION,
     map: config.map,
@@ -415,7 +419,7 @@ export async function runStageClearTrial(input = {}) {
         if (config.policy === 'jev' || config.policy === 'rules') {
           const { createJevPolicy } = await import('./autoplay_jev_policy.mjs');
           policy = await createJevPolicy({
-            ...(config.jev || {}), rulesOnly: config.policy === 'rules', log: policyLog, runIndex,
+            ...(config.jev || {}), rulesOnly: config.policy === 'rules', log: policyLog, runIndex, items: mapItems,
             onDecision: config.overlay === false ? null : entry => updateOverlay(page, { jev: entry })
           });
         }
