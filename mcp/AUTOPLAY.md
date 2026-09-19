@@ -417,12 +417,44 @@ arrival with nothing there, or on the timeout; `jev.jsonl` gets
 run, right after the first shotgun guy on the route, so the hangar is
 fought with a shotgun.
 
-Remaining candidates, in order: fight the hangar from the doorway instead
-of the open floor (a "hold position at cover" mode the mapper does not
-have), and treat health under ~40 before the courtyard as a reason to
-retreat to the previous sector rather than advance. Clear time (46-49 s vs
-the skill-0 baseline's 33 s) is the next metric to work on once damage is
-stable.
+### The remaining two candidates, and what the re-run taught
+
+```text
+0.5.1  cover (back up to the edge     1/3  run 0 died on the courtyard approach with
+       entry point when fighting          76 -> 31 -> 4 hp spent in cover mode; run 2 hit
+       2+ shooters) + lowHealthHold       the route budget in the hangar; cover fired 6-16x
+0.5.2  cover off, lowHealthHold on    0/3  functionally identical to 0.5.0 (lowHealthHold
+                                         fired 0 times, cover 0); died at 72:74, 71:60, 73:72
+                                         after 10-17 kills; hangar edge cost 51-78 hp
+                                         where 0.5.0's runs had paid 24
+```
+
+Two conclusions, the second more important than the first.
+
+`cover` as written is harmful and is off by default. The edge entry point
+is where the previous edge ended, not a doorway in the line-of-sight
+sense, so backing up to it kept the player in the open while facing fire.
+A real version needs map LOS geometry (which sector lines block sight from
+the enemies' positions), which the policy does not have today.
+`lowHealthHold` never triggered in six runs: when health is under 40 the
+mode is already `fight`, so the rule guards a case that does not occur.
+
+**Three runs are not enough to rank policy versions.** 0.5.0 and 0.5.2 are
+the same policy in effect and scored 3/3 and 0/3; pooled, 3 clears in 6.
+The hangar fight's cost with identical code ranged from 24 to 78 hp
+because Jev's answers differ run to run and each different command
+sequence meets a different roll of DOOM's damage table (a shotgun blast is
+3-45). Every "better/worse" verdict above that rests on one 3-run trial,
+0.3 v3's 3/3 at skill 0 included, carries that uncertainty. For the next
+decisions: at least 10 runs per version at UV (~$0.20), report the clear
+rate with its binomial interval, and compare the per-edge damage
+distributions of the hangar and courtyard edges rather than the best run.
+A rules-only control (`shouldConsult` always false, the safety rules
+still active) is the other missing measurement: it separates what the
+model contributes from what the code contributes.
+
+Clear time (46-54 s on cleared UV runs vs the skill-0 baseline's 33 s)
+stays the metric after damage variance is under control.
 
 Note on determinism: with 0.4.2 and 0.4.3 all three runs were tic-identical
 (the rules decided every step), while the combat-budget trial's runs
