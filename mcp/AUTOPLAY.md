@@ -642,8 +642,21 @@ lift rules v2             7/10 (70%)  40-89%   72-144, median 102   exit lift 49
 Each lift version removed the failure it targeted and exposed the next
 one. v3 bounds the walk-off priority to six steps (then the policy, whose
 stall rule fights a blocker, gets the step back) and lets a stationary
-fight override stand while waiting on the platform. Damage on cleared
-runs is 72-144 against the baseline's 183, at 1.1-1.3x its time.
+fight override stand while waiting on the platform.
+
+```text
+lift rules v3             9/10 (90%)  60-98%   69-180, median 126   121:120 died x1 (10 kills, on the way
+  (walk-off priority for                                            down from the lift)
+  6 steps, stationary
+  fights allowed while
+  waiting)
+```
+
+E1M2 at HMP, final for this round: 9 of 10 runs clear with the policy
+(95% interval 60-98%), damage 69-180 against the baseline's 183, at
+1.1-1.4x its time (3595-4437 tics, 103-127 s), $0.02 per run. The whole
+improvement from 3/10 came from layer 1 (lifts, keys, triggers, local
+routing, route recovery); the policy itself is unchanged since 0.6.2.
 
 Note on determinism: with 0.4.2 and 0.4.3 all three runs were tic-identical
 (the rules decided every step), while the combat-budget trial's runs
