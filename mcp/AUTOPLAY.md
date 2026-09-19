@@ -203,11 +203,29 @@ were added after the first live trial (see "First live result" below):
 
 | Rule | Trigger | Effect | Knobs |
 |---|---|---|---|
-| `stall` | no net progress of `stallDistance` map units across the last `stallWindow` consultations while the nearest visible enemy is within `meleeRange` | mode forced to `fight` at the nearest enemy, fire on; logged as `forced: "fight"` and `command.rules: ["stall"]` | `stallWindow` 6, `stallDistance` 32, `meleeRange` 96 |
+| `stall` | no net progress of `stallDistance` map units across the last `stallWindow` consultations while the nearest enemy is within `meleeRange`, and that enemy is in the front half (it can block the corridor) or the player lost health during the window (it is hitting from wherever it stands) | mode forced to `fight` at the nearest enemy, fire on; logged as `forced: "fight"` and `command.rules: ["stall"]` | `stallWindow` 6, `stallDistance` 32, `meleeRange` 96 |
 | `dodgeHold` | consecutive `dodge` answers | the strafe side is held for `dodgeHoldCalls` answers before flipping, so a dodge moves the player instead of cancelling itself | `dodgeHoldCalls` 4 |
-| `pointBlank` | a target within `pointBlankDistance` | fired at when aligned whatever the `fire` noul says; when advancing and not aligned, the step turns toward it. The noul threshold is 0.4 (it hovered at 0.45 for an Imp in the player's face) | `pointBlankDistance` 96, `fireThreshold` 0.4 |
+| `pointBlank` | a target within `pointBlankDistance` | fired at when aligned whatever the `fire` noul says; never turns the player (see below). The noul threshold is 0.4 (it hovered at 0.45 for an Imp in the player's face) | `pointBlankDistance` 96, `fireThreshold` 0.4 |
 
 `policy.rules` in the report counts how often each rule fired.
+
+The consult gate (`shouldConsult`) opens for an enemy in view, health below
+`lowHealth`, an enemy inside `meleeRange` outside the view cone, or a health
+drop since the previous step; `compactState` includes in-reach enemies too,
+so the stall rule can see a monster clawing from the side.
+
+Two versions of these rules failed before the current one, and the failures
+are worth keeping:
+
+- A `pointBlank` that turned the advancing player toward an unaligned
+  in-reach enemy stalled the follower on a Zombieman *behind* the player;
+  the stall rule then forced a fight with it, `fight` stops movement, so the
+  stall sustained itself and the edge tic budget ran out. All three runs of
+  that trial failed identically at edge `7:54:385`, tic 619: a rule-driven
+  failure is deterministic where a model-driven one is not.
+- A stall rule keyed only on "in reach + no progress" had the same
+  self-sustaining problem. The front-half / hurt condition is what breaks it:
+  a monster behind a moving player is never fought.
 
 Every consultation is written to `<reportDir>/jev.jsonl` (state sent, answers,
 probabilities, usage, latency, resulting command) and the run report carries

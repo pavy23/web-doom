@@ -109,7 +109,8 @@ export function buildQuestions(compact, primitives) {
 
 function turnToward(bearing, max = 0.7) {
   // relativeAngle > 0 is to the left (geometric CCW); agent +turn is right.
-  const magnitude = Math.min(max, Math.max(0.12, Math.abs(bearing) / 90 * 0.6));
+  // The floor of 0.2 keeps a forced fight from spending 50 tics aligning.
+  const magnitude = Math.min(max, Math.max(0.2, Math.abs(bearing) / 90 * 0.7));
   return bearing > 0 ? -magnitude : magnitude;
 }
 
@@ -134,9 +135,9 @@ export function answersToCommand(answers, compact, proposal, options = {}) {
 
   if (!target || mode === 'advance') {
     if (fire && target && Math.abs(target.bearing) <= aimTolerance) return { ...proposal, attack: true, ...meta };
-    // A point-blank target the player is not aligned with is still worth a
-    // shot: keep advancing, but turn toward it so the next step can fire.
-    if (pointBlank && target && !(options.forceMode)) return { ...proposal, turn: turnToward(target.bearing, 0.4), ...meta };
+    // Not aligned: keep the route command untouched. Turning toward a
+    // point-blank enemy while advancing was tried and it stalled the follower
+    // on monsters behind the player, which the stall rule then fought.
     return null;
   }
   const aligned = Math.abs(target.bearing) <= aimTolerance;
@@ -201,18 +202,24 @@ export async function createJevPolicy(options = {}) {
   let lastDecision = null;
   const positions = [];        // player position at each consultation, newest last
 
-  // Stall rule: the player has not made net progress across the last
-  // `stallWindow` consultations and the nearest visible enemy is in melee range.
+  // Stall rule: no net progress across the last `stallWindow` consultations
+  // with the nearest enemy in melee range, and that enemy is either in the
+  // front half (it can block the corridor) or the player lost health during
+  // the window (it is hitting from wherever it is). A monster behind a
+  // moving player never qualifies: fighting it would only stop the run.
   function detectStall(state, compact) {
     const player = state?.player || {};
-    positions.push({ x: Number(player.x), y: Number(player.y), tic: Number(state?.levelTime) });
+    positions.push({ x: Number(player.x), y: Number(player.y), tic: Number(state?.levelTime), health: Number(player.health) });
     if (positions.length > config.stallWindow) positions.shift();
     if (positions.length < config.stallWindow) return false;
     const first = positions[0];
     const last = positions[positions.length - 1];
     const moved = Math.hypot(last.x - first.x, last.y - first.y);
     const nearest = compact.visibleEnemies[0];
-    return Boolean(nearest) && moved < config.stallDistance && Number(nearest.distance) <= config.meleeRange;
+    if (!nearest || moved >= config.stallDistance || Number(nearest.distance) > config.meleeRange) return false;
+    const hurt = first.health - last.health > 0;
+    const inFront = Math.abs(Number(nearest.bearing)) <= 90;
+    return hurt || inFront;
   }
 
   function ruleOptions(compact, state) {
