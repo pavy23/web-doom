@@ -206,6 +206,18 @@ export async function liveSectorOpening(page, sectorIndex) {
   }, index);
 }
 
+// Live floor height of one sector (world units), for lifts.
+export async function liveSectorFloor(page, sectorIndex) {
+  const index = Math.trunc(Number(sectorIndex));
+  if (!Number.isFinite(index) || index < 0) return null;
+  return page.evaluate(wanted => {
+    const json = Module.ccall('doomctl_get_sectors_json', 'string', ['number'], [wanted + 1]);
+    const parsed = JSON.parse(json);
+    const row = parsed?.sectors?.find(item => Number(item.index) === wanted);
+    return row ? Number(row.floor) : null;
+  }, index);
+}
+
 const PLAYER_HEIGHT_UNITS = 56;
 
 // Vanilla EV_VerticalDoor toggles a door that is already moving: USE while
@@ -245,11 +257,28 @@ export async function navigateEdge(page, graph, edge, options = {}) {
   const doorSector = options.doorSector != null ? Number(options.doorSector)
     : (edge.action === 'use' ? Number(edge.to) : null);
   let previousOpening = null;
+  // Lift awareness: the sector carrying the line's tag is the platform; the
+  // edge is passable only while its floor sits at the other sector's floor.
+  // A rider that stops to fight (policy override) lets the lift cycle back
+  // up; so while the lift is away the runner calls it (USE, for switch
+  // lifts) and holds, and while it is level the walk-off command outranks
+  // the policy for that step.
+  let liftSector = null;
+  let liftTargetFloor = null;
+  if (edge.kind === 'lift' && edge.tag) {
+    if (graph.nodes[edge.from]?.tag === edge.tag) { liftSector = edge.from; liftTargetFloor = graph.nodes[edge.to].floor; }
+    else if (graph.nodes[edge.to]?.tag === edge.tag) { liftSector = edge.to; liftTargetFloor = graph.nodes[edge.from].floor; }
+  }
 
   while (ticsSinceProgress < maxTics && combatTics < maxCombatTics) {
     const state = await page.evaluate(() => window.DoomControl.getState());
     if (!state?.ready || !state.player) throw new Error('Navigation runtime lost player state');
     let wantUse = edge.action === 'use' || Boolean(options.useNearPortal);
+    let liftLevel = null;   // null: not a lift edge; true: platform at the target floor
+    if (liftSector != null) {
+      const floor = await liveSectorFloor(page, liftSector);
+      liftLevel = floor != null && Math.abs(floor - liftTargetFloor) <= 4;
+    }
     let doorOpening = null;
     if (doorSector != null) {
       doorOpening = await liveSectorOpening(page, doorSector);
@@ -305,11 +334,24 @@ export async function navigateEdge(page, graph, edge, options = {}) {
       };
     }
 
+    // Lift rules (see liftSector above).
+    let transitPriority = false;
+    if (liftLevel === false && Number(state.currentSector) === liftSector) {
+      // On the platform while it is away from the target floor: call it and
+      // hold; walking would carry the player off or against the rim.
+      command = { forward: 0, strafe: 0, turn: 0, attack: false, use: edge.action === 'use', tics: 4, source: 'geometric', lift: 'wait' };
+      transitPriority = edge.action === 'use';
+    } else if (liftLevel === true && Number(state.currentSector) === liftSector) {
+      // Level: leave now, before it cycles. The policy does not get this step.
+      transitPriority = true;
+      command = { ...command, lift: 'leave' };
+    }
+
     // Optional external policy (for example a System One tactical layer) may
     // replace the geometric command for this step. It receives the raw engine
     // state and the deterministic proposal, and must return a full command or
     // a falsy value to keep the proposal.
-    if (typeof options.decide === 'function') {
+    if (typeof options.decide === 'function' && !transitPriority) {
       const override = await options.decide({ state, edge, proposal: command, portalDistance, targetDistance, delta, usedTics });
       if (override) command = override;
     }
