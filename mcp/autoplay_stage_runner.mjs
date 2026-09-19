@@ -382,7 +382,7 @@ export async function runStageClearTrial(input = {}) {
   const stage = await prepareStagePwad(config);
   const wadBase64 = (await readFile(stage.wadPath)).toString('base64');
   const policyLog = path.join(config.reportDir, 'jev.jsonl');
-  if (config.policy === 'jev') await writeFile(policyLog, '');
+  if (config.policy === 'jev' || config.policy === 'rules') await writeFile(policyLog, '');
   const report = {
     version: AUTOPLAY_VERSION,
     map: config.map,
@@ -412,10 +412,10 @@ export async function runStageClearTrial(input = {}) {
       let attempt;
       let policy = null;
       try {
-        if (config.policy === 'jev') {
+        if (config.policy === 'jev' || config.policy === 'rules') {
           const { createJevPolicy } = await import('./autoplay_jev_policy.mjs');
           policy = await createJevPolicy({
-            ...(config.jev || {}), log: policyLog, runIndex,
+            ...(config.jev || {}), rulesOnly: config.policy === 'rules', log: policyLog, runIndex,
             onDecision: config.overlay === false ? null : entry => updateOverlay(page, { jev: entry })
           });
         }
@@ -483,7 +483,7 @@ export async function runStageClearTrial(input = {}) {
     damageTaken: report.runs.map(run => run.telemetry?.damageTaken ?? null),
     kills: report.runs.map(run => run.telemetry?.kills ?? null),
     objective: summariseObjective(report.runs, config.baselineReport),
-    ...(config.policy === 'jev' ? {
+    ...(config.policy === 'jev' || config.policy === 'rules' ? {
       jevCalls: report.runs.map(run => run.policy?.calls ?? null),
       jevOverrides: report.runs.map(run => run.policy?.overrides ?? null),
       jevInputTokens: report.runs.reduce((sum, run) => sum + Number(run.policy?.inputTokens || 0), 0),

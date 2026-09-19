@@ -321,6 +321,7 @@ export function shouldConsult(state, options = {}, memory = {}) {
 export async function createJevPolicy(options = {}) {
   const config = {
     dryRun: false,
+    rulesOnly: false,          // control: never ask the model; the safety rules and loot still run
     maxCalls: 600,             // hard cost cap per trial
     minStepsBetweenCalls: 1,   // 1 = every eligible step
     maxEnemies: 5,
@@ -351,9 +352,16 @@ export async function createJevPolicy(options = {}) {
     ...options
   };
   const sdk = await import('@typesafe-ai/sdk');
-  const client = config.dryRun ? null : (config.client || new sdk.TypeSafeClient(config.model ? { defaultModel: config.model } : {}));
+  const client = (config.dryRun || config.rulesOnly) ? null : (config.client || new sdk.TypeSafeClient(config.model ? { defaultModel: config.model } : {}));
+  // Answers the rules-only control substitutes for the model: always safe
+  // to run, no target preference, no fire. Every override then comes from
+  // a code rule (pointBlank, stall, loot, ...), which is the point.
+  const RULES_ONLY_ANSWERS = {
+    safeToRun: { type: 'noul', noul: 1 }, response: { type: 'choice', choice: 'fight', probabilities: { fight: 1 } },
+    target: { type: 'choice', choice: 'enemy_0' }, fire: { type: 'noul', noul: 0 }, danger: { type: 'score', score: 0 }
+  };
   const stats = {
-    version: JEV_POLICY_VERSION, dryRun: config.dryRun, eligibleSteps: 0, calls: 0, overrides: 0,
+    version: JEV_POLICY_VERSION, dryRun: config.dryRun, rulesOnly: config.rulesOnly, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
     rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 }
   };
@@ -499,6 +507,17 @@ export async function createJevPolicy(options = {}) {
     const request = { state: compact, questions, ...(config.model ? { model: config.model } : {}) };
     stepsSinceCall = 0;
 
+    if (config.rulesOnly) {
+      const answers = resolveMode(RULES_ONLY_ANSWERS, { ...config, lastMode });
+      lastMode = answers.mode.choice;
+      const options = ruleOptions(compact, state, context);
+      const command = answersToCommand(answers, compact, proposal, options);
+      rememberTarget(command, compact, state);
+      if (command) stats.overrides++;
+      for (const rule of command?.rules || []) stats.rules[rule] = (stats.rules[rule] || 0) + 1;
+      if (command) await record({ kind: 'rules_decision', tic: state.levelTime, state: compact, answers, proposal, command, ...(options.forceMode ? { forced: options.forceMode } : {}) });
+      return command;
+    }
     if (config.dryRun) {
       stats.calls++;
       const approxTokens = Math.ceil(JSON.stringify(request).length / 4);
