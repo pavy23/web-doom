@@ -453,7 +453,40 @@ A rules-only control (`shouldConsult` always false, the safety rules
 still active) is the other missing measurement: it separates what the
 model contributes from what the code contributes.
 
-Clear time (46-54 s on cleared UV runs vs the skill-0 baseline's 33 s)
+### 10-run trials and the rules-only control (UV, policy 0.5.2)
+
+`autoplay_compare.mjs` over the three UV trials (`npm run autoplay:compare:uv`):
+
+```text
+trial               policy  runs  cleared      95% CI   damage med  hp lost @hangar  hp lost @courtyard  deaths at
+baseline            none     1    0/1  (0%)    0-79%    100         27               40 (died)           courtyard x1
+rules-only control  rules   10    0/10 (0%)    0-28%    100         27 (all 10)      7 (died, all 10)    courtyard x10, identical runs
+jev                 jev     10    2/10 (20%)   6-51%    100 [33-101] 54 [27-72]      16 [0-43], 7 reached  courtyard x4, hangar budget x2, 54:53 x1, 75:76 x1
+```
+
+Pooled over every 0.5.x UV run (0.5.0 3/3, 0.5.2 0/3, this 2/10): 5 clears
+in 16, a 31% rate with a 95% interval of roughly 14-56%. That is the
+honest number for "the current policy at Ultra-Violence", and it is what
+the earlier 3/3 was a lucky draw from.
+
+What the control shows. With the model replaced by fixed answers the
+policy is deterministic: ten identical runs, ten deaths in the courtyard at
+tic 1012 after 10 kills. The code rules on their own (point-blank shots,
+stall fights, loot) do not clear UV; every clear so far had Jev in the
+loop, so the model is contributing, even though its answers are mostly
+`fight` (1684 of 2706 modes in the 10 runs) and the clear rate is low.
+
+What costs the runs. Fighting the hangar costs a median 54 hp (27-72);
+running through it, as the control and the baseline do, costs 27. But the
+runner-through arrives in the courtyard at ~40 hp with a pistol and dies
+there every time, while the fighter arrives with a shotgun and 20-70 hp and
+survives it 7 times in 10. So the hangar fight is the right call and its
+price is the lever: the two clears lost 27 and 45 hp there, the deaths 54-72.
+Reducing that spread (which enemy to shoot first, whether to fight from
+the corridor before the hangar opens up) is the next tuning target, and it
+has to be judged on 10-run damage distributions, not on a best run.
+
+Clear time (46-57 s on cleared UV runs vs the skill-0 baseline's 33 s)
 stays the metric after damage variance is under control.
 
 Note on determinism: with 0.4.2 and 0.4.3 all three runs were tic-identical
