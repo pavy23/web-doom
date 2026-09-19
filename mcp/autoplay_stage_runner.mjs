@@ -343,6 +343,7 @@ export async function runStageAttempt(page, stage, options = {}) {
     return transitions.length - 1;
   };
   const keyThings = graph.things?.keys || [];
+  let recoveries = 0;
   let index = 0;
   while (index < transitions.length) {
     const edge = transitions[index].edge;
@@ -370,6 +371,19 @@ export async function runStageAttempt(page, stage, options = {}) {
       health: result.finalState?.player?.health ?? null
     });
     if (!result.passed) {
+      // Route-position recovery: a fight can push the player back into an
+      // earlier route sector (back onto a lift that then rises). If the
+      // player stands somewhere the route already covered, resume there
+      // instead of failing, a few times per run.
+      const here = Number(result.finalState?.currentSector);
+      let back = -1;
+      for (let k = index; k >= 0; k--) if (progression.sectors[k] === here) { back = k; break; }
+      if (result.failure === 'edge_no_progress' && back >= 0 && back < index && recoveries < 3) {
+        recoveries++;
+        attempt.recoveries = recoveries;
+        index = back;
+        continue;
+      }
       attempt.failure = result.failure || 'edge_failed';
       attempt.failedEdge = edge.id;
       break;

@@ -265,6 +265,9 @@ export async function navigateEdge(page, graph, edge, options = {}) {
   // the policy for that step.
   let liftSector = null;
   let liftTargetFloor = null;
+  let liftLastFloor = null;
+  let liftStillTics = 0;      // tics the platform has not moved while we wait on it
+  let liftRecross = false;    // step off and back on to re-fire a walk-over lift trigger
   if (edge.kind === 'lift' && edge.tag) {
     if (graph.nodes[edge.from]?.tag === edge.tag) { liftSector = edge.from; liftTargetFloor = graph.nodes[edge.to].floor; }
     else if (graph.nodes[edge.to]?.tag === edge.tag) { liftSector = edge.to; liftTargetFloor = graph.nodes[edge.from].floor; }
@@ -275,9 +278,12 @@ export async function navigateEdge(page, graph, edge, options = {}) {
     if (!state?.ready || !state.player) throw new Error('Navigation runtime lost player state');
     let wantUse = edge.action === 'use' || Boolean(options.useNearPortal);
     let liftLevel = null;   // null: not a lift edge; true: platform at the target floor
+    let liftMoving = false;
     if (liftSector != null) {
       const floor = await liveSectorFloor(page, liftSector);
       liftLevel = floor != null && Math.abs(floor - liftTargetFloor) <= 4;
+      liftMoving = liftLastFloor != null && floor !== liftLastFloor;
+      liftLastFloor = floor;
     }
     let doorOpening = null;
     if (doorSector != null) {
@@ -336,12 +342,27 @@ export async function navigateEdge(page, graph, edge, options = {}) {
 
     // Lift rules (see liftSector above).
     let transitPriority = false;
-    if (liftLevel === false && Number(state.currentSector) === liftSector) {
+    const onPlatform = Number(state.currentSector) === liftSector;
+    if (liftSector != null && liftRecross) {
+      // Re-fire a walk-over lift: back off the platform, then the normal
+      // approach walks back across its trigger line.
+      if (onPlatform) {
+        command = { forward: -0.6, strafe: 0, turn: 0, attack: false, use: false, tics: 4, source: 'geometric', lift: 'recross' };
+        transitPriority = true;
+      } else {
+        liftRecross = false;
+        liftStillTics = 0;
+      }
+    } else if (liftLevel === false && onPlatform) {
       // On the platform while it is away from the target floor: call it and
-      // hold; walking would carry the player off or against the rim.
-      command = { forward: 0, strafe: 0, turn: 0, attack: false, use: edge.action === 'use', tics: 4, source: 'geometric', lift: 'wait' };
-      transitPriority = edge.action === 'use';
-    } else if (liftLevel === true && Number(state.currentSector) === liftSector) {
+      // hold, facing the portal so USE reaches the line; if it does not move
+      // for 28 tics the trigger is a walk-over line, so step off and back on.
+      liftStillTics = liftMoving ? 0 : liftStillTics + 4;
+      if (liftStillTics >= 28) { liftRecross = true; liftStillTics = 0; }
+      const aim = Math.abs(delta) > 10 ? (delta > 0 ? -0.3 : 0.3) : 0;
+      command = { forward: 0, strafe: 0, turn: aim, attack: false, use: edge.action === 'use', tics: 4, source: 'geometric', lift: 'wait' };
+      transitPriority = true;
+    } else if (liftLevel === true && onPlatform) {
       // Level: leave now, before it cycles. The policy does not get this step.
       transitPriority = true;
       command = { ...command, lift: 'leave' };
