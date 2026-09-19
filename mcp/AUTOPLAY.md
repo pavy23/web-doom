@@ -552,6 +552,34 @@ the 10-run damage distributions. Both are measurable with the tools here.
 Clear time (38-62 s on cleared UV runs vs the skill-0 baseline's 33 s)
 stays the metric after damage variance is under control.
 
+### Skill levels side by side (policy 0.6.2, runner 0.3.0)
+
+E1M1 monster placement by THINGS skill bits: skill 0-1 has 4 monsters
+(2 zombiemen, 2 imps), HMP 6 (4 zombiemen, 2 imps), UV/NM 29 (9 zombiemen,
+16 shotgun guys, 4 imps). Skill 0 additionally halves damage taken.
+
+```text
+skill            baseline (no policy)                        jev 0.6.2, 10 runs
+0  ITYTD         CLEARED, 33 damage, 1167 tics               (0.3 v3: 3/3, 26-27 damage)
+2  HMP           dies in the exit corridor (72:74:309),      10/10 (95% CI 72-100%), damage 15 [0-24],
+                 tic 965, 0 kills                            min health 76-100, 5 kills each, 1464-1880 tics
+                                                             (median 1568, 45 s), $0.015 per run
+3  UV            dies in the courtyard (60:56:194)           1/10 - 2/10 across six versions
+```
+
+The HMP baseline dies with six monsters on the map because HMP deals full
+damage: the same corridor imp that costs 33 hp at skill 0 costs 100 here.
+The policy clears HMP every time, and cleanly: the exit corridor and the
+hangar cost 0 hp in all ten runs; the damage that remains (0-24) is spread
+over the route. `fightFires` (117), `stall` (21) and `noRetreatFar` (17)
+are the rules that fired; loot never triggered (no shotgun guys to drop
+one, health never dropped far enough).
+
+So the policy's competence boundary on E1M1 lies between HMP and UV: it
+handles "a few hitscan enemies and an imp in a corridor" reliably and
+"sixteen shotgun guys in an open hangar with a pistol" one time in ten.
+HNTR (skill 1: the 4-monster layout at full damage) has not been run.
+
 Note on determinism: with 0.4.2 and 0.4.3 all three runs were tic-identical
 (the rules decided every step), while the combat-budget trial's runs
 diverged again (Jev's answers mattered). A policy whose runs are identical
