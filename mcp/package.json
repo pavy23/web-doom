@@ -47,6 +47,7 @@
     "autoplay:e1m3:hmp:record": "node autoplay_stage_runner.mjs --map E1M3 --runs 1 --no-god --policy jev --skill hmp --jev-pipeline 8 --record --report-dir exports/autoplay/e1m3-jev-hmp-rec --baseline exports/autoplay/e1m3-hmp/report.json",
     "autoplay:compare:e1m3": "node autoplay_compare.mjs exports/autoplay/e1m3-hmp exports/autoplay/e1m3-jev-hmp-x10",
     "autoplay:jev:smoke": "node autoplay_jev_smoke.mjs",
+    "test:autoplay:weapon": "node autoplay_weapon_selftest.mjs",
     "autoplay:dashboard": "node autoplay_dashboard.mjs exports/autoplay/e1m1-jev --baseline exports/autoplay/e1m1",
     "test:p2:deathmatch": "node p2_deathmatch_balanced_selftest.mjs",
     "test:p2:bots:runtime": "node p2_bot_runtime_selftest.mjs",

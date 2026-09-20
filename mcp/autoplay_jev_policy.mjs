@@ -441,7 +441,7 @@ export async function createJevPolicy(options = {}) {
     lootArmor: true,           // walk to an armor item when the player has less than armorLootBelow armor and nothing is shooting
     armorLootBelow: 50,
     healthLootDesperate: 30,   // ... even under fire below this
-    shellsLootBelow: 6,        // walk to shells when the shotgun has fewer than this
+    shellsLootBelow: 12,       // walk to shells when the shotgun has fewer than this (a shotgun blast is one shell)
     itemLootRadius: 256,       // only items this close (straight line; walls end it via the stall check)
     threatPriority: true,      // retarget to the most dangerous enemy in reach when not locked on
     pipelineLagTics: 0,        // > 0: pipelined consultation, answers applied this many tics after their state
@@ -603,6 +603,7 @@ export async function createJevPolicy(options = {}) {
   let lastMode = null;
   let lastTarget = null;       // the enemy fought at the previous consultation (sticky target)
   let lastKills = null;
+  const heldWeapons = new Set([1]);   // weapons seen in the player's hands (the state has no owned set)
   let loot = null;             // { x, y, sinceTic, shells } dropped shotgun to walk over
 
   // World position of an enemy from the player's pose and the enemy's polar
@@ -633,7 +634,12 @@ export async function createJevPolicy(options = {}) {
     // Something got a clear shot meanwhile: stop the detour (the item stays
     // eligible) unless the player is desperate for health. Ten identical
     // E1M3 runs walked 240 units toward a medikit with an imp at 52 units.
-    if (!picked && shootersNow(state) > 0 && !(loot.kind === 'health' && Number(player.health) < config.healthLootDesperate)) {
+    // A dropped shotgun is worth the shots taken walking to it (the whole
+    // rest of the level is fought with it), so only desperate health ends
+    // that detour; the same for a medikit the player is desperate for.
+    const worthTheRisk = (loot.kind === 'shotgun' && Number(player.health) >= config.healthLootDesperate)
+      || (loot.kind === 'health' && Number(player.health) < config.healthLootDesperate);
+    if (!picked && shootersNow(state) > 0 && !worthTheRisk) {
       stats.rules.lootGivenUp++;
       await record({ kind: 'loot_end', tic, lootKind: loot.kind, picked: false, distance: round(dist), tics: tic - loot.sinceTic, reason: 'interrupted' });
       loot = null;
@@ -702,7 +708,11 @@ export async function createJevPolicy(options = {}) {
       const item = nearestItem(state, 'armor');
       if (item) return startLoot(state, 'armor', item.x, item.y, item.id);
     }
-    if (config.lootShells && Number(player.weapon) === 2 && Number(player.ammo?.shells ?? 0) < config.shellsLootBelow && shooters === 0) {
+    // Shells are worth collecting whenever the player owns a shotgun, not
+    // only while holding one: the engine drops back to the pistol when the
+    // shells run out, and a rule keyed on the weapon in hand then never
+    // refills (E1M3 ran the whole level on the pistol with shells lying about).
+    if (config.lootShells && heldWeapons.has(2) && Number(player.ammo?.shells ?? 0) < config.shellsLootBelow && shooters === 0) {
       const item = nearestItem(state, 'shells');
       if (item) return startLoot(state, 'shells', item.x, item.y, item.id);
     }
@@ -840,24 +850,39 @@ export async function createJevPolicy(options = {}) {
     const peak = Math.max(...healthHistory.map(h => h.health));
     return Math.max(0, peak - health);
   }
-  // Weapons the player has been seen holding (the state carries the ready
-  // weapon and the ammo, not the owned set): 1 pistol, 2 shotgun, 3 chaingun.
-  const ownedWeapons = new Set([1]);
+  // Which weapon to hold. The engine state reports the ready weapon and the
+  // ammo, not the owned set, and asking for a weapon the player does not own
+  // is a no-op: vanilla P_PlayerThink applies BT_CHANGE only when
+  // weaponowned[newweapon] and its ammo are there. So the rule asks and lets
+  // the engine decide. (An earlier version gated on weapons seen in hand and
+  // never fired once: the run that never picked a shotgun up could never ask
+  // for one either.)
   let lastWeaponRequestTic = -Infinity;
+  let pendingWeapon = null;      // { weapon, tic } of the last request, to learn what the player does not own
+  const deniedWeapons = new Set();
   function weaponWanted(state) {
     if (!config.weaponSelect) return null;
     const player = state?.player || {};
     const weapon = Number(player.weapon);
-    if (Number.isFinite(weapon)) ownedWeapons.add(weapon);
     const tic = Number(state?.levelTime ?? 0);
+    if (Number.isFinite(weapon)) { heldWeapons.add(weapon); deniedWeapons.delete(weapon); }
+    // A request that did not take within a switch's worth of tics means the
+    // player does not own that weapon (the engine ignores BT_CHANGE then):
+    // stop asking, until it turns up in hand.
+    if (pendingWeapon && tic - pendingWeapon.tic >= config.weaponSelectHoldTics) {
+      if (weapon !== pendingWeapon.weapon) deniedWeapons.add(pendingWeapon.weapon);
+      pendingWeapon = null;
+    }
     if (tic - lastWeaponRequestTic < config.weaponSelectHoldTics) return null;
     const shells = Number(player.ammo?.shells ?? 0), bullets = Number(player.ammo?.bullets ?? 0);
+    const want = candidate => candidate !== weapon && !deniedWeapons.has(candidate);
     let wanted = null;
-    if (weapon === 1 && ownedWeapons.has(2) && shells > 0) wanted = 2;
-    else if (weapon === 1 && ownedWeapons.has(3) && bullets > 0) wanted = 3;
-    else if (weapon === 0 && bullets > 0) wanted = 1;
+    if (weapon <= 1 && shells > 0 && want(2)) wanted = 2;        // the shotgun beats the pistol at every range that matters
+    else if (weapon <= 1 && bullets > 0 && want(3)) wanted = 3;  // a chaingun if there is one
+    else if (weapon === 0 && bullets > 0 && want(1)) wanted = 1; // fists with bullets in the pocket
     if (wanted == null) return null;
     lastWeaponRequestTic = tic;
+    pendingWeapon = { weapon: wanted, tic };
     stats.rules.weaponSelect++;
     return wanted;
   }
