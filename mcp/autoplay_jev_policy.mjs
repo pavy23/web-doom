@@ -15,7 +15,7 @@ import { appendFile } from 'node:fs/promises';
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 import { coverPoint, lineOfWalk, movementHazard } from './navigation_graph.js';
 
-export const JEV_POLICY_VERSION = '0.9.0-jev-policy';
+export const JEV_POLICY_VERSION = '1.0.0-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -350,6 +350,14 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
     if (!attack && target.canHitPlayerNow) { attack = true; rules.push('fightFires'); meta.rules = rules; meta.fire = true; }
     return { forward: 0, strafe: strafeVs, turn: 0, attack, use: false, tics: 3, ...meta };
   }
+  if (mode === 'retreat' && Number(options.targetDrift ?? 0) > Number(options.retreatDriftLimit ?? 192)) {
+    // Already this far off the route target: stand and fight rather than give
+    // up more ground.
+    mode = 'fight';
+    meta.mode = 'fight';
+    rules.push('retreatDrift');
+    meta.rules = rules;
+  }
   if (mode === 'retreat') {
     // Backing away from an enemy that is already out of its effective range
     // gives up route progress for nothing: keep the route command instead
@@ -460,6 +468,11 @@ export async function createJevPolicy(options = {}) {
     runThreshold: 0.5,         // safeToRun noul at or above this keeps advancing
     runHysteresis: 0.1,        // band around runThreshold before the mode flips
     retreatMaxDistance: 320,   // retreat only from enemies inside this distance
+    // How far a fight may drag the player away from the route target before
+    // retreating stops. Without it an E1M2 fight backed the player out of the
+    // switch's room, up a lift into another sector, and the trigger approach
+    // (which routes inside one sector) could never walk back.
+    retreatDriftLimit: 192,
     recentWindowTics: 70,      // "health lost in the last 2 s" window
     engageHoldTics: 35,        // keep consulting this long after a consultation that saw an enemy
     model: undefined,
@@ -484,7 +497,7 @@ export async function createJevPolicy(options = {}) {
   const stats = {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, rulesOnly: config.rulesOnly, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
-    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, coverStarts: 0, coverArrived: 0, coverMove: 0, coverFight: 0, weaponSelect: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
+    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, coverStarts: 0, coverArrived: 0, coverMove: 0, coverFight: 0, retreatDrift: 0, weaponSelect: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
     loot: { shotgun: 0, health: 0, shells: 0, armor: 0 },
     pipeline: { lagTics: options.pipelineLagTics || 0, inflightLaunched: 0, applied: 0, reused: 0, stalls: 0, stallMsTotal: 0, lagTicsTotal: 0 }
   };
@@ -762,7 +775,7 @@ export async function createJevPolicy(options = {}) {
   function ruleOptions(compact, state, context) {
     const stalled = detectStall(state, compact);
     const holding = Boolean(coverSpot?.arrived) && Number(state?.levelTime ?? 0) < Number(coverSpot?.holdUntil ?? 0);
-    return { ...config, dodgeSide, lastTarget, cover: context ? coverInfo(context) : null, holdPosition: holding, strafeRoomClear: strafeRoomClear(state), ...(stalled ? { forceMode: 'fight' } : {}) };
+    return { ...config, dodgeSide, lastTarget, cover: context ? coverInfo(context) : null, holdPosition: holding, strafeRoomClear: strafeRoomClear(state), targetDrift: targetDrift(context), ...(stalled ? { forceMode: 'fight' } : {}) };
   }
   // Is there room to strafe? Both sides of the player must have
   // config.strafeRoom units of floor with no wall, drop or nukage shore.
@@ -777,6 +790,19 @@ export async function createJevPolicy(options = {}) {
       if (movementHazard(geometry, from, to, { ignoreLines: guardIgnoreLines })) return false;
     }
     return true;
+  }
+
+  // How far the player has drifted from the best approach it managed on this
+  // route step: the measure of ground given up to a fight.
+  let driftEdge = null;
+  let bestTargetDistance = Infinity;
+  function targetDrift(context) {
+    const edgeId = context?.edge?.id || 'exit';
+    const distance = Number(context?.targetDistance);
+    if (driftEdge !== edgeId) { driftEdge = edgeId; bestTargetDistance = Infinity; }
+    if (!Number.isFinite(distance)) return 0;
+    if (distance < bestTargetDistance) bestTargetDistance = distance;
+    return distance - bestTargetDistance;
   }
 
   // Geometric cover: see config.coverSeek. `coverSpot` is the spot being
@@ -827,7 +853,9 @@ export async function createJevPolicy(options = {}) {
       }
       return null;
     }
-    if (coverCount >= config.coverMaxPerEdge) return null;
+    // Cover walks away from the route too, so the same drift limit applies to
+    // starting a new one.
+    if (coverCount >= config.coverMaxPerEdge || targetDrift(context) > config.retreatDriftLimit) return null;
     const threats = hitscanShooters(state);
     const health = Number(player.health);
     if (threats.length < config.coverShooters && !(threats.length >= 1 && health < config.coverLowHealth)) return null;
