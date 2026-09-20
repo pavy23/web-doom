@@ -38,7 +38,7 @@ import { installThingAuthoring } from './thing_authoring.js';
 import { installSemanticGeometry } from './semantic_geometry.js';
 import { buildNavigationGraph, findExitProgression, locatePointSector, planLocalPath } from './navigation_graph.js';
 import {
-  coldBoot, exactInput, isCombatCommand, launchChromium, liveSectorFloor, liveSectorOpening, navigateEdge, remainingPathDistance, setTicHook
+  coldBoot, exactInput, isCombatCommand, launchChromium, liveSectorFloor, liveSectorOpening, navigateEdge, remainingPathDistance, safeRecovery, setTicHook
 } from './navigation_browser_agent.mjs';
 import { OBJECTIVE_ORDER, OBJECTIVE_VERSION, compareToBaseline, rankRuns, runMetrics } from './autoplay_objective.mjs';
 import { installOverlay, updateOverlay } from './autoplay_overlay.mjs';
@@ -198,7 +198,7 @@ export async function approachAndUseExit(page, exit, options = {}) {
     lastDistance = targetDistance;
 
     if (stalled >= 7) {
-      command = { forward: 0.25, strafe: 0.55 * recoverySide, turn: -0.18 * recoverySide, use: exit.trigger === 'use', tics: 3 };
+      command = safeRecovery(options.graph, state, recoverySide, { use: exit.trigger === 'use' });
       recoverySide *= -1;
       stalled = 0;
     } else if (Math.abs(delta) > 8) {

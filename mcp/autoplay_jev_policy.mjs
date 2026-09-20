@@ -15,7 +15,7 @@ import { appendFile } from 'node:fs/promises';
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 import { lineOfWalk, movementHazard } from './navigation_graph.js';
 
-export const JEV_POLICY_VERSION = '0.7.0-jev-policy';
+export const JEV_POLICY_VERSION = '0.7.1-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -402,7 +402,9 @@ export async function createJevPolicy(options = {}) {
                                   // detours in the 0.6.0 trial ended at a wall ...
     itemLootWalkable: true,       // ... unless the graph shows a clear straight walk to the item (any sector)
     lootShells: true,          // shells detours: 7 of 9 blocked in 0.6.0 (straight-line targeting); on with the walkability test
-    healthLootBelow: 50,       // walk to a health item below this ...
+    healthLootBelow: 70,       // walk to a health item below this (was 50: E1M3 has 29 health items on the route and the runs still ran dry) ...
+    lootArmor: true,           // walk to an armor item when the player has less than armorLootBelow armor and nothing is shooting
+    armorLootBelow: 50,
     healthLootDesperate: 30,   // ... even under fire below this
     shellsLootBelow: 6,        // walk to shells when the shotgun has fewer than this
     itemLootRadius: 256,       // only items this close (straight line; walls end it via the stall check)
@@ -431,7 +433,7 @@ export async function createJevPolicy(options = {}) {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, rulesOnly: config.rulesOnly, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
     rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
-    loot: { shotgun: 0, health: 0, shells: 0 },
+    loot: { shotgun: 0, health: 0, shells: 0, armor: 0 },
     pipeline: { lagTics: options.pipelineLagTics || 0, inflightLaunched: 0, applied: 0, reused: 0, stalls: 0, stallMsTotal: 0, lagTicsTotal: 0 }
   };
   const takenItems = new Set();
@@ -545,6 +547,7 @@ export async function createJevPolicy(options = {}) {
     if (loot.kind === 'shotgun') return Number(player.weapon) === 2 || shells > loot.base.shells;
     if (loot.kind === 'health') return Number(player.health) > loot.base.health;
     if (loot.kind === 'shells') return shells > loot.base.shells;
+    if (loot.kind === 'armor') return Number(player.armor ?? 0) > loot.base.armor;
     return Number(player.items ?? 0) > loot.base.items;
   }
   async function lootStep(state) {
@@ -577,7 +580,7 @@ export async function createJevPolicy(options = {}) {
     const player = state.player || {};
     loot = {
       kind, x, y, itemId, sinceTic: Number(state.levelTime), lastDist: Infinity, noProgress: 0,
-      base: { shells: Number(player.ammo?.shells ?? 0), health: Number(player.health), items: Number(player.items ?? 0) }
+      base: { shells: Number(player.ammo?.shells ?? 0), health: Number(player.health), armor: Number(player.armor ?? 0), items: Number(player.items ?? 0) }
     };
     await record({ kind: 'loot_start', tic: loot.sinceTic, lootKind: kind, itemId, x: round(x), y: round(y), from: { x: round(player.x), y: round(player.y) }, health: player.health, shells: loot.base.shells });
   }
@@ -610,6 +613,10 @@ export async function createJevPolicy(options = {}) {
     if (health < config.healthLootBelow && (shooters === 0 || health < config.healthLootDesperate)) {
       const item = nearestItem(state, 'health');
       if (item) return startLoot(state, 'health', item.x, item.y, item.id);
+    }
+    if (config.lootArmor && Number(player.armor ?? 0) < config.armorLootBelow && shooters === 0) {
+      const item = nearestItem(state, 'armor');
+      if (item) return startLoot(state, 'armor', item.x, item.y, item.id);
     }
     if (config.lootShells && Number(player.weapon) === 2 && Number(player.ammo?.shells ?? 0) < config.shellsLootBelow && shooters === 0) {
       const item = nearestItem(state, 'shells');

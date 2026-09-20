@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
-import { findSectorPath, planLocalPath } from './navigation_graph.js';
+import { findSectorPath, movementHazard, planLocalPath } from './navigation_graph.js';
 
 const DEFAULT_PLAY_URL = 'http://127.0.0.1:3777/';
 const DEFAULT_COLD_BOOT_TIMEOUT_MS = Math.max(60000, Number(process.env.DOOM_MCP_COLD_BOOT_TIMEOUT_MS || 180000));
@@ -32,6 +32,35 @@ function distance(a, b) { return Math.hypot(Number(b.x) - Number(a.x), Number(b.
 // measure for the no-progress budget: a detour around a pit (E1M3 sector 67
 // sends the follower 700 units south before it can go north) moves the
 // player away from the portal for a long time while making steady progress.
+// The follower's stall recovery is a blind sidestep. On a walkway between
+// nukage lakes (E1M3 sector 47) that sidestep is what killed four policy
+// runs, so with a graph at hand the step is previewed against walls, drops
+// and damaging shores; the side flips when the first side is unsafe, and
+// both sides unsafe means a short backstep or, if that is unsafe too, a turn
+// in place.
+export function safeRecovery(graph, state, side, extra = {}) {
+  const geometry = graph?.geometry;
+  const player = state?.player || {};
+  const candidates = [
+    { forward: 0.25, strafe: 0.55 * side, turn: -0.18 * side, tics: 3 },
+    { forward: 0.25, strafe: -0.55 * side, turn: 0.18 * side, tics: 3 },
+    { forward: -0.35, strafe: 0, turn: 0, tics: 3 },
+    { forward: 0, strafe: 0, turn: 0.3 * side, tics: 3 }
+  ];
+  for (const candidate of candidates) {
+    if (geometry && (candidate.forward || candidate.strafe)) {
+      const angle = Number(player.angle) * Math.PI / 180;
+      const fx = Math.cos(angle), fy = Math.sin(angle), rx = Math.cos(angle - Math.PI / 2), ry = Math.sin(angle - Math.PI / 2);
+      const magnitude = Math.hypot(candidate.forward, candidate.strafe);
+      const length = 16 + 10 * candidate.tics * magnitude;
+      const from = { x: Number(player.x), y: Number(player.y) };
+      const to = { x: from.x + (candidate.forward * fx + candidate.strafe * rx) / magnitude * length, y: from.y + (candidate.forward * fy + candidate.strafe * ry) / magnitude * length };
+      if (movementHazard(geometry, from, to)) continue;
+    }
+    return { ...candidate, ...extra };
+  }
+  return { forward: 0, strafe: 0, turn: 0.3 * side, tics: 3, ...extra };
+}
 export function remainingPathDistance(position, waypoints, finalTarget) {
   const points = [...(waypoints || []), finalTarget];
   let total = distance(position, points[0]);
@@ -355,7 +384,7 @@ export async function navigateEdge(page, graph, edge, options = {}) {
     lastDistance = targetDistance;
 
     if (stalled >= 7) {
-      command = { forward: 0.25, strafe: 0.55 * recoverySide, turn: -0.18 * recoverySide, use: wantUse, tics: 3 };
+      command = safeRecovery(graph, state, recoverySide, { use: wantUse });
       recoverySide *= -1;
       stalled = 0;
     } else if (Math.abs(delta) > 10) {
