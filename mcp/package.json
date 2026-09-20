@@ -27,7 +27,7 @@
     "autoplay:e1m1:jev:uv": "node autoplay_stage_runner.mjs --map E1M1 --runs 1 --no-god --policy jev --skill uv --report-dir exports/autoplay/e1m1-jev-uv",
     "autoplay:e1m1:uv:baseline": "node autoplay_stage_runner.mjs --map E1M1 --runs 1 --no-god --skill uv --report-dir exports/autoplay/e1m1-uv",
     "autoplay:e1m1:uv:x10": "node autoplay_stage_runner.mjs --map E1M1 --runs 10 --concurrency 4 --no-god --policy jev --skill uv --report-dir exports/autoplay/e1m1-jev-uv-x10 --baseline exports/autoplay/e1m1-uv/report.json",
-    "autoplay:e1m1:uv:control": "node autoplay_stage_runner.mjs --map E1M1 --runs 10 --no-god --policy rules --skill uv --report-dir exports/autoplay/e1m1-rules-uv-x10 --baseline exports/autoplay/e1m1-uv/report.json",
+    "autoplay:e1m1:uv:control": "node autoplay_stage_runner.mjs --map E1M1 --runs 10 --concurrency 4 --no-god --policy rules --skill uv --report-dir exports/autoplay/e1m1-rules-uv-x10 --baseline exports/autoplay/e1m1-uv/report.json",
     "autoplay:compare:uv": "node autoplay_compare.mjs exports/autoplay/e1m1-uv exports/autoplay/e1m1-rules-uv-x10 exports/autoplay/e1m1-jev-uv-x10",
     "autoplay:e1m1:hmp:baseline": "node autoplay_stage_runner.mjs --map E1M1 --runs 1 --no-god --skill hmp --report-dir exports/autoplay/e1m1-hmp",
     "autoplay:e1m1:hmp:x10": "node autoplay_stage_runner.mjs --map E1M1 --runs 10 --concurrency 4 --no-god --policy jev --skill hmp --report-dir exports/autoplay/e1m1-jev-hmp-x10 --baseline exports/autoplay/e1m1-hmp/report.json",

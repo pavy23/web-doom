@@ -287,8 +287,16 @@ Two layers:
    in reach the engine state is compressed to ~1,400 tokens and Jev answers
    five typed questions (safe to keep running, response, target, fire,
    danger). Code-owned safety rules sit on top (stall, point-blank, hitscan
-   fight, low-health hold, projectile strafe, terrain guard, loot). The
-   objective is lexicographic: deaths, then damage taken, then world tics.
+   fight, low-health hold, projectile strafe, geometric cover, weapon
+   selection, terrain guard, loot). The objective is lexicographic: deaths,
+   then damage taken, then world tics.
+
+The objective is the same on every map; the thresholds that serve it are
+derived per map from the WAD and the navigation graph — monsters on the
+route and how they attack, items to pick up, route length — so a level with
+forty hitscan monsters and one with six do not share a "walk to a medikit
+below 50 hp" rule. Nothing keys on the map's name, so a generated map gets
+a profile too.
 
 Two clips, recorded with `--record` (one frame per world tic, so they run at
 game time). The previews below are 8-second excerpts; the full clips play on
@@ -326,7 +334,10 @@ node autoplay_postmortem.mjs exports/autoplay/e1m3-jev-hmp-x10   # where each ru
 
 Flags: `--map E1M1..E1M3`, `--skill itytd|hntr|hmp|uv|nightmare`, `--policy
 jev|rules|none`, `--jev-pipeline 8` (answers applied 8 tics after their state,
-no pauses while the model thinks), `--headed`, `--record`, `--runs N`,
+no pauses while the model thinks), `--concurrency N` (runs of a trial in
+parallel; 4 cuts a 10-run trial to about a third of the wall clock and the
+output stays step-for-step identical), `--jev-opt key=value` (override one
+policy setting, for ablations), `--headed`, `--record`, `--runs N`,
 `--baseline other/report.json`.
 
 ### Results (10-run trials unless noted, policy 0.7.x, `--jev-pipeline 8`)

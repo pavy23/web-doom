@@ -23,7 +23,8 @@ node autoplay_stage_runner.mjs --map E1M1 --runs 3 [--no-god] [--max-edge-tics 2
 
 The runner starts the local game bridge itself (`DOOM_MCP_PORT`, default 3777),
 serves the runtime from `direct/` or `mcp/.cache/direct-runtime`, and exits when
-the trial is written.
+the trial is written. Two runners at once need two ports: set `DOOM_MCP_PORT`
+on the second one.
 
 If the host's Chromium does not match the pinned Playwright revision, point the
 launcher at an executable:
@@ -140,6 +141,53 @@ with `--baseline other/report.json`, the deltas of this trial's best run
 against the baseline's best run plus a one-line verdict
 (`better: damageTaken 33 -> 10`, `worse: did not clear`, ...). The CLI prints
 both lines after the summary.
+
+## Map profile: one objective, per-level thresholds
+
+The objective above is the same on every map. The thresholds that serve it
+are not. At Hurt Me Plenty, measured on the planned route:
+
+| | route | monsters on route | hitscan | health items (points) | shells | armor |
+|---|---|---|---|---|---|---|
+| E1M1 | 4,267 units, 20 transitions, no key | 3 | 67% | 2 (35) | 3 | 0 |
+| E1M2 | 8,897 units, 70 transitions, red key | 14 | 79% | 7 (145) | 3 | 0 |
+| E1M3 | 12,136 units, 60 transitions, blue key | 40 | 75% | 10 (160) | 8 | 1 |
+
+"Walk to a medikit below 50 hp" is timid on the first and reckless on the
+last: E1M3 is 4 health points per monster on the route where E1M2 is 10.
+
+`autoplay_map_profile.mjs` derives a profile from the WAD and the
+navigation graph before the first run, never from the map's name, so a
+generated map gets one too. It counts the monsters and items whose sector
+is on the planned route, classifies each monster by how it attacks
+(hitscan cannot be dodged, which is what the cover and strafe rules are
+for) and how tough it is, and measures the route's length.
+
+`deriveConfig` turns that into settings, one sentence of reasoning each:
+
+| Setting | Rule | E1M1 | E1M2 | E1M3 |
+|---|---|---|---|---|
+| `healthLootBelow` | danger sets it, supply only decides whether a detour is possible | 45 | 70 | 70 |
+| `shellsLootBelow` | keep a margin wherever the route carries shells | 12 | 12 | 12 |
+| `lootArmor` | only where the route has armor | false | false | true |
+| `lowHealth` | never advance into a shooter below this; rises on crowded or tough levels | 40 | 40 | 50 |
+| `coverSeek` | cover costs time and only pays against hitscan groups | false | true | true |
+| `maxCalls` | budget grows with the number of route transitions | 400 | 900 | 800 |
+| `strafeRoom` | crowded levels leave less room to sidestep | 64 | 64 | 96 |
+
+Order of precedence: the policy defaults, then the profile, then the
+explicit `--jev-opt key=value`, so a profile never overrides a deliberate
+setting and a deliberate setting never has to repeat one. The profile is
+written to `report.mapProfile`, printed as one `autoplay profile` line at
+startup, and a short `level` block goes into the model's state so the brief
+matches the level too.
+
+Counting pickups alone was the wrong rule and cost a working level: E1M2's
+seven health items read as "moderate" next to E1M3's ten, so E1M2 got
+`healthLootBelow` 60 and `lowHealth` 50 and fell from 10/10 to 1/10. The
+supply is nearly the same on both levels; what differs is what it has to
+cover. The corrected rule keys on the danger, and the supply only decides
+whether a detour is possible at all.
 
 ## Dashboard
 
@@ -827,6 +875,103 @@ What E1M3 taught, in one line each:
 5. E1M1 is unaffected: policy 0.7.3 clears E1M1 HMP (24 and 60 damage in
    two runs), with more calls than 0.6.2 (109-152 vs ~70) because of the
    engagement hold.
+
+### Policy 0.9.0: weapon selection, and the engine change it needed
+
+Every E1M3 fight past the first area was a pistol fight with shells in the
+pocket. Vanilla DOOM switches to a weapon when it is picked up and back to
+the pistol when its ammo runs out, but never forward again when ammo is
+picked up later, and the agent input had forward/strafe/turn/attack/use
+and no way to say "hold the shotgun".
+
+The engine side is three small changes, all in the direct port:
+
+1. `doom_multi_agent.c` and `doom_agent_input.c` carry a `weapon_change`
+   field per queued command, exposed as `doomctl_queue_player_weapon` and
+   `doomctl_queue_agent_weapon`.
+2. The bits go into the ticcmd as `BT_CHANGE | (weapon << BT_WEAPONSHIFT)`
+   while the command still has tics left to execute, and are cleared after
+   the world tic, so one request is one switch.
+3. `agent_input_bridge.js` forwards an optional `params.weapon` and stays
+   quiet on an older engine build that does not have the export.
+
+`P_PlayerThink` validates the request itself (`weaponowned` and the ammo
+for it), so the policy does not have to know what the player owns, which
+matters because the state reports the ready weapon and the ammo counts and
+no owned set. An earlier version gated the rule on weapons seen in the
+player's hands and was therefore circular: it could never ask for a weapon
+it had not already been given. The rule now asks, watches for
+`weaponSelectHoldTics` (35, about one switch's worth of lower-and-raise),
+and remembers a weapon the engine ignored as not owned.
+
+`npm run test:autoplay:weapon` is the self-test: fists (always owned) must
+take, the pistol must take on the way back, the BFG must be ignored. It
+waits 40 tics per request because a switch is about 32.
+
+### Policy 1.0.0: how far a fight may drag the player
+
+A fight on E1M2 backed the player out of the switch's room, up a lift and
+into another sector, from where the trigger approach (which routes inside
+one sector) could never walk back, and the run ended in
+`trigger_no_progress`. `retreatDriftLimit` (192 units) measures the ground
+given up against the best approach reached on the current route step and
+stops the retreat there.
+
+### Policy 1.1.0: a weapon's range, and not braking twice
+
+Seven of ten E1M3 runs in the 1.0.0 trial were tic-identical and died the
+same way at `47:50:686`: the player stands at 60 hp firing a shotgun at an
+imp 348 units away, takes 58 damage in one step, and then oscillates in
+place until it dies. Two rules came out of it.
+
+`noFightFar`: a shotgun's pellets spread past about 300 units, the fists
+reach 64. Standing still to fire past a weapon's useful range is time
+spent being shot for almost nothing, so the rule keeps the route command
+and lets the fight happen when the target is in range. `WEAPON_RANGE` is
+indexed by `weapontype_t`, `weaponRangeSlack` (1.1) is the margin, and
+point-blank and held cover spots override it: something that close is
+dealt with wherever it stands.
+
+The brake: the terrain brake thrusts against the current velocity when
+momentum alone would carry the player over an edge. Applied on every
+consecutive step it reverses the velocity, the reversed velocity reads as
+a fresh slide toward the same edge, and the next brake reverses it back —
+twenty tics of full forward and full back while the shooting continued.
+The brake now needs a speed above a walking pace (`brakeMinSpeed` 4) and
+never fires on two steps in a row; the engine's own friction (0.90625 per
+tic) finishes the job.
+
+## Running a trial in parallel (`--concurrency N`)
+
+Runs in a trial are independent by construction: each one boots its own
+page, and the only shared state is the report. `--concurrency N` runs N of
+them at a time through a worker pool, writing each result into its own
+slot so the report's run order does not depend on which finished first. It
+is forced to 1 with `--record` or `--headed`, where a single window is the
+point.
+
+Measured on E1M1, rules-only, 4 runs: 4m43s at `--concurrency 1` against
+1m52s at `--concurrency 4`, with step-for-step identical output. The
+`*:x10` scripts pass `--concurrency 4`.
+
+### Where a step's wall-clock time goes
+
+A step of 3 tics costs about 126 ms, of which 86 ms is spent waiting for
+the engine. That is not overhead to tune away: `I_GetTime` is wall-clock
+based at 35 tics per second, so 3 tics *are* 85.7 ms of real time. The
+remaining 40 ms is six page round trips (telemetry before, agent status,
+queue, step, state, telemetry after).
+
+Three levers, in order of what they buy:
+
+| Lever | Speed-up | Cost |
+|---|---|---|
+| Parallel runs (`--concurrency`) | ~3x on a trial | none; done |
+| A virtual clock in `I_GetTime` | 3-5x on a single run | a C change and a WASM rebuild |
+| One `evaluate` per step, waiting in the page | 1.4x (126 -> 89 ms, measured) | the wait moves into the page, so a hung engine needs its own timeout |
+
+The virtual clock is the only one that touches a single run's speed
+meaningfully, and it is the only one that changes the engine.
 
 ## Pipelined consultation (`--jev-pipeline N`)
 
