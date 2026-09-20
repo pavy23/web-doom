@@ -777,7 +777,23 @@ from the portal midpoint *toward the target sector's centre*, and sector 25
 wraps around 24 in a U, so its centre lies inside 24; the follower turned
 back into the sector it was leaving. The point now comes from the portal
 line's normal. The stairs wait survives a lost step. Both are runner
-changes (no policy version).
+changes (no policy version). Two more runner-only trials followed:
+
+| Runner change | Cleared | Damage taken | Where the runs ended |
+|---|---|---|---|
+| crossing point from the portal normal | 1/10 | 74-175 | 1 cleared (6763 tics, 175 damage, 46 kills); 2 stalled on 24:50 (pillar in front, barrel behind: no walkable line from a spot inside an obstacle's clearance); 5 dead in the key area; 1 combat budget; 1 stall on 67:69 |
+| lineOfWalk from a touching spot, backstep recovery | 0/10 | 110-121 | 6 tic-identical runs dead at 24:25 (two shotgun guys at 134/141 units, 60 damage in one step at 60 hp), 2 at the key room, 2 on the walkway |
+
+So E1M3 at HMP stands at 0-1 clears in ten across the last three trials.
+The stalls and the terrain deaths are gone; what remains is the fight
+itself: the route from the walkway to the blue key room (sectors 24-27)
+meets two to three shotgun guys and three imps in open rooms, and the
+policy arrives there with 40-70 hp and a pistol or a nearly empty shotgun.
+Six identical runs in the last trial say the model is not steering that
+fight; the rules are. The next candidates, untried: refuse to enter the key
+room below a health threshold (loot first, the route passes medikits),
+and pull hitscanners into the doorway of sector 24 instead of trading shots
+in the open.
 
 What E1M3 taught, in one line each:
 

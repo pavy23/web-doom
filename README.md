@@ -328,7 +328,7 @@ no pauses while the model thinks), `--headed`, `--record`, `--runs N`,
 | E1M1, HMP | dies in the exit corridor | **10/10**, damage 15 [0-24] | |
 | E1M1, UV | dies in the courtyard | 1-2/10 (pooled 5/16); rules-only control 0/10 | competence boundary: 16 shotgun guys in an open hangar with a pistol |
 | E1M2, HMP | clears, 183 damage | **10/10**, damage 105 [69-150], +7% time | keys, remote doors, lifts |
-| E1M3, HMP | dies at tic 587 | 1/10 (two trials), work in progress | ~45 mostly-hitscan monsters, a walkway between nukage lakes, a stair builder before the exit |
+| E1M3, HMP | dies at tic 587 | 0-1/10 over the last three trials; open | ~45 mostly-hitscan monsters, a walkway between nukage lakes, a stair builder before the exit; the follower completes it in god mode, the policy dies in the blue key area |
 
 Cost: a run consults Jev 70-500 times at ~$0.00004 per call, so a 10-run
 trial is $0.10-0.20; the same judgments through a frontier LLM would cost
