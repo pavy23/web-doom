@@ -38,7 +38,7 @@ import { installThingAuthoring } from './thing_authoring.js';
 import { installSemanticGeometry } from './semantic_geometry.js';
 import { buildNavigationGraph, findExitProgression, lineOfWalk, locatePointSector, planLocalPath, solidLines } from './navigation_graph.js';
 import {
-  coldBoot, exactInput, interruptedFailure, isCombatCommand, launchChromium, liveSectorFloor, liveSectorOpening, navigateEdge, remainingPathDistance, safeRecovery, setTicHook
+  coldBoot, exactInput, interruptedFailure, isCombatCommand, launchChromium, liveSectorFloor, liveSectorOpening, mergeTelemetry, navigateEdge, remainingPathDistance, safeRecovery, setTicHook
 } from './navigation_browser_agent.mjs';
 import { OBJECTIVE_ORDER, OBJECTIVE_VERSION, compareToBaseline, rankRuns, runMetrics } from './autoplay_objective.mjs';
 import { installOverlay, updateOverlay } from './autoplay_overlay.mjs';
@@ -515,7 +515,9 @@ export async function runStageAttempt(page, stage, options = {}) {
   // After the exit fires the engine is in intermission and reports no player,
   // so the last in-level telemetry sample is the run's final measurement.
   const live = await telemetry(page).catch(() => null);
-  attempt.telemetry = live?.ready ? live : lastTelemetry;
+  // mergeTelemetry is the identity unless a counter went backwards, which
+  // only a mid-command death and its reborn can do (see navigation_browser_agent).
+  attempt.telemetry = live?.ready ? mergeTelemetry(lastTelemetry, live) : lastTelemetry;
   attempt.completedAt = new Date().toISOString();
   return attempt;
 }

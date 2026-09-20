@@ -261,6 +261,23 @@ export function interruptedFailure(result) {
   return Number(result?.telemetry?.deaths || 0) > 0 ? 'player_dead' : 'world_unpaused';
 }
 
+// The reborn that refuses a step also reloads the level, which resets the
+// player's own counters: one E1M3 run came back reading 0 kills after 7,991
+// world tics. The playtest accumulators (deaths, damage, world tics) survive
+// it. So take the earlier value wherever the reading went backwards, and
+// report the player as dead, which is what ended the run. On a run that
+// never rebore nothing goes backwards and this is the identity.
+export function mergeTelemetry(before, after) {
+  if (!before?.ready) return after;
+  if (!after?.ready) return before;
+  const merged = { ...after };
+  for (const key of ['kills', 'items', 'secrets', 'armor']) {
+    if (Number(after[key] || 0) < Number(before[key] || 0)) merged[key] = before[key];
+  }
+  if (Number(after.deaths || 0) > 0) merged.health = 0;
+  return merged;
+}
+
 async function stepTics(page, count) {
   try {
     await page.evaluate(n => window.DoomControl.stepPlaytestTics(n), count);
@@ -296,9 +313,10 @@ export async function exactInput(page, command) {
       done = tics;
     }
   }
+  const after = await page.evaluate(() => window.DoomControl.getPlaytestTelemetry());
   return {
     state: await page.evaluate(() => window.DoomControl.getState()),
-    telemetry: await page.evaluate(() => window.DoomControl.getPlaytestTelemetry()),
+    telemetry: interrupted ? mergeTelemetry(before, after) : after,
     tics: interrupted ? Math.max(done, 1) : tics,
     ...(interrupted ? { interrupted } : {})
   };

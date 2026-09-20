@@ -995,6 +995,29 @@ tics 3321 and 3847 in the exit rooms (sectors 137 and 138), about 111 of
 the 152 points, all against two imps. The first of them is a retreat the
 terrain guard blocked, which is what 1.2.0 addresses.
 
+### Where E1M3 stands after three policy versions
+
+Ten runs each at Hurt Me Plenty, `--jev-pipeline 8`, Wilson 95%:
+
+```text
+          cleared      CI        damage med   kills med   deaths at
+1.0.0     1/10        2%-40%     146          17          7 identical runs at 47:50:686
+1.1.0     0/10        0%-28%     150          26          spread over 6 edges
+1.2.0     1/10        2%-40%     180          33          spread over 7 edges
+```
+
+The three intervals overlap completely: on this evidence the level is not
+being cleared and none of the three versions changed that. What did change
+is the shape of the runs. Under 1.0.0 seven of ten were the same death;
+under 1.2.0 no edge takes more than two. The kills median doubled. The
+policy is getting further into the level and dying somewhere else, which
+is progress in the fights and not yet progress in the objective.
+
+E1M3 needs something the tactical layer does not have. The route is 40
+monsters over 12,136 units with 4 health points of pickup per monster,
+which is a level to be run rather than fought, and every rule here is
+about fighting better.
+
 ### Policy 1.2.0: a blocked retreat sidesteps instead of standing still
 
 When the terrain guard rejects a step it keeps the aim and zeroes the
@@ -1034,6 +1057,37 @@ the new rules improving E1M1. It is the map profile (`coverSeek` off, a
 lower loot threshold, a smaller call budget on a three-monster route)
 with the new rules staying out of the way. That is what the trial was
 for: a short level is where a combat rule regresses things.
+
+E1M2 over ten runs is the open question:
+
+```text
+                cleared      CI         damage (cleared)   tics (cleared)
+1.1.0           10/10       72%-100%    152 [152-185]      5258 [5129-5258]
+1.2.0            7/10       40%-89%     101 [62-152]       5351 [5153-5648]
+```
+
+Better on the damage, apparently worse on the clear rate, and the two
+intervals overlap, so ten runs cannot separate them. All three deaths are
+the same exit-room imps that the rule was aimed at, at exactly 128 damage
+each, and the runs that died barely looted (12 to 38 tics against 26 to
+155 in the runs that cleared). An ablation with `--jev-opt
+guardSidestep=false` on the same build is the control that settles it.
+
+### A death inside a command
+
+`doomctl_step_playtest_tics` returns -2 when the world is not paused. Mid
+run that has one cause: the player dies inside a command whose USE is
+still latched, the engine's own reborn reloads the level, and
+`G_DoLoadLevel` clears `paused`. The next step threw, and two E1M3 runs
+were written off as `browser_trial_error` with their results lost.
+
+`exactInput` now reports the refusal instead of throwing, and the callers
+end the attempt with what the telemetry supports, which for a recorded
+death is `player_dead`. The reload also resets the player's own counters
+while the playtest accumulators survive it, so one run came back reading
+0 kills after 7,991 world tics. `mergeTelemetry` takes the earlier value
+wherever a counter went backwards; on a run that never rebore it is the
+identity.
 
 ## Running a trial in parallel (`--concurrency N`)
 
