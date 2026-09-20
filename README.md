@@ -348,7 +348,8 @@ policy setting, for ablations), `--headed`, `--record`, `--runs N`,
 | E1M1, HMP | dies in the exit corridor | **10/10**, damage 18-39 (policy 0.8.1; 15 [0-24] with 0.6.2) | |
 | E1M1, UV | dies in the courtyard | 1-2/10 (pooled 5/16); rules-only control 0/10 | competence boundary: 16 shotgun guys in an open hangar with a pistol |
 | E1M2, HMP | clears, 183 damage | **10/10**, damage 105 [69-150], +7% time | keys, remote doors, lifts |
-| E1M3, HMP | dies at tic 587 | 0-1/10 over six trials; open | ~45 mostly-hitscan monsters, a walkway between nukage lakes, a stair builder before the exit; the follower completes it in god mode, the policy fights shotgun guys with a pistol (no weapon-change input yet) and dies |
+| E1M3, HMP | dies at tic 587 | 0-1/10 over nine trials; open | 40 monsters on the route, three quarters hitscan, a walkway between nukage lakes, a key detour and a stair builder before the exit |
+| E1M3, HNTR | dies at tic 1872 | 1/10 | half the monsters and twice the health per monster, and the same clear rate: the level is not failing because it is crowded |
 
 Cost: a run consults Jev 70-500 times at ~$0.00004 per call, so a 10-run
 trial is $0.10-0.20; the same judgments through a frontier LLM would cost

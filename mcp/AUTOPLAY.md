@@ -1024,6 +1024,56 @@ monsters over 12,136 units with 4 health points of pickup per monster,
 which is a level to be run rather than fought, and every rule here is
 about fighting better.
 
+### Barrels, and what E1M3 at Hey Not Too Rough actually said
+
+The question was whether E1M3 is beyond this stack or only beyond it at
+Hurt Me Plenty. At HNTR the route carries 20 monsters instead of 40 with
+the same 160 health points, which is E1M2's density and twice E1M3's
+health per monster. The trial answered a different question first.
+
+All ten HNTR runs under 1.3.0 died at tic 827, tic-identical: 97 damage
+in one step, no enemy in the view cone, ordinary floor. The cause is a
+barrel 44 units away at (-1968,-2448). The policy aimed at a zombieman
+standing behind it and fired. A barrel's blast is 128 units at the centre
+and falls off with distance, so at 44 units it is 97 damage to the
+shooter. Nothing in the policy knew barrels existed, and E1M1 has 6,
+E1M2 24 and E1M3 28.
+
+`barrelBlock` (1.4.0) holds fire when a barrel sits in the shot cone
+within blast range. That moved the deaths from tic 827 to about 2,200.
+The trace of the new death says the rule was half of one: at tic 1980 a
+run lost 87 of 100 hp standing 38 units from a barrel with its own
+trigger off, because an imp's fireball lit it. `barrelStandoff` (1.5.0)
+steps out of any barrel's blast while something can shoot.
+
+Ten runs at HNTR with both rules:
+
+```text
+cleared        1/10, Wilson 2%-40%
+deepest runs   7405 tics (the clear), 6944, 6829, 6130
+shallow runs   4 between 2993 and 3251, all in the blue key area
+median         3791 tics, 9 kills
+```
+
+**This does not support the difficulty hypothesis.** E1M3 at HMP under
+1.2.0 was also 1/10. Halving the monsters, doubling the health per
+monster and dropping the density to E1M2's did not change the clear
+rate; it only moved where the runs end. Four of ten still finish in
+sectors 24 to 27, which is where half the HMP runs finish too.
+
+So E1M3 is not failing because it is crowded. Something about the blue
+key area defeats this policy at both skills, and that is where the next
+work belongs, not in more damage arithmetic.
+
+### Running trials that outlive the turn
+
+Two trials were lost to processes being reaped between turns, one of
+them mid-trial with six of ten runs done and no `report.json` written.
+`nohup` and `disown` did not survive it. Trials must be started through
+the harness's own background mechanism, which does. Related: a Chromium
+crash used to take every run in flight with it, because the trial shares
+one browser; the runner now replaces it up to three times.
+
 ### Policy 1.2.0: a blocked retreat sidesteps instead of standing still
 
 When the terrain guard rejects a step it keeps the aim and zeroes the
