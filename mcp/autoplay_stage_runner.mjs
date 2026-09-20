@@ -294,7 +294,12 @@ export async function activateTrigger(page, edge, options = {}) {
         if (floor != null && startFloors.get(sector) != null && Math.abs(floor - startFloors.get(sector)) >= 1) { moved = true; break; }
       }
       if (!moved) return false;
-      for (let i = 0; i < 120 && !(await floorsDone()); i++) await exactInput(page, { tics: 4 });
+      for (let i = 0; i < 120 && !(await floorsDone()); i++) {
+        // A step that does not complete (the engine failed to consume its
+        // budget in time) ends the wait as "not yet" instead of ending the
+        // run: the approach loop keeps polling.
+        try { await exactInput(page, { tics: 4 }); } catch { return false; }
+      }
       return floorsDone();
     }
     if (doorSector == null) return true;

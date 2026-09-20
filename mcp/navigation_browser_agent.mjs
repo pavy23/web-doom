@@ -67,7 +67,22 @@ export function remainingPathDistance(position, waypoints, finalTarget) {
   for (let i = 1; i < points.length; i++) total += distance(points[i - 1], points[i]);
   return total;
 }
-function crossingPoint(edge, targetCenter) {
+// The point 28 units past the portal on the target sector's side. Taken from
+// the portal line's normal when the geometry is at hand: the target sector's
+// centre can lie on the wrong side of the portal (E1M3 sector 25 wraps
+// around sector 24 in a U, its centre sits inside 24), and aiming at it sent
+// the follower back into the sector it was leaving, turning in circles.
+function crossingPoint(edge, targetCenter, geometry = null) {
+  const line = geometry?.linedefs?.[edge.line];
+  if (line && geometry.vertices?.[line.v1] && geometry.vertices?.[line.v2]) {
+    const a = geometry.vertices[line.v1], b = geometry.vertices[line.v2];
+    const dx = Number(b.x) - Number(a.x), dy = Number(b.y) - Number(a.y);
+    const length = Math.hypot(dx, dy) || 1;
+    // Right side of a linedef (y up): the direction rotated clockwise.
+    const rightSector = line.right === 65535 ? null : geometry.sidedefs?.[line.right]?.sector;
+    const sign = Number(rightSector) === Number(edge.to) ? 1 : -1;
+    return { x: Number(edge.midpoint.x) + sign * dy / length * 28, y: Number(edge.midpoint.y) - sign * dx / length * 28 };
+  }
   const dx = Number(targetCenter.x) - Number(edge.midpoint.x);
   const dy = Number(targetCenter.y) - Number(edge.midpoint.y);
   const length = Math.hypot(dx, dy) || 1;
@@ -309,7 +324,7 @@ export async function navigateEdge(page, graph, edge, options = {}) {
   let ticsSinceProgress = 0;
   let waypoints = null;
   const targetNode = graph.nodes[edge.to];
-  const cross = crossingPoint(edge, targetNode.center);
+  const cross = crossingPoint(edge, targetNode.center, graph.geometry);
   const trace = [];
   let usedTics = 0;
   let lastDistance = Infinity;
