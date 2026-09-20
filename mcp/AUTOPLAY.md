@@ -984,6 +984,18 @@ keeping the command's aim and shot. Moving does not affect the player's
 own accuracy in vanilla DOOM, so the sidestep is free: it only has to not
 walk into the next hazard, which the same guard checks.
 
+One E1M2 run against the 1.1.0 trial's nine identical ones:
+
+```text
+                damage   min health   tics    retreat steps   guard blocks
+1.1.0           152      16           5258    134             (chain of 6 events, 111 hp)
+1.2.0           119      44           5648     48             13, of which 5 sidestepped
+```
+
+The exit-room chain is gone: two events for 36 points where there were
+six for 111, and the player never drops below 44 hp. The run is 390 tics
+longer, which the objective ranks below the damage.
+
 ## Running a trial in parallel (`--concurrency N`)
 
 Runs in a trial are independent by construction: each one boots its own
