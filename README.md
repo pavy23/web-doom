@@ -12,6 +12,7 @@ The `/direct/` runtime uses original LinuxDOOM gameplay/rendering/WAD code with 
 - Earlier doomgeneric comparison build: https://pavy23.github.io/web-doom/
 - Current source branch: `main`
 - Current MCP version: **2.8.0-p2.2**
+- Autoplay (local): deterministic follower + TypeSafe Jev tactical policy, E1M1 and E1M2 cleared at Hurt Me Plenty 10/10, E1M3 in progress — see [Autoplay](#autoplay--autonomous-stage-clearing)
 - Next milestone: **P3.0 online browser multiplayer transport**
 
 > The public `/direct/` deployment is now the validated P2.2 bot-capable build. Its launcher offers **PLAY CLASSIC DOOM** and **PLAY AI DEATHMATCH**. AI Deathmatch loads the bundled generated `p22-demo.wad` and starts Player 1 as the human against Easy / Normal / Hard local AI players.
@@ -268,6 +269,77 @@ Typical interactive flow:
 
 For automated balancing, use `doom_run_local_bot_deathmatch` in `all_bots` mode.
 
+## Autoplay — autonomous stage clearing
+
+`mcp/autoplay_stage_runner.mjs` plays the single-player campaign without
+human input. It runs **locally** (Node drives a Playwright Chromium through the
+exact-tic control bridge); the public `/direct/` page does not include it.
+
+Two layers:
+
+1. **Deterministic follower (no AI).** Route planning over the P1.3 navigation
+   graph (doors, keys, tagged switches, lifts, stair builders and other floor
+   movers), local routing around walls, pits and nukage inside non-convex
+   sectors, exact-tic following, exit switch, `GS_LEVEL` exit verification.
+   A run is a pure function of the command sequence: the same run reproduces
+   tic for tic.
+2. **Tactical policy (TypeSafe System One, Jev).** At each step with an enemy
+   in reach the engine state is compressed to ~1,400 tokens and Jev answers
+   five typed questions (safe to keep running, response, target, fire,
+   danger). Code-owned safety rules sit on top (stall, point-blank, hitscan
+   fight, low-health hold, projectile strafe, terrain guard, loot). The
+   objective is lexicographic: deaths, then damage taken, then world tics.
+
+Two clips, recorded with `--record` (one frame per world tic, so they run at
+game time): [E1M1 at Hurt Me Plenty](docs/autoplay/e1m1-hmp-jev.webm)
+(36 s, 0 deaths, 26 damage) and [E1M2 at Hurt Me Plenty](docs/autoplay/e1m2-hmp-jev.webm)
+(2 min, 0 deaths, 69 damage, baseline follower 183). The panel in the top
+right is the policy's judgment at each consultation.
+
+### Running it
+
+Node 20+, `npm install` in `mcp/` (Playwright fetches Chromium), and a
+TypeSafe key for the policy runs. Recording needs an ffmpeg; the build
+Playwright ships is found automatically (`npx playwright install ffmpeg`).
+
+```bash
+cd mcp && npm install
+export TYPESAFE_API_KEY=...            # only for --policy jev
+npm run autoplay:e1m1                  # follower, god mode, 3 runs + determinism check
+npm run autoplay:e1m1:hmp:baseline     # follower at HMP: the baseline the policy is measured against
+npm run autoplay:e1m1:hmp:watch        # Jev at HMP in a visible window, pipelined
+npm run autoplay:e1m1:hmp:record       # same, written to exports/autoplay/.../run-0.webm
+npm run autoplay:e1m2:hmp:x10          # the 10-run protocol (report.json, steps.jsonl, jev.jsonl)
+npm run autoplay:compare:e1m2          # clear rate with 95% CI, damage, tics, per-edge tables
+npm run autoplay:dashboard             # offline HTML dashboard of a trial
+node autoplay_postmortem.mjs exports/autoplay/e1m3-jev-hmp-x10   # where each run took damage and died
+```
+
+Flags: `--map E1M1..E1M3`, `--skill itytd|hntr|hmp|uv|nightmare`, `--policy
+jev|rules|none`, `--jev-pipeline 8` (answers applied 8 tics after their state,
+no pauses while the model thinks), `--headed`, `--record`, `--runs N`,
+`--baseline other/report.json`.
+
+### Results (10-run trials unless noted, policy 0.7.x, `--jev-pipeline 8`)
+
+| Map, skill | Follower (no AI) | Jev policy | Notes |
+|---|---|---|---|
+| E1M1, ITYTD | clears | 3/3 | first live runs |
+| E1M1, HMP | dies in the exit corridor | **10/10**, damage 15 [0-24] | |
+| E1M1, UV | dies in the courtyard | 1-2/10 (pooled 5/16); rules-only control 0/10 | competence boundary: 16 shotgun guys in an open hangar with a pistol |
+| E1M2, HMP | clears, 183 damage | **10/10**, damage 105 [69-150], +7% time | keys, remote doors, lifts |
+| E1M3, HMP | dies at tic 587 | 0-1/10 over the last three trials; open | ~45 mostly-hitscan monsters, a walkway between nukage lakes, a stair builder before the exit; the follower completes it in god mode, the policy dies in the blue key area |
+
+Cost: a run consults Jev 70-500 times at ~$0.00004 per call, so a 10-run
+trial is $0.10-0.20; the same judgments through a frontier LLM would cost
+35-350x more (`mcp/AUTOPLAY.md` has the comparison).
+
+Everything is in `mcp/AUTOPLAY.md`: the runner, the policy's questions and
+rules with the failed versions, every trial's numbers, the E1M2 and E1M3
+layer-1 gaps and how they were closed, recording, pipelining. The vendored
+`typesafe-ai` agent skill lives in `.claude/skills/typesafe-ai/` (MIT, from
+typesafe-ai/skills).
+
 ## Reliability layers
 
 ### P0 — atomic authoring
@@ -429,6 +501,7 @@ After that: four remote players, bot-filled empty slots, lobby/reconnect support
 - `mcp/P2_DEATHMATCH.md`
 - `mcp/P2.2_BOTS.md`
 - `mcp/P2_STATUS.md`
+- `mcp/AUTOPLAY.md` — autonomous stage clearing (follower + Jev policy, trials, recording)
 - `.github/P2_MULTIPLAYER_ROADMAP.md`
 
 The governing rule remains:

@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
-import { findSectorPath } from './navigation_graph.js';
+import { findSectorPath, lineOfWalk, movementHazard, planLocalPath, solidLines } from './navigation_graph.js';
 
 const DEFAULT_PLAY_URL = 'http://127.0.0.1:3777/';
 const DEFAULT_COLD_BOOT_TIMEOUT_MS = Math.max(60000, Number(process.env.DOOM_MCP_COLD_BOOT_TIMEOUT_MS || 180000));
@@ -27,21 +27,86 @@ function angleDelta(current, desired) {
   return delta;
 }
 function distance(a, b) { return Math.hypot(Number(b.x) - Number(a.x), Number(b.y) - Number(a.y)); }
-function crossingPoint(edge, targetCenter) {
+// Distance still to walk along the local path: to the current waypoint, then
+// waypoint to waypoint, then to the final target. This is the progress
+// measure for the no-progress budget: a detour around a pit (E1M3 sector 67
+// sends the follower 700 units south before it can go north) moves the
+// player away from the portal for a long time while making steady progress.
+// The follower's stall recovery is a blind sidestep. On a walkway between
+// nukage lakes (E1M3 sector 47) that sidestep is what killed four policy
+// runs, so with a graph at hand the step is previewed against walls, drops
+// and damaging shores; the side flips when the first side is unsafe, and
+// both sides unsafe means a short backstep or, if that is unsafe too, a turn
+// in place.
+export function safeRecovery(graph, state, side, extra = {}, attempt = 0) {
+  const geometry = graph?.geometry;
+  const player = state?.player || {};
+  const sidestep = { forward: 0.25, strafe: 0.55 * side, turn: -0.18 * side, tics: 3 };
+  const otherSide = { forward: 0.25, strafe: -0.55 * side, turn: 0.18 * side, tics: 3 };
+  const backstep = { forward: -0.5, strafe: 0, turn: 0, tics: 4 };
+  const turnOnly = { forward: 0, strafe: 0, turn: 0.3 * side, tics: 3 };
+  // Every third recovery on the same edge backs up first: two sidesteps
+  // that did not move the player mean both sides are blocked (a barrel
+  // beside a pillar), and the way out is behind.
+  const candidates = attempt % 3 === 2 ? [backstep, sidestep, otherSide, turnOnly] : [sidestep, otherSide, backstep, turnOnly];
+  for (const candidate of candidates) {
+    if (geometry && (candidate.forward || candidate.strafe)) {
+      const angle = Number(player.angle) * Math.PI / 180;
+      const fx = Math.cos(angle), fy = Math.sin(angle), rx = Math.cos(angle - Math.PI / 2), ry = Math.sin(angle - Math.PI / 2);
+      const magnitude = Math.hypot(candidate.forward, candidate.strafe);
+      const length = 16 + 10 * candidate.tics * magnitude;
+      const from = { x: Number(player.x), y: Number(player.y) };
+      const to = { x: from.x + (candidate.forward * fx + candidate.strafe * rx) / magnitude * length, y: from.y + (candidate.forward * fy + candidate.strafe * ry) / magnitude * length };
+      if (movementHazard(geometry, from, to)) continue;
+    }
+    return { ...candidate, ...extra };
+  }
+  return { forward: 0, strafe: 0, turn: 0.3 * side, tics: 3, ...extra };
+}
+export function remainingPathDistance(position, waypoints, finalTarget) {
+  const points = [...(waypoints || []), finalTarget];
+  let total = distance(position, points[0]);
+  for (let i = 1; i < points.length; i++) total += distance(points[i - 1], points[i]);
+  return total;
+}
+// The point 28 units past the portal on the target sector's side. Taken from
+// the portal line's normal when the geometry is at hand: the target sector's
+// centre can lie on the wrong side of the portal (E1M3 sector 25 wraps
+// around sector 24 in a U, its centre sits inside 24), and aiming at it sent
+// the follower back into the sector it was leaving, turning in circles.
+function crossingPoint(edge, targetCenter, geometry = null) {
+  const line = geometry?.linedefs?.[edge.line];
+  if (line && geometry.vertices?.[line.v1] && geometry.vertices?.[line.v2]) {
+    const a = geometry.vertices[line.v1], b = geometry.vertices[line.v2];
+    const dx = Number(b.x) - Number(a.x), dy = Number(b.y) - Number(a.y);
+    const length = Math.hypot(dx, dy) || 1;
+    // Right side of a linedef (y up): the direction rotated clockwise.
+    const rightSector = line.right === 65535 ? null : geometry.sidedefs?.[line.right]?.sector;
+    const sign = Number(rightSector) === Number(edge.to) ? 1 : -1;
+    return { x: Number(edge.midpoint.x) + sign * dy / length * 28, y: Number(edge.midpoint.y) - sign * dx / length * 28 };
+  }
   const dx = Number(targetCenter.x) - Number(edge.midpoint.x);
   const dy = Number(targetCenter.y) - Number(edge.midpoint.y);
   const length = Math.hypot(dx, dy) || 1;
   return { x: Number(edge.midpoint.x) + dx / length * 28, y: Number(edge.midpoint.y) + dy / length * 28 };
 }
-async function launchChromium() {
+// `headed: true` (or DOOM_MCP_HEADED=1) opens a visible window so a local run
+// can be watched; trials are otherwise identical, since the world only
+// advances through exact-tic steps.
+export async function launchChromium(options = {}) {
   const args = ['--autoplay-policy=no-user-gesture-required'];
-  try { return await chromium.launch({ headless: true, args }); }
+  const headless = !(options.headed ?? /^(1|true|yes)$/i.test(String(process.env.DOOM_MCP_HEADED || '')));
+  // Optional override for hosts whose preinstalled Chromium build does not
+  // match the pinned Playwright revision (for example a shared CI image).
+  const executablePath = String(process.env.DOOM_MCP_CHROMIUM_EXECUTABLE || '').trim();
+  if (executablePath) return chromium.launch({ headless, args, executablePath });
+  try { return await chromium.launch({ headless, args }); }
   catch (firstError) {
-    try { return await chromium.launch({ headless: true, channel: 'chrome', args }); }
+    try { return await chromium.launch({ headless, channel: 'chrome', args }); }
     catch { throw new Error(`Unable to launch Chromium: ${firstError?.message || firstError}`); }
   }
 }
-async function waitForRuntime(page, timeout = 120000) {
+export async function waitForRuntime(page, timeout = 120000) {
   await page.waitForFunction(() => typeof Module !== 'undefined'
     && typeof Module.ccall === 'function'
     && typeof window.DoomControl?.getState === 'function'
@@ -115,7 +180,7 @@ async function waitForPlayable(page, expected, timeout = 30000) {
   }, expected, { timeout });
   return page.evaluate(() => window.DoomControl.getState());
 }
-async function warp(page, mapName) {
+export async function warp(page, mapName) {
   const expected = mapWarpArgs(mapName);
   const result = await page.evaluate(({ episode, map }) => Module.ccall(
     'doomctl_warp', 'number', ['number', 'number'], [episode, map]
@@ -123,7 +188,27 @@ async function warp(page, mapName) {
   if (result !== 1) throw new Error(`LinuxDOOM rejected warp to ${mapName}`);
   return waitForPlayable(page, expected);
 }
-async function coldBoot(page, config, wadBase64) {
+// Warp and freeze the world on the first frame the level is playable. The
+// plain warp leaves the simulation running until the caller pauses it, and
+// that wall-clock gap makes two otherwise identical trials diverge by a few
+// tics. Pausing inside the readiness poll keeps the gap to at most one frame.
+export async function warpAndPause(page, mapName, timeout = 30000) {
+  const expected = mapWarpArgs(mapName);
+  const result = await page.evaluate(({ episode, map }) => Module.ccall(
+    'doomctl_warp', 'number', ['number', 'number'], [episode, map]
+  ), expected);
+  if (result !== 1) throw new Error(`LinuxDOOM rejected warp to ${mapName}`);
+  await page.waitForFunction(({ episode, map }) => {
+    try {
+      const state = window.DoomControl.getState();
+      if (!state?.ready || Number(state.episode) !== episode || Number(state.map) !== map) return false;
+      window.DoomControl.setPlaytestPaused(true);
+      return true;
+    } catch { return false; }
+  }, expected, { timeout, polling: 'raf' });
+  return page.evaluate(() => window.DoomControl.getState());
+}
+export async function coldBoot(page, config, wadBase64) {
   await page.goto(config.playUrl || DEFAULT_PLAY_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
   await waitForRuntime(page);
   const navigation = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 120000 });
@@ -135,48 +220,188 @@ async function coldBoot(page, config, wadBase64) {
   await waitForRuntime(page);
   await waitForColdBoot(page, config.filename, Number(config.coldBootTimeoutMs || DEFAULT_COLD_BOOT_TIMEOUT_MS));
   await page.waitForSelector('#start.ready:not([disabled])', { timeout: 30000 });
+  // Extra LinuxDOOM command-line arguments (for example ['-skill', '4']).
+  // The launcher calls Module.callMain([]) for classic mode; wrapping it is
+  // the only way to reach D_DoomMain's argument parsing without a rebuild.
+  if (Array.isArray(config.bootArgs) && config.bootArgs.length) {
+    await page.evaluate(extra => {
+      const original = Module.callMain.bind(Module);
+      Module.callMain = args => original([...(Array.isArray(args) ? args : []), ...extra]);
+    }, config.bootArgs.map(String));
+  }
   await page.click('#start');
-  return warp(page, config.map);
+  return config.pauseOnReady ? warpAndPause(page, config.map) : warp(page, config.map);
 }
-async function exactInput(page, command) {
+// Optional per-tic hook (video recording). When one is set for a page,
+// exactInput releases the step budget one tic at a time and calls the hook
+// after each world tic, so the caller can capture a frame per tic. Agent input
+// lifetime is counted in world tics by the engine (doom_agent_input.c), so the
+// paused browser frames between the single steps do not change the simulation:
+// a recorded run replays the same tics as an unrecorded one.
+const ticHooks = new WeakMap();
+export function setTicHook(page, hook) {
+  if (typeof hook === 'function') ticHooks.set(page, hook);
+  else ticHooks.delete(page);
+}
+
+const budgetReached = target => {
+  const telemetry = window.DoomControl.getPlaytestTelemetry();
+  return Number(telemetry?.worldTics || 0) >= target && Number(telemetry?.stepBudget || 0) === 0;
+};
+
+export async function exactInput(page, command) {
   const tics = Math.max(1, Math.min(12, Math.trunc(command.tics || 1)));
   const before = await page.evaluate(() => window.DoomControl.getPlaytestTelemetry());
   const status = await page.evaluate(() => window.DoomControl.getAgentInputStatus());
   if (status?.active) await page.evaluate(() => window.DoomControl.cancelAgentInput());
   await page.evaluate(cmd => window.DoomControl.queueAgentInput(cmd), { ...command, tics });
-  await page.evaluate(count => window.DoomControl.stepPlaytestTics(count), tics);
-  const targetTics = Number(before.worldTics || 0) + tics;
-  await page.waitForFunction(target => {
-    const telemetry = window.DoomControl.getPlaytestTelemetry();
-    return Number(telemetry?.worldTics || 0) >= target && Number(telemetry?.stepBudget || 0) === 0;
-  }, targetTics, { timeout: 8000 });
+  const startTics = Number(before.worldTics || 0);
+  const ticHook = ticHooks.get(page);
+  if (ticHook) {
+    for (let tic = 1; tic <= tics; tic++) {
+      await page.evaluate(() => window.DoomControl.stepPlaytestTics(1));
+      await page.waitForFunction(budgetReached, startTics + tic, { timeout: 8000 });
+      await ticHook({ worldTics: startTics + tic, tic, tics, command });
+    }
+  } else {
+    await page.evaluate(count => window.DoomControl.stepPlaytestTics(count), tics);
+    await page.waitForFunction(budgetReached, startTics + tics, { timeout: 8000 });
+  }
   return {
     state: await page.evaluate(() => window.DoomControl.getState()),
     telemetry: await page.evaluate(() => window.DoomControl.getPlaytestTelemetry()),
     tics
   };
 }
-async function navigateEdge(page, graph, edge, options = {}) {
+// Live floor/ceiling opening of one sector (world units). Returns null when
+// the engine cannot report it (for example before the level is ready).
+export async function liveSectorOpening(page, sectorIndex) {
+  const index = Math.trunc(Number(sectorIndex));
+  if (!Number.isFinite(index) || index < 0) return null;
+  return page.evaluate(wanted => {
+    const json = Module.ccall('doomctl_get_sectors_json', 'string', ['number'], [wanted + 1]);
+    const parsed = JSON.parse(json);
+    const row = parsed?.sectors?.find(item => Number(item.index) === wanted);
+    return row ? Number(row.ceiling) - Number(row.floor) : null;
+  }, index);
+}
+
+// Live floor height of one sector (world units), for lifts.
+export async function liveSectorFloor(page, sectorIndex) {
+  const index = Math.trunc(Number(sectorIndex));
+  if (!Number.isFinite(index) || index < 0) return null;
+  return page.evaluate(wanted => {
+    const json = Module.ccall('doomctl_get_sectors_json', 'string', ['number'], [wanted + 1]);
+    const parsed = JSON.parse(json);
+    const row = parsed?.sectors?.find(item => Number(item.index) === wanted);
+    return row ? Number(row.floor) : null;
+  }, index);
+}
+
+const PLAYER_HEIGHT_UNITS = 56;
+
+// Vanilla EV_VerticalDoor toggles a door that is already moving: USE while
+// opening starts it closing again. So USE is only pressed when the tracked
+// door is closed or closing, never while it is opening or standing open.
+function decideDoorUse(opening, previousOpening) {
+  if (opening == null) return null;
+  const rising = previousOpening != null && opening > previousOpening + 0.25;
+  if (rising) return false;
+  return opening < PLAYER_HEIGHT_UNITS;
+}
+
+export async function navigateEdge(page, graph, edge, options = {}) {
   const maxTics = Number(options.maxTicsPerEdge || 210);
+  // Steps a policy spends standing and fighting (or backing off) do not move
+  // the player along the edge, so they are budgeted separately: the route
+  // budget still catches a stuck follower, the combat budget a fight that
+  // never ends. Both are reported; totalTics in the objective counts all.
+  const maxCombatTics = Number(options.maxCombatTicsPerEdge ?? 600);
+  let routeTics = 0;
+  let combatTics = 0;
+  // The route budget counts tics without progress: it resets whenever the
+  // distance to the portal reaches a new minimum. A follower that fights
+  // its way along a long edge is not "stuck"; one that never gets closer is.
+  let bestPortalDistance = Infinity;
+  let ticsSinceProgress = 0;
+  let waypoints = null;
   const targetNode = graph.nodes[edge.to];
-  const cross = crossingPoint(edge, targetNode.center);
+  const cross = crossingPoint(edge, targetNode.center, graph.geometry);
   const trace = [];
   let usedTics = 0;
   let lastDistance = Infinity;
   let stalled = 0;
   let recoverySide = 1;
+  let recoveries = 0;
+  // Door awareness: a door edge tracks its own target sector; an edge that
+  // ends in a thin door frame tracks the door behind it (options.doorSector).
+  const doorSector = options.doorSector != null ? Number(options.doorSector)
+    : (edge.action === 'use' ? Number(edge.to) : null);
+  let previousOpening = null;
+  // Lift awareness: the sector carrying the line's tag is the platform; the
+  // edge is passable only while its floor sits at the other sector's floor.
+  // A rider that stops to fight (policy override) lets the lift cycle back
+  // up; so while the lift is away the runner calls it (USE, for switch
+  // lifts) and holds, and while it is level the walk-off command outranks
+  // the policy for that step.
+  let liftSector = null;
+  let liftTargetFloor = null;
+  let liftLastFloor = null;
+  let liftStillTics = 0;      // tics the platform has not moved while we wait on it
+  let liftRecross = false;    // step off and back on to re-fire a walk-over lift trigger
+  let liftLeaveSteps = 0;     // consecutive walk-off steps that outranked the policy
+  if (edge.kind === 'lift' && edge.tag) {
+    if (graph.nodes[edge.from]?.tag === edge.tag) { liftSector = edge.from; liftTargetFloor = graph.nodes[edge.to].floor; }
+    else if (graph.nodes[edge.to]?.tag === edge.tag) { liftSector = edge.to; liftTargetFloor = graph.nodes[edge.from].floor; }
+  }
 
-  while (usedTics < maxTics) {
+  while (ticsSinceProgress < maxTics && combatTics < maxCombatTics) {
     const state = await page.evaluate(() => window.DoomControl.getState());
     if (!state?.ready || !state.player) throw new Error('Navigation runtime lost player state');
-    if (Number(state.currentSector) === Number(edge.to)) {
-      return { passed: true, edge, usedTics, trace, finalState: state };
+    let wantUse = edge.action === 'use' || Boolean(options.useNearPortal);
+    let liftLevel = null;   // null: not a lift edge; true: platform at the target floor
+    let liftMoving = false;
+    if (liftSector != null) {
+      const floor = await liveSectorFloor(page, liftSector);
+      liftLevel = floor != null && Math.abs(floor - liftTargetFloor) <= 4;
+      liftMoving = liftLastFloor != null && floor !== liftLastFloor;
+      liftLastFloor = floor;
+    }
+    let doorOpening = null;
+    if (doorSector != null) {
+      doorOpening = await liveSectorOpening(page, doorSector);
+      const decided = decideDoorUse(doorOpening, previousOpening);
+      if (decided != null) wantUse = decided;
+      previousOpening = doorOpening;
+    }
+    // A thin sector (door frame, step lip) can be crossed without the player
+    // centre ever registering inside it; callers may list any later route
+    // sector as an acceptable landing so the follower does not chase it.
+    const reached = Number(state.currentSector);
+    if (reached === Number(edge.to) || (options.acceptSectors && options.acceptSectors.has(reached))) {
+      return { passed: true, edge, usedTics, routeTics, combatTics, trace, finalState: state, reachedSector: reached };
     }
     if (Number(state.player.health || 0) <= 0) return { passed: false, edge, usedTics, trace, failure: 'player_dead', finalState: state };
 
     const position = { x: Number(state.player.x), y: Number(state.player.y) };
     const portalDistance = distance(position, edge.midpoint);
-    const target = portalDistance < 44 ? cross : edge.midpoint;
+    // Local routing: go around walls inside a non-convex sector. Planned on
+    // the first step and again whenever the follower stalls.
+    const ignoreLines = edge.line != null ? [edge.line] : [];
+    if (waypoints == null || stalled >= 7) {
+      waypoints = planLocalPath(graph, Number(state.currentSector), position, edge.midpoint, { ignoreLines });
+    }
+    while (waypoints.length && distance(position, waypoints[0]) < 24) waypoints.shift();
+    // A fight (or a policy strafe) moves the player off the planned line; the
+    // straight walk to the next waypoint can then cross a pit that the plan
+    // went around. Re-check it every step and replan when it is not clear
+    // (E1M3 sector 47: eight of ten runs ended in the nukage this way).
+    const nextPoint = waypoints.length ? waypoints[0] : edge.midpoint;
+    if (graph?.geometry && !lineOfWalk(graph.geometry, position, nextPoint, solidLines(graph.geometry).filter(line => !ignoreLines.includes(line.index)))) {
+      waypoints = planLocalPath(graph, Number(state.currentSector), position, edge.midpoint, { ignoreLines });
+      while (waypoints.length && distance(position, waypoints[0]) < 24) waypoints.shift();
+    }
+    const target = waypoints.length ? waypoints[0] : (portalDistance < 44 ? cross : edge.midpoint);
     const targetDistance = distance(position, target);
     const desired = headingDegrees(position, target);
     const delta = angleDelta(Number(state.player.angle), desired);
@@ -187,7 +412,7 @@ async function navigateEdge(page, graph, edge, options = {}) {
     lastDistance = targetDistance;
 
     if (stalled >= 7) {
-      command = { forward: 0.25, strafe: 0.55 * recoverySide, turn: -0.18 * recoverySide, use: edge.action === 'use', tics: 3 };
+      command = safeRecovery(graph, state, recoverySide, { use: wantUse }, recoveries++);
       recoverySide *= -1;
       stalled = 0;
     } else if (Math.abs(delta) > 10) {
@@ -199,13 +424,75 @@ async function navigateEdge(page, graph, edge, options = {}) {
       command = {
         forward: nearPortal ? 0.72 : 0.62,
         turn: delta > 3 ? -0.08 : delta < -3 ? 0.08 : 0,
-        use: edge.action === 'use' && nearPortal,
+        // useNearPortal covers a door that starts immediately behind this
+        // portal: the closed door blocks the player radius before the centre
+        // can enter the thin door-frame sector, so USE must be pressed here.
+        use: wantUse && nearPortal,
         tics: nearPortal ? 3 : 4
       };
     }
 
+    // Lift rules (see liftSector above).
+    let transitPriority = false;
+    const onPlatform = Number(state.currentSector) === liftSector;
+    if (liftSector != null && liftRecross) {
+      // Re-fire a walk-over lift: back off the platform, then the normal
+      // approach walks back across its trigger line.
+      if (onPlatform) {
+        command = { forward: -0.6, strafe: 0, turn: 0, attack: false, use: false, tics: 4, source: 'geometric', lift: 'recross' };
+        transitPriority = true;
+      } else {
+        liftRecross = false;
+        liftStillTics = 0;
+      }
+    } else if (liftLevel === false && onPlatform) {
+      // On the platform while it is away from the target floor: call it and
+      // hold, facing the portal so USE reaches the line; if it does not move
+      // for 28 tics the trigger is a walk-over line, so step off and back on.
+      liftStillTics = liftMoving ? 0 : liftStillTics + 4;
+      if (liftStillTics >= 28) { liftRecross = true; liftStillTics = 0; }
+      const aim = Math.abs(delta) > 10 ? (delta > 0 ? -0.3 : 0.3) : 0;
+      command = { forward: 0, strafe: 0, turn: aim, attack: false, use: edge.action === 'use', tics: 4, source: 'geometric', lift: 'wait' };
+      // The policy may fight from the platform (a stationary override keeps
+      // the USE), but it may not walk the player off it.
+      transitPriority = 'stationary';
+      liftLeaveSteps = 0;
+    } else if (liftLevel === true && onPlatform) {
+      // Level: leave now, before it cycles. The walk-off outranks the policy
+      // for a few steps; if the player is still on the platform after that
+      // something blocks the way (a monster in the portal) and the policy,
+      // whose stall rule fights, gets the step back.
+      liftLeaveSteps++;
+      transitPriority = liftLeaveSteps <= 6;
+      command = { ...command, lift: 'leave' };
+    } else {
+      liftLeaveSteps = 0;
+    }
+
+    // Optional external policy (for example a System One tactical layer) may
+    // replace the geometric command for this step. It receives the raw engine
+    // state and the deterministic proposal, and must return a full command or
+    // a falsy value to keep the proposal.
+    if (typeof options.decide === 'function' && transitPriority !== true) {
+      const override = await options.decide({ state, edge, proposal: command, portalDistance, targetDistance, delta, usedTics });
+      if (override) {
+        const stationary = Number(override.forward || 0) === 0 && Number(override.strafe || 0) === 0;
+        if (transitPriority !== 'stationary') command = override;
+        else if (stationary) command = { ...override, use: command.use, lift: 'wait' };
+      }
+    }
+
     const result = await exactInput(page, command);
     usedTics += result.tics;
+    if (isCombatCommand(command)) combatTics += result.tics; else routeTics += result.tics;
+    // Only route steps count against the no-progress budget; a standing
+    // fight is budgeted by combatTics.
+    const remaining = remainingPathDistance(position, waypoints, edge.midpoint);
+    if (remaining < bestPortalDistance - 4) { bestPortalDistance = remaining; ticsSinceProgress = 0; }
+    else if (!isCombatCommand(command)) ticsSinceProgress += result.tics;
+    if (typeof options.onStep === 'function') {
+      await options.onStep({ edge, state, command, result, usedTics, routeTics, combatTics, ticsSinceProgress, portalDistance, targetDistance, delta, doorOpening });
+    }
     if (trace.length < 80) trace.push({
       tics: usedTics,
       sector: result.state.currentSector,
@@ -215,11 +502,22 @@ async function navigateEdge(page, graph, edge, options = {}) {
       portalDistance,
       targetDistance,
       delta,
+      doorOpening,
       command
     });
   }
   const finalState = await page.evaluate(() => window.DoomControl.getState());
-  return { passed: Number(finalState?.currentSector) === Number(edge.to), edge, usedTics, trace, failure: 'edge_tic_budget_exhausted', finalState };
+  const finalSector = Number(finalState?.currentSector);
+  const finalPassed = finalSector === Number(edge.to) || Boolean(options.acceptSectors && options.acceptSectors.has(finalSector));
+  const failure = finalPassed ? undefined : (combatTics >= maxCombatTics ? 'edge_combat_budget_exhausted' : 'edge_no_progress');
+  return { passed: finalPassed, edge, usedTics, routeTics, combatTics, ticsSinceProgress, trace, failure, finalState, reachedSector: finalSector };
+}
+
+// A policy command that holds position or backs off (fight, retreat) rather
+// than moving along the route. Geometric commands never count as combat.
+export function isCombatCommand(command) {
+  if (!command || !command.source || command.source === 'geometric') return false;
+  return Number(command.forward || 0) <= 0;
 }
 
 export async function runNavigationBrowserTrial(input) {

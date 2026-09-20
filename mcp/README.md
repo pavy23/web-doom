@@ -34,6 +34,24 @@ MCP-host AI
 
 The AI never writes BSP nodes directly. It edits map primitives or semantic room/corridor operations; deterministic code rebuilds derived lumps before LinuxDOOM is allowed to load the result.
 
+## Autoplay
+
+`autoplay_stage_runner.mjs` clears campaign levels without human input: a
+deterministic route follower (navigation graph, local routing, exact-tic
+control) with an optional TypeSafe Jev tactical policy on top. It runs
+locally against a Playwright Chromium, never in the public page.
+
+```bash
+npm install
+export TYPESAFE_API_KEY=...          # policy runs only
+npm run autoplay:e1m1:hmp:watch      # watch Jev play E1M1 at Hurt Me Plenty
+npm run autoplay:e1m2:hmp:record     # record E1M2 to exports/autoplay/e1m2-jev-hmp-rec/run-0.webm
+npm run autoplay:e1m2:hmp:x10        # 10-run trial with report, step and decision logs
+```
+
+`AUTOPLAY.md` documents the runner, the policy, every trial and the recording
+and dashboard tools; the root README has the results table.
+
 ## Setup
 
 Requirements: Node.js 20+, npm and an MCP client.
