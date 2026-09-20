@@ -755,6 +755,43 @@ E1M1 HMP follower  1216 tics, 45 damage: identical steps.jsonl to before
 E1M2 HMP follower  3094 tics, 180 damage (was 3247 / 183): clears
 ```
 
+### E1M3 at HMP: policy 0.6.2 to 0.7.3 (10 runs each, `--jev-pipeline 8`)
+
+E1M3 is a different problem from E1M2: ~45 monsters at HMP on the route,
+most of them hitscan, an open first area, and a walkway (sector 47) between
+two nukage lakes with a nukage pit in the middle. `autoplay_postmortem.mjs`
+(per-run damage events with the policy's state at each one) drove every
+step below; the numbers are `npm run autoplay:e1m3:hmp:x10` re-run per
+version.
+
+| Policy | Cleared | Damage taken (per run) | Where the runs ended | What changed |
+|---|---|---|---|---|
+| 0.6.2 | 0/10 | 100-172 | 6 on the walkway, 2 in the nukage pit, 2 in the first big room | E1M2's policy as is. Two runs backed or walked into the pit during combat or a loot detour; every run took the same two imp fireballs (backing straight away, then standing still); pickups in the next room were out of the loot rule's reach |
+| 0.7.0 | 0/10 | 135-145 | 6 on the walkway (4 in nukage), 4 in the key area | **Terrain guard**: a policy step with movement is previewed against walls, drops and nukage shores (16 + 10 units/tic) and flips or stands; **projectileStrafe**: fighting or retreating from a projectile monster keeps a 0.5 strafe on; loot in other sectors when `lineOfWalk` is clear; shells loot back on. The fireballs at tics 699/731 were gone; the pit deaths were not: they were the *follower's* blind stall sidestep |
+| 0.7.1 | 0/10 | 100 (all identical) | all at tic 1271, the door of sector 67 | guarded stall recovery (`safeRecovery`), health loot below 70 instead of 50, armor loot. Regression: ten tic-identical deaths. A zombieman behind the player shot 33 hp off over 130 tics while the consult gate opened only on the hurt steps (the policy turned toward it, the follower turned back), then a health detour walked 240 units toward a medikit with an imp at 52 units |
+| 0.7.2 | 0/10 | 101-242 | 8 in the nukage around the walkway, 2 reached the stairs (42 kills, tics 6250 and 7473) | consult on any enemy with a clear shot (view cone or not), stay engaged 35 tics after a consultation that saw one, interrupt a loot detour when something gets a clear shot. Runs live long now, and the step log showed the last pit entry exactly: the follower walked straight in after a fight, because its local waypoints were planned before the fight and the straight line to the next one was never re-checked |
+| 0.7.3 | **1/10** | 41-146 | 5 dead to imps in the blue key room (27:26), 3 stalled on edge 24:25 with nothing around, 1 step timeout in the stairs wait, 1 cleared (7184 tics, 143 damage, 46 kills) | the follower re-checks the walk to its next waypoint every step and replans; the guard adds momentum (velocity from the previous step, ten tics of slide at vanilla friction) and brakes a slide heading over an edge even on the follower's steps. No run ended in the nukage |
+
+The three stalls on 24:25 were the follower's crossing point: 28 units
+from the portal midpoint *toward the target sector's centre*, and sector 25
+wraps around 24 in a U, so its centre lies inside 24; the follower turned
+back into the sector it was leaving. The point now comes from the portal
+line's normal. The stairs wait survives a lost step. Both are runner
+changes (no policy version).
+
+What E1M3 taught, in one line each:
+
+1. Terrain is part of tactics. Every combat rule (retreat, strafe, loot,
+   the follower's own recovery) needs the geometry, or it walks into pits.
+2. Momentum matters: a preview of the next step is not enough when the
+   player has been strafing for a second.
+3. A local plan is stale after a fight; re-check it every step.
+4. The consult gate must open for what can shoot the player, not for what
+   the player can see.
+5. E1M1 is unaffected: policy 0.7.3 clears E1M1 HMP (24 and 60 damage in
+   two runs), with more calls than 0.6.2 (109-152 vs ~70) because of the
+   engagement hold.
+
 ## Pipelined consultation (`--jev-pipeline N`)
 
 A watched run stutters because every consultation holds the world for the
