@@ -15,7 +15,7 @@ import { appendFile } from 'node:fs/promises';
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 import { coverPoint, lineOfWalk, movementHazard } from './navigation_graph.js';
 
-export const JEV_POLICY_VERSION = '1.0.0-jev-policy';
+export const JEV_POLICY_VERSION = '1.1.0-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -218,6 +218,15 @@ const HITSCAN = new Set(['zombieman', 'shotgun_guy', 'chaingun_guy', 'heavy_weap
 // Monsters whose ranged attack is a projectile: sidestepping works, standing
 // still (or backing straight away) does not.
 const PROJECTILE = new Set(['imp', 'cacodemon', 'baron_of_hell', 'hell_knight', 'revenant', 'mancubus', 'arachnotron', 'cyberdemon']);
+// How far each weapon is worth standing still for. The shotgun's pellets
+// spread past ~300 units and the fists reach 64; holding position to fire
+// beyond these is time spent being shot for almost no damage dealt.
+// Indexed by weapontype_t.
+const WEAPON_RANGE = [64, 700, 320, 700, 900, 900, 900, 64, 240];
+export function weaponRange(weapon) {
+  const index = Number(weapon);
+  return Number.isFinite(index) && WEAPON_RANGE[index] != null ? WEAPON_RANGE[index] : 700;
+}
 export function isProjectile(name) { return PROJECTILE.has(String(name || '').toLowerCase()); }
 function isHitscan(name) {
   return HITSCAN.has(String(name || '').toLowerCase().replace(/\s+/g, '_'));
@@ -340,6 +349,22 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
   const strafeVs = options.projectileStrafe !== false && options.strafeRoomClear !== false && !options.holdPosition && isProjectile(target.name) && !pointBlank
     ? 0.5 * Number(options.dodgeSide ?? 1) : 0;
   if (strafeVs) { rules.push('projectileStrafe'); meta.rules = rules; }
+  // noFightFar: standing still to shoot a target the weapon cannot reach is
+  // time spent being shot for nothing. Seven tic-identical E1M3 runs died
+  // holding position with a shotgun against an imp 348 units away. Keep the
+  // route command and fire only when it comes into range. Melee range
+  // overrides: something that close is dealt with wherever it stands.
+  if (mode === 'fight' && !options.holdPosition && !pointBlank
+      && Number(target.distance) > weaponRange(options.playerWeapon) * Number(options.weaponRangeSlack ?? 1.1)) {
+    rules.push('noFightFar');
+    meta.rules = rules;
+    meta.mode = 'advance';
+    if (fire && aligned) return { ...proposal, attack: true, ...meta };
+    // Null hands the step back to the route follower, which loses the rule
+    // names with the command, so the counter is bumped here instead.
+    if (typeof options.onRule === 'function') options.onRule('noFightFar');
+    return null;
+  }
   if (mode === 'fight') {
     if (!aligned) return { forward: 0, strafe: strafeVs, turn: turnToward(target.bearing), attack: false, use: false, tics: aimTics(target.bearing), ...meta };
     // fightFires: having chosen to stand and fight, an aligned shot at an
@@ -473,6 +498,14 @@ export async function createJevPolicy(options = {}) {
     // switch's room, up a lift into another sector, and the trigger approach
     // (which routes inside one sector) could never walk back.
     retreatDriftLimit: 192,
+    // How far past a weapon's useful range a fight is still worth standing
+    // still for (see WEAPON_RANGE and the noFightFar rule). Seven tic-identical
+    // E1M3 runs died holding a shotgun on an imp 348 units away, which is past
+    // the range where the pellet spread still lands.
+    weaponRangeSlack: 1.1,
+    // The terrain brake only fires above a walking pace; below it the slide is
+    // already harmless and the reverse thrust starts the next one.
+    brakeMinSpeed: 4,
     recentWindowTics: 70,      // "health lost in the last 2 s" window
     engageHoldTics: 35,        // keep consulting this long after a consultation that saw an enemy
     model: undefined,
@@ -497,7 +530,7 @@ export async function createJevPolicy(options = {}) {
   const stats = {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, rulesOnly: config.rulesOnly, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
-    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, coverStarts: 0, coverArrived: 0, coverMove: 0, coverFight: 0, retreatDrift: 0, weaponSelect: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
+    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, coverStarts: 0, coverArrived: 0, coverMove: 0, coverFight: 0, retreatDrift: 0, noFightFar: 0, weaponSelect: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
     loot: { shotgun: 0, health: 0, shells: 0, armor: 0 },
     pipeline: { lagTics: options.pipelineLagTics || 0, inflightLaunched: 0, applied: 0, reused: 0, stalls: 0, stallMsTotal: 0, lagTicsTotal: 0 }
   };
@@ -562,6 +595,12 @@ export async function createJevPolicy(options = {}) {
     return { from, to: { x: slide.x + dx * length, y: slide.y + dy * length }, slide };
   }
   let guardIgnoreLines = [];   // the portal line of the edge being walked (a route may drop off a ledge on purpose)
+  // Did the previous step brake? Braking on consecutive steps is what made
+  // the oscillation: the brake reverses the velocity, the reversed velocity
+  // reads as a fresh slide toward the same edge, and the next brake reverses
+  // it back. Seven E1M3 runs spent their last twenty tics alternating f0.7
+  // and f-0.7. Braking at most every other step lets friction settle it.
+  let braking = false;
   function movementUnsafe(state, command) {
     if (!config.terrainGuard || !geometry || !command) return null;
     const preview = movePreview(state, command);
@@ -574,7 +613,11 @@ export async function createJevPolicy(options = {}) {
   function brakeCommand(state, command) {
     const player = state?.player || {};
     const speed = Math.hypot(velocity.x, velocity.y);
-    if (speed < 0.5) return null;
+    // Below a walking pace the slide is already harmless and a reverse thrust
+    // only starts the next slide: two E1M3 runs spent their last twenty tics
+    // alternating full forward and full back. The engine's own friction
+    // (0.90625 per tic) finishes the job.
+    if (speed < Number(config.brakeMinSpeed ?? 4)) return null;
     const angle = Number(player.angle) * Math.PI / 180;
     const fx = Math.cos(angle), fy = Math.sin(angle);
     const rx = Math.cos(angle - Math.PI / 2), ry = Math.sin(angle - Math.PI / 2);
@@ -587,9 +630,12 @@ export async function createJevPolicy(options = {}) {
     // Momentum check first, on every step (the follower's own steps too):
     // sliding toward a pit is braked whatever the command was.
     const slide = movePreview(state, { forward: 0, strafe: 0 });
-    if (slide && movementHazard(geometry, slide.from, slide.to, { ignoreLines: guardIgnoreLines })) {
+    const brakedLastStep = braking;
+    braking = false;
+    if (!brakedLastStep && slide && movementHazard(geometry, slide.from, slide.to, { ignoreLines: guardIgnoreLines })) {
       const brake = brakeCommand(state, command || { source: 'jev', mode: 'brake', target: 'none', fire: false, danger: 0, attack: false, use: false });
       if (brake) {
+        braking = true;
         stats.rules.terrainBrake++;
         return { ...brake, rules: [...(brake.rules || []), 'terrainBrake'] };
       }
@@ -772,10 +818,13 @@ export async function createJevPolicy(options = {}) {
     return hurt || inFront;
   }
 
+  // A rule that hands the step back to the follower (returning null) has no
+  // command to carry its name on, so it reports itself here.
+  const onRule = rule => { stats.rules[rule] = (stats.rules[rule] || 0) + 1; };
   function ruleOptions(compact, state, context) {
     const stalled = detectStall(state, compact);
     const holding = Boolean(coverSpot?.arrived) && Number(state?.levelTime ?? 0) < Number(coverSpot?.holdUntil ?? 0);
-    return { ...config, dodgeSide, lastTarget, cover: context ? coverInfo(context) : null, holdPosition: holding, strafeRoomClear: strafeRoomClear(state), targetDrift: targetDrift(context), ...(stalled ? { forceMode: 'fight' } : {}) };
+    return { ...config, dodgeSide, lastTarget, cover: context ? coverInfo(context) : null, holdPosition: holding, strafeRoomClear: strafeRoomClear(state), targetDrift: targetDrift(context), playerWeapon: Number(state?.player?.weapon), onRule, ...(stalled ? { forceMode: 'fight' } : {}) };
   }
   // Is there room to strafe? Both sides of the player must have
   // config.strafeRoom units of floor with no wall, drop or nukage shore.

@@ -3,11 +3,11 @@
 // tuned for one of them.
 //
 // E1M1 at Hurt Me Plenty is six monsters and two stimpacks over a short
-// route; E1M3 is forty-five, three quarters of them hitscan, with a key
-// detour and twenty-nine health pickups to spend on the way. The same
-// "walk to a medikit below 50 hp" rule is timid on one and reckless on the
-// other. Everything here is derived from the WAD and the navigation graph,
-// never from the map's name, so a generated map gets a profile too.
+// route; E1M3 is forty on the route, three quarters of them hitscan, behind
+// a key detour. The same "walk to a medikit below 50 hp" rule is timid on
+// one and reckless on the other. Everything here is derived from the WAD and
+// the navigation graph, never from the map's name, so a generated map gets a
+// profile too.
 
 import { loadMapItems, skillBit } from './autoplay_items.mjs';
 import { locatePointSector } from './navigation_graph.js';
@@ -117,19 +117,22 @@ export function deriveConfig(profile) {
   const { monsters, items, route, density } = profile;
   const config = {};
 
-  // Health: spend it where there is health to pick up. Twenty-nine pickups
-  // on E1M3's route are worth detouring for at 70 hp; E1M1's two are not.
-  config.healthLootBelow = items.onRoute.health >= 15 ? 70 : items.onRoute.health >= 5 ? 60 : 45;
-  // Shells: the same for the shotgun's ammo.
-  config.shellsLootBelow = items.onRoute.shells >= 10 ? 12 : 6;
+  // Health: detour early where the level is dangerous AND there is health to
+  // pick up. Counting pickups alone was wrong: E1M2's seven reads as
+  // "moderate" next to E1M3's ten, but E1M2 is 145 health for 14 monsters
+  // against E1M3's 160 for 40. The danger sets the threshold, the supply only
+  // decides whether detouring is possible at all. Measured on E1M2: 70 gave
+  // 8/10 clears where 60 gave 1/10.
+  config.healthLootBelow = items.onRoute.health < 3 ? 45 : monsters.onRoute >= 10 ? 70 : 60;
+  // Shells: a shotgun blast is one shell, so keep a margin wherever the route
+  // carries shells at all. E1M2 at 6 ran the map on the pistol.
+  config.shellsLootBelow = items.onRoute.shells >= 3 ? 12 : 6;
   config.lootArmor = items.onRoute.armor > 0;
 
-  // Never walk into a shooter below this. Hitscan cannot be dodged and tough
-  // monsters end a fight fast, so both raise the floor.
-  let lowHealth = 40;
-  if (monsters.hitscanShare >= 0.6) lowHealth += 10;
-  if (monsters.tough > 0) lowHealth += 10;
-  config.lowHealth = Math.min(60, lowHealth);
+  // Never walk into a shooter below this. Holding position costs damage on a
+  // level where running past is viable, so the floor only rises on a crowded
+  // one (E1M2 at 50 dropped to 1/10; at 40 it clears 8/10).
+  config.lowHealth = monsters.onRoute >= 30 || monsters.tough > 0 ? 50 : 40;
 
   // Cover costs time and only pays against hitscan groups.
   config.coverSeek = monsters.hitscan >= 8;
