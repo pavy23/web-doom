@@ -529,8 +529,28 @@ const PLAYER_RADIUS = 16;
 // or a solid thing? A capsule test, not just a crossing test: a path that
 // grazes a corner or runs along a wall line is not walkable either.
 export function lineOfWalk(g, from, to, lines = solidLines(g), clearance = PLAYER_RADIUS + 2) {
-  for (const line of lines) if (segmentSegmentDistance(from, to, line.a, line.b) < clearance) return false;
-  for (const thing of solidThings(g)) if (pointSegmentDistance(thing, from, to) < thing.radius + PLAYER_RADIUS + 1) return false;
+  for (const line of lines) {
+    // Already pressed against this wall (the engine let the player get
+    // that close): a move that crosses nothing and ends no closer than it
+    // started is a move away from it, not into it. Without this, a player
+    // touching a wall or a barrel had no walkable line at all and the
+    // planner gave up (E1M3 sector 24: pillar in front, barrel behind).
+    const startDistance = pointSegmentDistance(from, line.a, line.b);
+    if (startDistance < clearance) {
+      if (segmentsCross(from, to, line.a, line.b) || pointSegmentDistance(to, line.a, line.b) < startDistance - 0.5) return false;
+      continue;
+    }
+    if (segmentSegmentDistance(from, to, line.a, line.b) < clearance) return false;
+  }
+  for (const thing of solidThings(g)) {
+    const reach = thing.radius + PLAYER_RADIUS + 1;
+    const startDistance = dist(from, thing);
+    if (startDistance < reach) {
+      if (dist(to, thing) < startDistance - 0.5) return false;
+      continue;
+    }
+    if (pointSegmentDistance(thing, from, to) < reach) return false;
+  }
   return true;
 }
 // `ignoreLines`: line indices that are not obstacles for this plan, normally

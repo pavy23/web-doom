@@ -172,6 +172,7 @@ export async function approachAndUseExit(page, exit, options = {}) {
   let lastDistance = Infinity;
   let stalled = 0;
   let recoverySide = 1;
+  let recoveries = 0;
 
   while (ticsSinceProgress < maxTics && combatTics < maxCombatTics) {
     const state = await engineState(page);
@@ -207,7 +208,7 @@ export async function approachAndUseExit(page, exit, options = {}) {
     lastDistance = targetDistance;
 
     if (stalled >= 7) {
-      command = safeRecovery(options.graph, state, recoverySide, { use: exit.trigger === 'use' });
+      command = safeRecovery(options.graph, state, recoverySide, { use: exit.trigger === 'use' }, recoveries++);
       recoverySide *= -1;
       stalled = 0;
     } else if (Math.abs(delta) > 8) {

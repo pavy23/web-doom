@@ -38,15 +38,17 @@ function distance(a, b) { return Math.hypot(Number(b.x) - Number(a.x), Number(b.
 // and damaging shores; the side flips when the first side is unsafe, and
 // both sides unsafe means a short backstep or, if that is unsafe too, a turn
 // in place.
-export function safeRecovery(graph, state, side, extra = {}) {
+export function safeRecovery(graph, state, side, extra = {}, attempt = 0) {
   const geometry = graph?.geometry;
   const player = state?.player || {};
-  const candidates = [
-    { forward: 0.25, strafe: 0.55 * side, turn: -0.18 * side, tics: 3 },
-    { forward: 0.25, strafe: -0.55 * side, turn: 0.18 * side, tics: 3 },
-    { forward: -0.35, strafe: 0, turn: 0, tics: 3 },
-    { forward: 0, strafe: 0, turn: 0.3 * side, tics: 3 }
-  ];
+  const sidestep = { forward: 0.25, strafe: 0.55 * side, turn: -0.18 * side, tics: 3 };
+  const otherSide = { forward: 0.25, strafe: -0.55 * side, turn: 0.18 * side, tics: 3 };
+  const backstep = { forward: -0.5, strafe: 0, turn: 0, tics: 4 };
+  const turnOnly = { forward: 0, strafe: 0, turn: 0.3 * side, tics: 3 };
+  // Every third recovery on the same edge backs up first: two sidesteps
+  // that did not move the player mean both sides are blocked (a barrel
+  // beside a pillar), and the way out is behind.
+  const candidates = attempt % 3 === 2 ? [backstep, sidestep, otherSide, turnOnly] : [sidestep, otherSide, backstep, turnOnly];
   for (const candidate of candidates) {
     if (geometry && (candidate.forward || candidate.strafe)) {
       const angle = Number(player.angle) * Math.PI / 180;
@@ -330,6 +332,7 @@ export async function navigateEdge(page, graph, edge, options = {}) {
   let lastDistance = Infinity;
   let stalled = 0;
   let recoverySide = 1;
+  let recoveries = 0;
   // Door awareness: a door edge tracks its own target sector; an edge that
   // ends in a thin door frame tracks the door behind it (options.doorSector).
   const doorSector = options.doorSector != null ? Number(options.doorSector)
@@ -409,7 +412,7 @@ export async function navigateEdge(page, graph, edge, options = {}) {
     lastDistance = targetDistance;
 
     if (stalled >= 7) {
-      command = safeRecovery(graph, state, recoverySide, { use: wantUse });
+      command = safeRecovery(graph, state, recoverySide, { use: wantUse }, recoveries++);
       recoverySide *= -1;
       stalled = 0;
     } else if (Math.abs(delta) > 10) {
