@@ -28,6 +28,24 @@ const REMOTE_DOOR_SPECIALS = Object.freeze({
   108: { trigger: 'walk', stays: false }, 109: { trigger: 'walk', stays: true }, 110: { trigger: 'walk', stays: false },
   111: { trigger: 'use', stays: false }, 112: { trigger: 'use', stays: true }, 113: { trigger: 'use', stays: false }, 114: { trigger: 'use', stays: true }
 });
+// Tagged floor movers: the line changes the floor height of every sector
+// carrying its tag (stairs also climb through neighbouring sectors). Their
+// effect on the graph is computed from the vanilla rules (P_FindNextHighest-
+// Floor, P_FindLowestFloorSurrounding, EV_BuildStairs) so an edge that is
+// too high a step now can be planned as passable once the trigger fired.
+// Gun-activated (G1) variants are left out: the runner cannot shoot lines.
+const FLOOR_SPECIALS = Object.freeze({
+  7: { trigger: 'use', effect: 'stairs', step: 8 }, 8: { trigger: 'walk', effect: 'stairs', step: 8 },
+  100: { trigger: 'walk', effect: 'stairs', step: 16 }, 127: { trigger: 'use', effect: 'stairs', step: 16 },
+  18: { trigger: 'use', effect: 'raiseNext' }, 20: { trigger: 'use', effect: 'raiseNext' },
+  22: { trigger: 'walk', effect: 'raiseNext' }, 69: { trigger: 'use', effect: 'raiseNext' }, 95: { trigger: 'walk', effect: 'raiseNext' },
+  23: { trigger: 'use', effect: 'lowerLowest' }, 38: { trigger: 'walk', effect: 'lowerLowest' },
+  60: { trigger: 'use', effect: 'lowerLowest' }, 82: { trigger: 'walk', effect: 'lowerLowest' },
+  19: { trigger: 'walk', effect: 'lowerHighest' }, 45: { trigger: 'use', effect: 'lowerHighest' },
+  83: { trigger: 'walk', effect: 'lowerHighest' }, 102: { trigger: 'use', effect: 'lowerHighest' },
+  36: { trigger: 'walk', effect: 'lowerHighest', above: 8 }, 70: { trigger: 'use', effect: 'lowerHighest', above: 8 },
+  71: { trigger: 'use', effect: 'lowerHighest', above: 8 }, 98: { trigger: 'walk', effect: 'lowerHighest', above: 8 }
+});
 const EXIT_SPECIALS = Object.freeze({
   11: { trigger: 'use', secret: false },
   51: { trigger: 'use', secret: true },
@@ -109,18 +127,86 @@ function sectorCenter(g, sector) {
   };
 }
 function doorSpec(line) { return DOOR_SPECIALS[Number(line.special)] || null; }
-// Every tagged door trigger on the map, grouped by tag.
+// Sectors sharing a two-sided line with `sector` (vanilla getNextSector).
+function neighbourSectors(g, sector) {
+  const out = new Set();
+  g.linedefs.forEach(line => {
+    const right = sideSector(g, line.right), left = sideSector(g, line.left);
+    if (right == null || left == null || right === left) return;
+    if (right === sector) out.add(left);
+    else if (left === sector) out.add(right);
+  });
+  return [...out];
+}
+// Floor heights after a floor trigger fires: Map<sector, floor>.
+function floorEffect(g, spec, tag) {
+  const floors = new Map();
+  const tagged = g.sectors.map((sector, index) => [index, sector]).filter(([, sector]) => Number(sector.tag) === tag);
+  for (const [index, sector] of tagged) {
+    const floor = Number(sector.floor);
+    const around = neighbourSectors(g, index).map(other => Number(g.sectors[other].floor));
+    if (spec.effect === 'raiseNext') {
+      const higher = around.filter(h => h > floor);
+      if (higher.length) floors.set(index, Math.min(...higher));
+    } else if (spec.effect === 'lowerLowest') {
+      floors.set(index, Math.min(floor, ...around));
+    } else if (spec.effect === 'lowerHighest') {
+      const highest = around.length ? Math.max(...around) : floor;
+      floors.set(index, highest !== floor && spec.above ? highest + spec.above : highest);
+    } else if (spec.effect === 'stairs') {
+      // EV_BuildStairs: the tagged sector rises one step, then the chain
+      // continues through the first two-sided line (linedef order) whose
+      // front is the current sector and whose back shares its floor
+      // texture; a sector already in the chain still adds a step.
+      const texture = sector.floorFlat;
+      let current = index;
+      let height = floor + spec.step;
+      floors.set(current, height);
+      let ok = true;
+      while (ok) {
+        ok = false;
+        for (let i = 0; i < g.linedefs.length; i++) {
+          const line = g.linedefs[i];
+          const right = sideSector(g, line.right), left = sideSector(g, line.left);
+          if (right == null || left == null || right !== current || left === current) continue;
+          const next = g.sectors[left];
+          if (next.floorFlat !== texture) continue;
+          height += spec.step;
+          if (floors.has(left)) continue;
+          floors.set(left, height);
+          current = left;
+          ok = true;
+          break;
+        }
+      }
+    }
+  }
+  return floors;
+}
+// Every tagged trigger on the map (doors and floor movers), grouped by tag.
 function collectTriggers(g) {
   const byTag = new Map();
   const list = [];
   g.linedefs.forEach((line, lineIndex) => {
-    const spec = REMOTE_DOOR_SPECIALS[Number(line.special)];
+    const special = Number(line.special);
+    const doorSpecEntry = REMOTE_DOOR_SPECIALS[special];
+    const floorSpecEntry = FLOOR_SPECIALS[special];
+    const spec = doorSpecEntry || floorSpecEntry;
     const tag = Number(line.tag || 0);
     if (!spec || !tag) return;
     const front = sideSector(g, line.right);
     const back = sideSector(g, line.left);
     if (front == null) return;
-    const trigger = { line: lineIndex, special: Number(line.special), tag, trigger: spec.trigger, stays: spec.stays, sector: front, back, midpoint: lineMidpoint(g, line) };
+    const trigger = {
+      line: lineIndex, special, tag, trigger: spec.trigger, stays: doorSpecEntry ? spec.stays : true,
+      effect: doorSpecEntry ? 'door' : spec.effect,
+      sector: front, back, midpoint: lineMidpoint(g, line)
+    };
+    if (floorSpecEntry) {
+      const floors = floorEffect(g, spec, tag);
+      if (!floors.size) return; // nothing moves (no higher neighbour, etc.)
+      trigger.floors = Object.fromEntries(floors);
+    }
     list.push(trigger);
     if (!byTag.has(tag)) byTag.set(tag, []);
     byTag.get(tag).push(trigger);
@@ -133,15 +219,20 @@ function remoteDoorTag(g, sectorIndex, triggersByTag) {
   const sector = g.sectors[sectorIndex];
   const tag = Number(sector.tag || 0);
   if (!tag || !triggersByTag.has(tag)) return null;
+  if (!triggersByTag.get(tag).some(trigger => trigger.effect === 'door')) return null;
   return Number(sector.ceiling) - Number(sector.floor) < PLAYER_HEIGHT ? tag : null;
 }
-function classifyPortal(g, lineIndex, fromSector, toSector, triggersByTag = new Map()) {
+// `floors` (Map<sector, floor>) overrides the static floor heights, for the
+// classification of an edge after a floor trigger fired.
+function classifyPortal(g, lineIndex, fromSector, toSector, triggersByTag = new Map(), floors = null) {
   const line = g.linedefs[lineIndex];
   const from = g.sectors[fromSector], to = g.sectors[toSector];
   const midpoint = lineMidpoint(g, line);
   const width = lineWidth(g, line);
-  const floorDelta = Number(to.floor) - Number(from.floor);
-  const opening = Math.min(Number(from.ceiling), Number(to.ceiling)) - Math.max(Number(from.floor), Number(to.floor));
+  const fromFloor = floors?.has(fromSector) ? floors.get(fromSector) : Number(from.floor);
+  const toFloor = floors?.has(toSector) ? floors.get(toSector) : Number(to.floor);
+  const floorDelta = toFloor - fromFloor;
+  const opening = Math.min(Number(from.ceiling), Number(to.ceiling)) - Math.max(fromFloor, toFloor);
   const blocking = Boolean(Number(line.flags) & ML_BLOCKING);
   const door = doorSpec(line);
   const lift = LIFT_SPECIALS.has(Number(line.special));
@@ -158,6 +249,12 @@ function classifyPortal(g, lineIndex, fromSector, toSector, triggersByTag = new 
 
   if (blocking) {
     reason = 'linedef_blocking_flag';
+  } else if ((remoteTag != null || door) && floorDelta > MAX_STEP_UP) {
+    // A door opens its ceiling, never its floor: a door sector whose floor
+    // sits more than a step above this side stays impassable from here
+    // (E1M3 sector 51 from the nukage pit 66: 64 units up). Lifts are
+    // exempt, their floor is what moves.
+    reason = `door_step_up_too_high:${floorDelta}`;
   } else if (remoteTag != null && width >= MIN_PORTAL_WIDTH) {
     // Closed now; a tagged trigger elsewhere opens it. Passable once the
     // progression has fired that trigger.
@@ -202,8 +299,8 @@ function classifyPortal(g, lineIndex, fromSector, toSector, triggersByTag = new 
     width,
     opening,
     floorDelta,
-    fromFloor: Number(from.floor),
-    toFloor: Number(to.floor)
+    fromFloor,
+    toFloor
   };
 }
 function keyMask(keys = []) {
@@ -252,6 +349,36 @@ export function buildNavigationGraph(workspace) {
     edges.push(classifyPortal(g, lineIndex, right, left, triggers.byTag));
     edges.push(classifyPortal(g, lineIndex, left, right, triggers.byTag));
   }
+  // Edges that a floor trigger makes passable (E1M3: the stairs to the exit
+  // corridor, a nukage floor raised to the door sill). One variant per tag,
+  // usable once the progression has fired that tag; the static edge stays
+  // as the record of why it is blocked now.
+  const movableSectors = new Set();
+  const baseById = new Map(edges.map(edge => [edge.id, edge]));
+  for (const trigger of triggers.list) {
+    if (!trigger.floors) continue;
+    const floors = new Map(Object.entries(trigger.floors).map(([sector, floor]) => [Number(sector), Number(floor)]));
+    for (const sector of floors.keys()) movableSectors.add(sector);
+    for (let lineIndex = 0; lineIndex < g.linedefs.length; lineIndex++) {
+      const line = g.linedefs[lineIndex];
+      const right = sideSector(g, line.right);
+      const left = sideSector(g, line.left);
+      if (right == null || left == null || right === left) continue;
+      if (!floors.has(right) && !floors.has(left)) continue;
+      for (const [from, to] of [[right, left], [left, right]]) {
+        const base = baseById.get(`${from}:${to}:${lineIndex}`);
+        if (!base || (base.passable && base.requiredTag == null)) continue;
+        const after = classifyPortal(g, lineIndex, from, to, triggers.byTag, floors);
+        if (!after.passable) continue;
+        const id = `${after.id}@${trigger.tag}`;
+        if (baseById.has(id)) continue;
+        const variant = { ...after, id, requiredTag: trigger.tag, afterTag: trigger.tag, reason: null };
+        baseById.set(id, variant);
+        edges.push(variant);
+      }
+    }
+  }
+  Object.defineProperty(g, '__movableSectors', { value: movableSectors, enumerable: false });
 
   const things = thingList(workspace).map(thing => ({
     ...thing,
@@ -296,7 +423,8 @@ export function buildNavigationGraph(workspace) {
       directedEdges: edges.length,
       passableEdges,
       blockedEdges: edges.length - passableEdges,
-      remoteDoorEdges: edges.filter(edge => edge.requiredTag != null).length,
+      remoteDoorEdges: edges.filter(edge => edge.requiredTag != null && edge.afterTag == null).length,
+      floorTriggerEdges: edges.filter(edge => edge.afterTag != null).length,
       triggers: triggers.list.length,
       starts: starts.length,
       keys: keys.length,
@@ -335,6 +463,9 @@ export function solidLines(g) {
       const a = g.sectors[right], b = g.sectors[left];
       const opening = Math.min(Number(a.ceiling), Number(b.ceiling)) - Math.max(Number(a.floor), Number(b.floor));
       // doors and lifts open; treat them as passable here
+      // Floor movers are NOT exempt: a sunken pit that a switch raises later
+      // (E1M3 sector 48) is a pit now. The edge being walked is excluded by
+      // planLocalPath's `ignoreLines` instead.
       const opens = DOOR_SPECIALS[Number(line.special)] || LIFT_SPECIALS.has(Number(line.special)) || REMOTE_DOOR_SPECIALS[Number(line.special)] || (a.tag && Number(a.ceiling) === Number(a.floor)) || (b.tag && Number(b.ceiling) === Number(b.floor));
       if (!opens && (opening < PLAYER_HEIGHT || Math.abs(Number(a.floor) - Number(b.floor)) > MAX_STEP_UP)) solid = true;
     }
@@ -375,10 +506,14 @@ export function lineOfWalk(g, from, to, lines = solidLines(g), clearance = PLAYE
   for (const thing of solidThings(g)) if (pointSegmentDistance(thing, from, to) < thing.radius + PLAYER_RADIUS + 1) return false;
   return true;
 }
-export function planLocalPath(graph, sector, from, to) {
+// `ignoreLines`: line indices that are not obstacles for this plan, normally
+// the portal line the follower is heading for (a line whose static heights
+// say "solid" but which a fired floor trigger has since made passable).
+export function planLocalPath(graph, sector, from, to, { ignoreLines = [] } = {}) {
   const g = graph.geometry;
   if (!g) return [];
-  const lines = solidLines(g);
+  const ignored = new Set(ignoreLines.map(Number));
+  const lines = ignored.size ? solidLines(g).filter(line => !ignored.has(line.index)) : solidLines(g);
   if (lineOfWalk(g, from, to, lines)) return [];
   // Candidate corners: vertices of this sector's solid lines, pushed inward.
   const candidates = [];
@@ -456,7 +591,9 @@ function triggerEdge(graph, trigger) {
     requiredKey: null,
     requiredTag: null,
     midpoint: trigger.midpoint,
-    doorSectors: graph.nodes.filter(node => node.tag === trigger.tag).map(node => node.sector)
+    effect: trigger.effect || 'door',
+    doorSectors: trigger.effect && trigger.effect !== 'door' ? [] : graph.nodes.filter(node => node.tag === trigger.tag).map(node => node.sector),
+    ...(trigger.floors ? { floors: trigger.floors } : {})
   };
 }
 function edgeCost(graph, edge) {

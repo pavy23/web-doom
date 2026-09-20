@@ -27,6 +27,17 @@ function angleDelta(current, desired) {
   return delta;
 }
 function distance(a, b) { return Math.hypot(Number(b.x) - Number(a.x), Number(b.y) - Number(a.y)); }
+// Distance still to walk along the local path: to the current waypoint, then
+// waypoint to waypoint, then to the final target. This is the progress
+// measure for the no-progress budget: a detour around a pit (E1M3 sector 67
+// sends the follower 700 units south before it can go north) moves the
+// player away from the portal for a long time while making steady progress.
+export function remainingPathDistance(position, waypoints, finalTarget) {
+  const points = [...(waypoints || []), finalTarget];
+  let total = distance(position, points[0]);
+  for (let i = 1; i < points.length; i++) total += distance(points[i - 1], points[i]);
+  return total;
+}
 function crossingPoint(edge, targetCenter) {
   const dx = Number(targetCenter.x) - Number(edge.midpoint.x);
   const dy = Number(targetCenter.y) - Number(edge.midpoint.y);
@@ -330,7 +341,7 @@ export async function navigateEdge(page, graph, edge, options = {}) {
     // Local routing: go around walls inside a non-convex sector. Planned on
     // the first step and again whenever the follower stalls.
     if (waypoints == null || stalled >= 7) {
-      waypoints = planLocalPath(graph, Number(state.currentSector), position, edge.midpoint);
+      waypoints = planLocalPath(graph, Number(state.currentSector), position, edge.midpoint, { ignoreLines: edge.line != null ? [edge.line] : [] });
     }
     while (waypoints.length && distance(position, waypoints[0]) < 24) waypoints.shift();
     const target = waypoints.length ? waypoints[0] : (portalDistance < 44 ? cross : edge.midpoint);
@@ -419,7 +430,8 @@ export async function navigateEdge(page, graph, edge, options = {}) {
     if (isCombatCommand(command)) combatTics += result.tics; else routeTics += result.tics;
     // Only route steps count against the no-progress budget; a standing
     // fight is budgeted by combatTics.
-    if (portalDistance < bestPortalDistance - 4) { bestPortalDistance = portalDistance; ticsSinceProgress = 0; }
+    const remaining = remainingPathDistance(position, waypoints, edge.midpoint);
+    if (remaining < bestPortalDistance - 4) { bestPortalDistance = remaining; ticsSinceProgress = 0; }
     else if (!isCombatCommand(command)) ticsSinceProgress += result.tics;
     if (typeof options.onStep === 'function') {
       await options.onStep({ edge, state, command, result, usedTics, routeTics, combatTics, ticsSinceProgress, portalDistance, targetDistance, delta, doorOpening });

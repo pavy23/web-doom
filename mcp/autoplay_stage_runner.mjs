@@ -38,7 +38,7 @@ import { installThingAuthoring } from './thing_authoring.js';
 import { installSemanticGeometry } from './semantic_geometry.js';
 import { buildNavigationGraph, findExitProgression, locatePointSector, planLocalPath } from './navigation_graph.js';
 import {
-  coldBoot, exactInput, isCombatCommand, launchChromium, liveSectorOpening, navigateEdge, setTicHook
+  coldBoot, exactInput, isCombatCommand, launchChromium, liveSectorFloor, liveSectorOpening, navigateEdge, remainingPathDistance, setTicHook
 } from './navigation_browser_agent.mjs';
 import { OBJECTIVE_ORDER, OBJECTIVE_VERSION, compareToBaseline, rankRuns, runMetrics } from './autoplay_objective.mjs';
 import { installOverlay, updateOverlay } from './autoplay_overlay.mjs';
@@ -119,7 +119,10 @@ export async function prepareStagePwad({ iwadPath = DEFAULT_IWAD, map = 'E1M1', 
   const graph = buildNavigationGraph(workspace);
   const start = graph.things.starts.find(item => item.doomEdNum === 1 && item.sector != null);
   if (!start) throw new Error(`${map} has no Player 1 start mapped to a sector`);
-  const progression = findExitProgression(graph, start.sector);
+  // The normal exit is the stage clear; a secret exit (E1M3 -> E1M9) only
+  // when no route to the normal one is known.
+  let progression = findExitProgression(graph, start.sector, { includeSecret: false });
+  if (!progression.found) progression = findExitProgression(graph, start.sector);
   if (!progression.found) throw new Error(`${map}: ${progression.reason}`);
 
   const filename = `autoplay-${map.toLowerCase()}.wad`;
@@ -181,7 +184,7 @@ export async function approachAndUseExit(page, exit, options = {}) {
     const position = { x: Number(state.player.x), y: Number(state.player.y) };
     // Local routing around walls, as in navigateEdge, when a graph is given.
     if (options.graph && (waypoints == null || stalled >= 7)) {
-      waypoints = planLocalPath(options.graph, Number(state.currentSector), position, exit.midpoint);
+      waypoints = planLocalPath(options.graph, Number(state.currentSector), position, exit.midpoint, { ignoreLines: exit.line != null ? [exit.line] : [] });
     }
     while (waypoints && waypoints.length && distance(position, waypoints[0]) < 24) waypoints.shift();
     const target = waypoints && waypoints.length ? waypoints[0] : finalTarget;
@@ -228,7 +231,8 @@ export async function approachAndUseExit(page, exit, options = {}) {
     }
     usedTics += result.tics;
     if (isCombatCommand(command)) combatTics += result.tics; else routeTics += result.tics;
-    if (targetDistance < bestDistance - 4) { bestDistance = targetDistance; ticsSinceProgress = 0; }
+    const remaining = remainingPathDistance(position, waypoints, finalTarget);
+    if (remaining < bestDistance - 4) { bestDistance = remaining; ticsSinceProgress = 0; }
     else if (!isCombatCommand(command)) ticsSinceProgress += result.tics;
     if (typeof options.onStep === 'function') {
       await options.onStep({ edge: null, exit, state, command, result, usedTics, routeTics, combatTics, ticsSinceProgress, targetDistance, delta });
@@ -259,7 +263,31 @@ export async function approachAndUseExit(page, exit, options = {}) {
 // door needs ~64 tics after the switch; idle exact-tic steps cover that.
 export async function activateTrigger(page, edge, options = {}) {
   const doorSector = edge.doorSectors?.[0];
+  // Floor movers: wait until every affected sector's floor reached the
+  // height the graph predicted (stairs at 0.25 units/tic can take ~9 s for
+  // the top step, hence the long idle budget). The gate is the first
+  // sector that moved at all, so an unfired trigger keeps the approach going.
+  const floors = edge.floors ? Object.entries(edge.floors).map(([sector, floor]) => [Number(sector), Number(floor)]) : [];
+  const startFloors = new Map();
+  if (floors.length) for (const [sector] of floors) startFloors.set(sector, await liveSectorFloor(page, sector));
+  const floorsDone = async () => {
+    for (const [sector, target] of floors) {
+      const floor = await liveSectorFloor(page, sector);
+      if (floor == null || Math.abs(floor - target) > 2) return false;
+    }
+    return true;
+  };
   const success = async () => {
+    if (floors.length) {
+      let moved = false;
+      for (const [sector] of floors) {
+        const floor = await liveSectorFloor(page, sector);
+        if (floor != null && startFloors.get(sector) != null && Math.abs(floor - startFloors.get(sector)) >= 1) { moved = true; break; }
+      }
+      if (!moved) return false;
+      for (let i = 0; i < 120 && !(await floorsDone()); i++) await exactInput(page, { tics: 4 });
+      return floorsDone();
+    }
     if (doorSector == null) return true;
     let opening = await liveSectorOpening(page, doorSector);
     if (opening == null || opening < 8) return false; // not started opening yet
