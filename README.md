@@ -1,5 +1,7 @@
 # Web DOOM — Direct LinuxDOOM + AI Authoring MCP P2.2
 
+**English** · [한국어](README.ko.md)
+
 A direct browser port of **id Software LinuxDOOM 1.10** to WebAssembly, extended into an AI-native DOOM authoring sandbox with deterministic validation, autonomous QA, conservative self-repair, source-free level generation, game-design evaluation, deathmatch generation, and configurable local AI-player bots.
 
 The `/direct/` runtime uses original LinuxDOOM gameplay/rendering/WAD code with repository-owned browser platform adapters. Chocolate Doom is used only for the pinned Vanilla/DMX-compatible OPL music subsystem, not as the game runtime.
