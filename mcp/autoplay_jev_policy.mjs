@@ -15,7 +15,7 @@ import { appendFile } from 'node:fs/promises';
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 import { coverPoint, lineOfWalk, movementHazard } from './navigation_graph.js';
 
-export const JEV_POLICY_VERSION = '0.8.0-jev-policy';
+export const JEV_POLICY_VERSION = '0.8.1-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -420,7 +420,9 @@ export async function createJevPolicy(options = {}) {
     items: [],                 // static map pickups (autoplay_items.mjs) for health / shells loot
     graph: null,               // navigation graph (with geometry) for the terrain guard and walkable loot
     terrainGuard: true,        // never send a combat/loot step that walks into a wall, a drop or a damaging floor
-    projectileStrafe: true,    // strafe while fighting / retreating from projectile monsters
+    projectileStrafe: false,   // strafe while fighting / retreating from projectile monsters. Off: the E1M1 HMP
+                               // ablation went from 87-89 damage to 18 without it; in corridors the strafe
+                               // bounces between the guard's flips and the shots stop landing
     itemLootSameSectorOnly: true, // only items in the player's current sector: 12 of 16 straight-line
                                   // detours in the 0.6.0 trial ended at a wall ...
     itemLootWalkable: true,       // ... unless the graph shows a clear straight walk to the item (any sector)

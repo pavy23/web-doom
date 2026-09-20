@@ -173,6 +173,7 @@ export async function approachAndUseExit(page, exit, options = {}) {
   let stalled = 0;
   let recoverySide = 1;
   let recoveries = 0;
+  let lastUse = false;
 
   while (ticsSinceProgress < maxTics && combatTics < maxCombatTics) {
     const state = await engineState(page);
@@ -227,6 +228,9 @@ export async function approachAndUseExit(page, exit, options = {}) {
       if (override) command = override;
     }
 
+    // USE is edge-triggered in the engine: pulse it (see navigateEdge).
+    if (command.use && lastUse) command = { ...command, use: false };
+    lastUse = Boolean(command.use);
     let result;
     try {
       result = await exactInput(page, command);
