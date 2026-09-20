@@ -334,7 +334,7 @@ export function buildNavigationGraph(workspace) {
   // diagnoses again on the same geometry object): drop the per-geometry
   // caches so local routing sees the current walls, and so the movable
   // sector set below can be defined again.
-  for (const key of ['__solidLines', '__solidThings', '__movableSectors']) if (Object.prototype.hasOwnProperty.call(g, key)) delete g[key];
+  for (const key of ['__solidLines', '__solidThings', '__movableSectors', '__sightLines']) if (Object.prototype.hasOwnProperty.call(g, key)) delete g[key];
   const nodes = g.sectors.map((sector, index) => ({
     sector: index,
     center: sectorCenter(g, index),
@@ -561,13 +561,11 @@ export function lineOfWalk(g, from, to, lines = solidLines(g), clearance = PLAYE
 // `ignoreLines`: line indices that are not obstacles for this plan, normally
 // the portal line the follower is heading for (a line whose static heights
 // say "solid" but which a fired floor trigger has since made passable).
-export function planLocalPath(graph, sector, from, to, { ignoreLines = [] } = {}) {
-  const g = graph.geometry;
-  if (!g) return [];
-  const ignored = new Set(ignoreLines.map(Number));
-  const lines = ignored.size ? solidLines(g).filter(line => !ignored.has(line.index)) : solidLines(g);
-  if (lineOfWalk(g, from, to, lines)) return [];
-  // Candidate corners: vertices of this sector's solid lines, pushed inward.
+// Candidate standing points of a sector: the vertices of its solid lines
+// pushed inward by LOCAL_CLEARANCE in eight directions, kept when inside the
+// sector and clear of walls and solid things. Waypoints for planLocalPath,
+// cover spots for the policy.
+export function localCandidates(g, sector, lines = solidLines(g)) {
   const candidates = [];
   const seen = new Set();
   for (const line of lines) {
@@ -586,6 +584,73 @@ export function planLocalPath(graph, sector, from, to, { ignoreLines = [] } = {}
       }
     }
   }
+  return candidates;
+}
+// Lines that block sight for good: one-sided walls. (Two-sided lines with a
+// closed door between them open later, so they are not counted; a cover spot
+// is behind a real wall.)
+export function sightBlockingLines(g) {
+  if (g.__sightLines) return g.__sightLines;
+  const out = [];
+  g.linedefs.forEach((line, index) => {
+    const right = sideSector(g, line.right), left = sideSector(g, line.left);
+    if (right == null || left == null) out.push({ index, a: g.vertices[line.v1], b: g.vertices[line.v2] });
+  });
+  Object.defineProperty(g, '__sightLines', { value: out, enumerable: false, configurable: true });
+  return out;
+}
+export function hasLineOfSight2D(g, from, to) {
+  for (const line of sightBlockingLines(g)) if (segmentsCross(from, to, line.a, line.b)) return false;
+  return true;
+}
+// The nearest standing point in `sector`, walkable from `from`, from which
+// none of `threats` (world positions) has a line of sight, within
+// `maxDistance`; null when there is none. Hitscan enemies hit at any range,
+// so the only defence against two of them in an open room is a wall.
+export function coverPoint(g, sector, from, threats, { maxDistance = 256 } = {}) {
+  const lines = solidLines(g);
+  const candidates = localCandidates(g, sector, lines);
+  // Walking distance, not straight-line: the spot behind the pillar is
+  // reached around the pillar. One Dijkstra from `from` over the sector's
+  // candidate points gives every candidate's path at once.
+  const nodes = [from, ...candidates];
+  const n = nodes.length;
+  const best = new Array(n).fill(Infinity);
+  const prev = new Array(n).fill(-1);
+  const done = new Array(n).fill(false);
+  best[0] = 0;
+  for (let iter = 0; iter < n; iter++) {
+    let u = -1;
+    for (let i = 0; i < n; i++) if (!done[i] && (u < 0 || best[i] < best[u])) u = i;
+    if (u < 0 || best[u] === Infinity || best[u] > maxDistance) break;
+    done[u] = true;
+    for (let v = 1; v < n; v++) {
+      if (done[v]) continue;
+      const cost = best[u] + dist(nodes[u], nodes[v]);
+      if (cost >= best[v] || cost > maxDistance) continue;
+      if (!lineOfWalk(g, nodes[u], nodes[v], lines)) continue;
+      best[v] = cost; prev[v] = u;
+    }
+  }
+  let pick = -1;
+  for (let i = 1; i < n; i++) {
+    if (best[i] === Infinity || best[i] > maxDistance || (pick >= 0 && best[i] >= best[pick])) continue;
+    if (threats.some(t => hasLineOfSight2D(g, nodes[i], t))) continue;
+    pick = i;
+  }
+  if (pick < 0) return null;
+  const path = [];
+  for (let cursor = pick; cursor > 0; cursor = prev[cursor]) path.push(nodes[cursor]);
+  path.reverse();
+  return { x: nodes[pick].x, y: nodes[pick].y, distance: best[pick], waypoints: path };
+}
+export function planLocalPath(graph, sector, from, to, { ignoreLines = [] } = {}) {
+  const g = graph.geometry;
+  if (!g) return [];
+  const ignored = new Set(ignoreLines.map(Number));
+  const lines = ignored.size ? solidLines(g).filter(line => !ignored.has(line.index)) : solidLines(g);
+  if (lineOfWalk(g, from, to, lines)) return [];
+  const candidates = localCandidates(g, sector, lines);
   // Dijkstra over the visibility graph {from, candidates, to}.
   const nodes = [from, ...candidates, to];
   const n = nodes.length;
