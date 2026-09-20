@@ -291,10 +291,19 @@ Two layers:
    objective is lexicographic: deaths, then damage taken, then world tics.
 
 Two clips, recorded with `--record` (one frame per world tic, so they run at
-game time): [E1M1 at Hurt Me Plenty](docs/autoplay/e1m1-hmp-jev.webm)
-(36 s, 0 deaths, 26 damage) and [E1M2 at Hurt Me Plenty](docs/autoplay/e1m2-hmp-jev.webm)
-(2 min, 0 deaths, 69 damage, baseline follower 183). The panel in the top
-right is the policy's judgment at each consultation.
+game time). The previews below are 8-second excerpts; the full clips play on
+the project page: **[Web DOOM autoplay clips](https://pavy23.github.io/web-doom/docs/autoplay/)**
+(E1M1: 36 s, 0 deaths, 26 damage; E1M2: 2 min, 0 deaths, 69 damage, the
+follower alone takes 183). The panel in the top right is the policy's
+judgment at each consultation.
+
+| E1M1 at Hurt Me Plenty | E1M2 at Hurt Me Plenty |
+|---|---|
+| [![E1M1 autoplay preview](docs/autoplay/e1m1-hmp-jev.gif)](https://pavy23.github.io/web-doom/docs/autoplay/) | [![E1M2 autoplay preview](docs/autoplay/e1m2-hmp-jev.gif)](https://pavy23.github.io/web-doom/docs/autoplay/) |
+
+The WebM files themselves are `docs/autoplay/e1m1-hmp-jev.webm` and
+`docs/autoplay/e1m2-hmp-jev.webm` (GitHub's file view does not play WebM;
+download them or use the page above).
 
 ### Running it
 
