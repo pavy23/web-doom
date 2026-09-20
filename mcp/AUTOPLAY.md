@@ -784,7 +784,27 @@ changes (no policy version). Two more runner-only trials followed:
 | crossing point from the portal normal | 1/10 | 74-175 | 1 cleared (6763 tics, 175 damage, 46 kills); 2 stalled on 24:50 (pillar in front, barrel behind: no walkable line from a spot inside an obstacle's clearance); 5 dead in the key area; 1 combat budget; 1 stall on 67:69 |
 | lineOfWalk from a touching spot, backstep recovery | 0/10 | 110-121 | 6 tic-identical runs dead at 24:25 (two shotgun guys at 134/141 units, 60 damage in one step at 60 hp), 2 at the key room, 2 on the walkway |
 
-So E1M3 at HMP stands at 0-1 clears in ten across the last three trials.
+### Policy 0.8.x: geometric cover, an ablation, and two latent bugs
+
+| Version | E1M3 HMP | E1M1 HMP | What changed |
+|---|---|---|---|
+| 0.8.0 | 0/6 (stopped; six tic-identical deaths at tic 1357) | 2/2, damage 87-89 | **cover**: with two hitscan shooters (one under 50 hp), walk to the nearest corner of the current sector that no shooter can see (2D line of sight through one-sided walls, walking distance by one Dijkstra over the corner candidates), hold it 70 tics, fight from it without strafe or backpedal |
+| ablation (E1M1, 2 runs each) | | no strafe 18/18; no engagement hold 12/12; old loot 54-69 | `--jev-opt key=value`. **projectileStrafe was the E1M1 damage regression** (87-89 with, 18 without): in the 64-wide exit corridor the strafe bounces between the terrain guard's side flips and the shots stop landing. Five of six ablation runs also stalled at the corridor door 80:81 with USE held for 280 tics: the engine's USE is edge-triggered (usedown latch), so a first press out of reach was never repeated. The follower now pulses USE |
+| 0.8.1 | 0/7 (stopped; the early-area fireballs were back) | **10/10**, damage 18-39 | strafe off, USE pulse |
+| 0.8.2 | **0/10**, damage 110-206; 4 tic-identical deaths at tic 1342 (97:103), 3 at 109:176, 1 each at 47:50, 24:25, 56:74 | 3/3, damage 18-39 | strafe only with 64 units of free floor on both sides; cover fired 55 times (42 arrived, 406 held-fight steps) |
+
+So E1M3 at HMP stands at 0-1 clears in ten across six trials. Cover
+works mechanically (the pillar room's hiding spot is found in ~35 ms and
+reached) and does not change the outcome: the runs that reach the key
+area die there anyway, and four of ten now die at the first door with the
+same 110 damage. The structural limit is **weapon selection**: the agent
+input has forward/strafe/turn/attack/use and no weapon change, the engine
+auto-switches to the shotgun on pickup and back to the pistol when the
+shells run out, and picking shells up later does not switch back. Every
+E1M3 fight past the first area is a pistol fight against shotgun guys.
+Adding a weapon-change field to `doom_agent_input.c` is a C change and a
+WASM rebuild (the CI workflow does that; this environment cannot), and is
+the next step if E1M3 is to be pursued.
 The stalls and the terrain deaths are gone; what remains is the fight
 itself: the route from the walkway to the blue key room (sectors 24-27)
 meets two to three shotgun guys and three imps in open rooms, and the

@@ -13,9 +13,9 @@
 import { appendFile } from 'node:fs/promises';
 
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
-import { lineOfWalk, movementHazard } from './navigation_graph.js';
+import { coverPoint, lineOfWalk, movementHazard } from './navigation_graph.js';
 
-export const JEV_POLICY_VERSION = '0.7.3-jev-policy';
+export const JEV_POLICY_VERSION = '0.8.2-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -323,7 +323,10 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
   // Every E1M3 run took the same two fireballs at tics 699 and 731, once
   // backing straight away and once standing still; a fireball at 220 units
   // is 20 tics away and a sidestep of 60 units clears it.
-  const strafeVs = options.projectileStrafe !== false && isProjectile(target.name) && !pointBlank
+  // coverFight: holding a cover spot, every mode fights from where the
+  // player stands (no strafe, no backpedal, no dodge out of the corner).
+  if (options.holdPosition && mode !== 'advance') { mode = 'fight'; meta.mode = 'fight'; rules.push('coverFight'); meta.rules = rules; }
+  const strafeVs = options.projectileStrafe !== false && options.strafeRoomClear !== false && !options.holdPosition && isProjectile(target.name) && !pointBlank
     ? 0.5 * Number(options.dodgeSide ?? 1) : 0;
   if (strafeVs) { rules.push('projectileStrafe'); meta.rules = rules; }
   if (mode === 'fight') {
@@ -371,7 +374,7 @@ export function shouldConsult(state, options = {}, memory = {}) {
   // side) is a reason as good as one in view: E1M3 runs stood at a door for
   // 130 tics while a zombieman behind them shot 33 hp off, the policy turning
   // toward it on the hurt steps and the follower turning back on the others.
-  const canHit = (state?.enemies || []).some(enemy => enemy.lineOfSight && Number(enemy.health) > 0 && Number(enemy.distance) <= effectiveRange(enemy.name));
+  const canHit = options.consultOnCanHit !== false && (state?.enemies || []).some(enemy => enemy.lineOfSight && Number(enemy.health) > 0 && Number(enemy.distance) <= effectiveRange(enemy.name));
   // ... and once engaged, stay engaged for a while (engageHoldTics), so the
   // follower and the policy stop alternating on the heading.
   const engaged = memory.engagedUntilTic != null && Number(state?.levelTime ?? 0) < Number(memory.engagedUntilTic);
@@ -400,12 +403,28 @@ export async function createJevPolicy(options = {}) {
                                // while backing up in the open. Needs map LOS geometry to be real.
     coverMaxDistance: 300,     // only when the entry point is this close
     coverArrive: 40,           // ... and stop backing up inside this distance of it
+    // Geometric cover (policy 0.8.0): with two or more hitscan enemies able to
+    // hit the player (one below coverLowHealth), walk to the nearest corner of
+    // the current sector that no hitscan shooter can see, then hold there and
+    // fight what comes around the wall. Every E1M3 key-room death was a
+    // pistol duel with two or three shotgun guys in the open.
+    coverSeek: true,
+    coverShooters: 2,
+    coverLowHealth: 50,
+    coverSeekMaxDistance: 256,
+    coverHoldTics: 70,         // fight from the spot this long before re-evaluating
+    coverTimeoutTics: 105,     // give up walking to it after this
+    coverMaxPerEdge: 2,        // never more than this many cover moves on one route edge
     lootShotgun: true,         // after killing a shotgun guy with the pistol, walk over its dropped shotgun
     lootTimeoutTics: 140,      // give a detour at most 4 s
     items: [],                 // static map pickups (autoplay_items.mjs) for health / shells loot
     graph: null,               // navigation graph (with geometry) for the terrain guard and walkable loot
     terrainGuard: true,        // never send a combat/loot step that walks into a wall, a drop or a damaging floor
-    projectileStrafe: true,    // strafe while fighting / retreating from projectile monsters
+    projectileStrafe: true,    // strafe while fighting / retreating from projectile monsters ...
+    strafeRoom: 64,            // ... only where both sides have this much free floor. The E1M1 HMP ablation
+                               // went from 87-89 damage to 18 without the strafe (in the 64-wide exit corridor
+                               // it bounced between the guard's flips and the shots stopped landing), while
+                               // E1M3 without it took the same two fireballs in every run again
     itemLootSameSectorOnly: true, // only items in the player's current sector: 12 of 16 straight-line
                                   // detours in the 0.6.0 trial ended at a wall ...
     itemLootWalkable: true,       // ... unless the graph shows a clear straight walk to the item (any sector)
@@ -441,7 +460,7 @@ export async function createJevPolicy(options = {}) {
   const stats = {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, rulesOnly: config.rulesOnly, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
-    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
+    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, coverStarts: 0, coverArrived: 0, coverMove: 0, coverFight: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
     loot: { shotgun: 0, health: 0, shells: 0, armor: 0 },
     pipeline: { lagTics: options.pipelineLagTics || 0, inflightLaunched: 0, applied: 0, reused: 0, stalls: 0, stallMsTotal: 0, lagTicsTotal: 0 }
   };
@@ -708,7 +727,84 @@ export async function createJevPolicy(options = {}) {
 
   function ruleOptions(compact, state, context) {
     const stalled = detectStall(state, compact);
-    return { ...config, dodgeSide, lastTarget, cover: context ? coverInfo(context) : null, ...(stalled ? { forceMode: 'fight' } : {}) };
+    const holding = Boolean(coverSpot?.arrived) && Number(state?.levelTime ?? 0) < Number(coverSpot?.holdUntil ?? 0);
+    return { ...config, dodgeSide, lastTarget, cover: context ? coverInfo(context) : null, holdPosition: holding, strafeRoomClear: strafeRoomClear(state), ...(stalled ? { forceMode: 'fight' } : {}) };
+  }
+  // Is there room to strafe? Both sides of the player must have
+  // config.strafeRoom units of floor with no wall, drop or nukage shore.
+  function strafeRoomClear(state) {
+    if (!geometry || !config.strafeRoom) return true;
+    const player = state?.player || {};
+    const angle = Number(player.angle) * Math.PI / 180;
+    const rx = Math.cos(angle - Math.PI / 2), ry = Math.sin(angle - Math.PI / 2);
+    const from = { x: Number(player.x), y: Number(player.y) };
+    for (const side of [1, -1]) {
+      const to = { x: from.x + side * rx * config.strafeRoom, y: from.y + side * ry * config.strafeRoom };
+      if (movementHazard(geometry, from, to, { ignoreLines: guardIgnoreLines })) return false;
+    }
+    return true;
+  }
+
+  // Geometric cover: see config.coverSeek. `coverSpot` is the spot being
+  // walked to or held; coverEdge/coverCount bound the moves per route edge.
+  let coverSpot = null;
+  let coverEdge = null;
+  let coverCount = 0;
+  function hitscanShooters(state) {
+    const player = state?.player || {};
+    return (state?.enemies || [])
+      .filter(enemy => isHitscan(enemy.name) && enemy.lineOfSight && Number(enemy.health) > 0 && Number(enemy.distance) <= effectiveRange(enemy.name))
+      .map(enemy => enemyWorldPosition(player, { bearing: enemy.relativeAngle, distance: enemy.distance }));
+  }
+  async function coverCheck(state, context) {
+    if (!config.coverSeek || !geometry || loot) return null;
+    const tic = Number(state.levelTime);
+    const player = state.player || {};
+    const edgeId = context?.edge?.id || 'exit';
+    if (coverEdge !== edgeId) { coverEdge = edgeId; coverCount = 0; }
+    if (coverSpot) {
+      const here = { x: Number(player.x), y: Number(player.y) };
+      const d = Math.hypot(coverSpot.x - here.x, coverSpot.y - here.y);
+      if (!coverSpot.arrived) {
+        if (d < 24) {
+          coverSpot.arrived = true; coverSpot.holdUntil = tic + config.coverHoldTics; stats.rules.coverArrived++;
+          await record({ kind: 'cover_arrived', tic, x: round(coverSpot.x), y: round(coverSpot.y), tics: tic - coverSpot.sinceTic });
+          return null;
+        }
+        if (tic - coverSpot.sinceTic > config.coverTimeoutTics || hitscanShooters(state).length === 0) {
+          await record({ kind: 'cover_end', tic, reason: hitscanShooters(state).length === 0 ? 'clear' : 'timeout', distance: round(d) });
+          coverSpot = null;
+          return null;
+        }
+        // Walk the spot's local path (the terrain guard previews this step too).
+        while (coverSpot.waypoints.length > 1 && Math.hypot(coverSpot.waypoints[0].x - here.x, coverSpot.waypoints[0].y - here.y) < 24) coverSpot.waypoints.shift();
+        const next = coverSpot.waypoints[0] || coverSpot;
+        let desired = Math.atan2(next.y - here.y, next.x - here.x) * 180 / Math.PI - Number(player.angle);
+        while (desired > 180) desired -= 360;
+        while (desired < -180) desired += 360;
+        stats.rules.coverMove++;
+        const meta = { source: 'jev', mode: 'cover', target: 'none', fire: false, danger: 0, rules: ['coverMove'] };
+        if (Math.abs(desired) > 12) { const aim = aimStep(desired); return { forward: 0, strafe: 0, turn: aim.turn, attack: false, use: false, tics: aim.tics, ...meta }; }
+        return { forward: 0.62, strafe: 0, turn: aimStep(desired).turn, attack: false, use: false, tics: 3, ...meta };
+      }
+      if (tic >= coverSpot.holdUntil) {
+        await record({ kind: 'cover_end', tic, reason: 'hold_over' });
+        coverSpot = null;
+      }
+      return null;
+    }
+    if (coverCount >= config.coverMaxPerEdge) return null;
+    const threats = hitscanShooters(state);
+    const health = Number(player.health);
+    if (threats.length < config.coverShooters && !(threats.length >= 1 && health < config.coverLowHealth)) return null;
+    const here = { x: Number(player.x), y: Number(player.y) };
+    const spot = coverPoint(geometry, Number(state.currentSector), here, threats, { maxDistance: config.coverSeekMaxDistance });
+    if (!spot) return null;
+    coverSpot = { x: spot.x, y: spot.y, waypoints: [...spot.waypoints], sinceTic: tic, arrived: false, holdUntil: 0 };
+    coverCount++;
+    stats.rules.coverStarts++;
+    await record({ kind: 'cover_start', tic, x: round(spot.x), y: round(spot.y), distance: round(spot.distance), shooters: threats.length, health, from: { x: round(here.x), y: round(here.y) } });
+    return coverCheck(state, context);
   }
   function rememberTarget(command, compact, state) {
     if (!command || !['fight', 'retreat', 'advance', 'cover'].includes(command.mode) || !command.attack) {
@@ -754,6 +850,8 @@ export async function createJevPolicy(options = {}) {
       const lootCommand = await lootStep(state);
       if (lootCommand) { stats.overrides++; return lootCommand; }
     }
+    const coverCommand = await coverCheck(state, context);
+    if (coverCommand) { stats.overrides++; return coverCommand; }
     if (!consult) return null;
     stats.eligibleSteps++;
     if (stepsSinceCall < config.minStepsBetweenCalls) {

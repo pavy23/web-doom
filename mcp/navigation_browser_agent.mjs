@@ -333,6 +333,7 @@ export async function navigateEdge(page, graph, edge, options = {}) {
   let stalled = 0;
   let recoverySide = 1;
   let recoveries = 0;
+  let lastUse = false;
   // Door awareness: a door edge tracks its own target sector; an edge that
   // ends in a thin door frame tracks the door behind it (options.doorSector).
   const doorSector = options.doorSector != null ? Number(options.doorSector)
@@ -482,6 +483,11 @@ export async function navigateEdge(page, graph, edge, options = {}) {
       }
     }
 
+    // USE is edge-triggered in the engine (P_PlayerThink's usedown latch):
+    // held across steps it registers once, so a first press out of reach
+    // would never be repeated. Never send it on two consecutive steps.
+    if (command.use && lastUse) command = { ...command, use: false };
+    lastUse = Boolean(command.use);
     const result = await exactInput(page, command);
     usedTics += result.tics;
     if (isCombatCommand(command)) combatTics += result.tics; else routeTics += result.tics;

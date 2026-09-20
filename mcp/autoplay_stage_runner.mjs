@@ -173,6 +173,7 @@ export async function approachAndUseExit(page, exit, options = {}) {
   let stalled = 0;
   let recoverySide = 1;
   let recoveries = 0;
+  let lastUse = false;
 
   while (ticsSinceProgress < maxTics && combatTics < maxCombatTics) {
     const state = await engineState(page);
@@ -227,6 +228,9 @@ export async function approachAndUseExit(page, exit, options = {}) {
       if (override) command = override;
     }
 
+    // USE is edge-triggered in the engine: pulse it (see navigateEdge).
+    if (command.use && lastUse) command = { ...command, use: false };
+    lastUse = Boolean(command.use);
     let result;
     try {
       result = await exactInput(page, command);
@@ -734,6 +738,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       'jev-model': { type: 'string' },
       'jev-pipeline': { type: 'string' },      // lag in tics; answers apply this long after their state
       'jev-min-steps': { type: 'string', default: '1' },
+      'jev-opt': { type: 'string', multiple: true, default: [] },   // key=value policy config overrides (ablations), e.g. --jev-opt projectileStrafe=false
       baseline: { type: 'string' },
       skill: { type: 'string' },
       headed: { type: 'boolean', default: false },
@@ -769,7 +774,12 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       jev: {
         dryRun: Boolean(values['jev-dry-run']), maxCalls: Number(values['jev-max-calls']), model: values['jev-model'],
         pipelineLagTics: values['jev-pipeline'] ? Number(values['jev-pipeline']) : 0,
-        minStepsBetweenCalls: Number(values['jev-min-steps'])
+        minStepsBetweenCalls: Number(values['jev-min-steps']),
+        ...Object.fromEntries((values['jev-opt'] || []).map(pair => {
+          const [key, raw = ''] = String(pair).split('=');
+          const value = raw === 'true' ? true : raw === 'false' ? false : raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : raw;
+          return [key, value];
+        }))
       },
       ...(values['report-dir'] ? { reportDir: path.resolve(values['report-dir']) } : {})
     });
