@@ -70,7 +70,9 @@ export async function findFfmpeg() {
 // One recorder per run. frame() takes the JPEG bytes of one captured frame and
 // how many tics it stays on screen; the frame is written that many times so
 // the output stays at a constant TIC_RATE frames per second.
-export async function createRecorder({ outputPath, ffmpegPath, fps = TIC_RATE, bitrate = '1500k' }) {
+// Defaults keep a two-minute clip near 15 MB (the game canvas is 320x200
+// scaled 4x, so there is little detail for the encoder to spend bits on).
+export async function createRecorder({ outputPath, ffmpegPath, fps = TIC_RATE, bitrate = '1000k', crf = 20 }) {
   const binary = ffmpegPath || await findFfmpeg();
   if (!binary) throw new Error('ffmpeg not found (set DOOM_MCP_FFMPEG, install ffmpeg, or run `npx playwright install ffmpeg`)');
   const args = [
@@ -80,7 +82,7 @@ export async function createRecorder({ outputPath, ffmpegPath, fps = TIC_RATE, b
     // VP8 needs even dimensions; the scale filter is one of the few the
     // Playwright build carries.
     '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-    '-c:v', 'libvpx', '-b:v', bitrate, '-qmin', '4', '-qmax', '40', '-crf', '10',
+    '-c:v', 'libvpx', '-b:v', bitrate, '-qmin', '4', '-qmax', '45', '-crf', String(crf),
     '-deadline', 'realtime', '-speed', '6', '-threads', '2',
     '-pix_fmt', 'yuv420p',
     '-r', String(fps),

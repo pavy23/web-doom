@@ -13,7 +13,7 @@
 //                                  [--report-dir DIR] [--baseline other/report.json]
 //                                  [--skill 1-5|uv|nightmare] [--headed] [--no-overlay]
 //                                  [--max-combat-tics 600]   (fight/retreat steps per edge, separate from --max-edge-tics)
-//                                  [--record] [--record-every tic|step] [--record-quality 80] [--record-bitrate 1500k]
+//                                  [--record] [--record-every tic|step] [--record-quality 80] [--record-bitrate 1000k]
 //
 // --record writes <reportDir>/run-N.webm: one frame per world tic at 35 fps
 // (game time, never wall-clock), captured as page screenshots so the overlay
@@ -545,7 +545,7 @@ export async function runStageClearTrial(input = {}) {
   };
 
   const recording = config.record
-    ? { ffmpegPath: await findFfmpeg(), every: config.recordEvery === 'step' ? 'step' : 'tic', quality: Number(config.recordQuality ?? 80), bitrate: config.recordBitrate || '1500k' }
+    ? { ffmpegPath: await findFfmpeg(), every: config.recordEvery === 'step' ? 'step' : 'tic', quality: Number(config.recordQuality ?? 80), bitrate: config.recordBitrate || '1000k' }
     : null;
   if (recording && !recording.ffmpegPath) throw new Error('--record needs ffmpeg: set DOOM_MCP_FFMPEG, install ffmpeg, or run `npx playwright install ffmpeg`');
   if (recording) report.recording = { every: recording.every, quality: recording.quality, bitrate: recording.bitrate, ffmpeg: recording.ffmpegPath };
@@ -698,7 +698,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       record: { type: 'boolean', default: false },
       'record-every': { type: 'string', default: 'tic' },   // tic: one frame per world tic; step: one per command
       'record-quality': { type: 'string', default: '80' }, // JPEG quality of the captured frames
-      'record-bitrate': { type: 'string', default: '1500k' },
+      'record-bitrate': { type: 'string', default: '1000k' },
       'hide-pause': { type: 'boolean' }                    // default: hidden while recording, shown otherwise
     },
     allowNegative: true

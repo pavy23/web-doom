@@ -186,7 +186,7 @@ the canvas capture, which came back black once the level was left.
 npm run autoplay:e1m1:hmp:record    # Jev, HMP, pipelined, writes exports/autoplay/e1m1-jev-hmp-rec/run-0.webm
 npm run autoplay:e1m2:hmp:record
 node autoplay_stage_runner.mjs --map E1M1 --runs 1 --no-god --skill hmp --record \
-    [--record-every tic|step] [--record-quality 80] [--record-bitrate 1500k] [--no-hide-pause]
+    [--record-every tic|step] [--record-quality 80] [--record-bitrate 1000k] [--no-hide-pause]
 ```
 
 `--record` writes `<reportDir>/run-N.webm` (VP8, 1280x800, 35 fps) next to
@@ -226,10 +226,25 @@ PATH. The Playwright build is minimal but carries exactly this pipeline
 
 Cost: a recorded run is ~2.5x slower in wall-clock than an unrecorded one
 (2m29s vs 1m03s for the 1216-tic E1M1 follower run), all of it screenshot
-time, and the file is ~0.3 MB per second of game time at the defaults
-(`-crf 10`, `-b:v 1500k`). Pipelined Jev (`--jev-pipeline 8`) gets more
+time, and the file is ~0.2 MB per second of game time at the defaults
+(`-crf 20`, `-b:v 1000k`; the first two clips below were made at `-crf 10`,
+`-b:v 1500k`, ~0.3 MB/s, and the E1M2 one re-encoded to 23 MB at the new
+defaults looks the same). Pipelined Jev (`--jev-pipeline 8`) gets more
 wall-clock per tic while recording, so stalls are rarer than in an unrecorded
 run; the decisions still apply at the same tics.
+
+First recorded Jev runs (HMP, policy 0.6.2, `--jev-pipeline 8`, both run at
+the same time on two bridge ports):
+
+```text
+map    result   tics  game time  damage  kills  Jev calls  stalls  video
+E1M1   CLEARED  1228  36.2 s     26      5      70         0       11.5 MB
+E1M2   CLEARED  4092  118.7 s    69      18     127        0       35.8 MB
+```
+
+Both clips carry the overlay, so the mode bars and the rule badges can be
+read frame by frame; the E1M2 clip shows the lift rules and the key detour
+from the layer-1 work above.
 
 ## Skill level: `--skill`
 
