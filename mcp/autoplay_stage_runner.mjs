@@ -38,7 +38,7 @@ import { installThingAuthoring } from './thing_authoring.js';
 import { installSemanticGeometry } from './semantic_geometry.js';
 import { buildNavigationGraph, findExitProgression, lineOfWalk, locatePointSector, planLocalPath, solidLines } from './navigation_graph.js';
 import {
-  coldBoot, exactInput, isCombatCommand, launchChromium, liveSectorFloor, liveSectorOpening, navigateEdge, remainingPathDistance, safeRecovery, setTicHook
+  coldBoot, exactInput, interruptedFailure, isCombatCommand, launchChromium, liveSectorFloor, liveSectorOpening, navigateEdge, remainingPathDistance, safeRecovery, setTicHook
 } from './navigation_browser_agent.mjs';
 import { OBJECTIVE_ORDER, OBJECTIVE_VERSION, compareToBaseline, rankRuns, runMetrics } from './autoplay_objective.mjs';
 import { installOverlay, updateOverlay } from './autoplay_overlay.mjs';
@@ -245,6 +245,9 @@ export async function approachAndUseExit(page, exit, options = {}) {
       throw error;
     }
     usedTics += result.tics;
+    if (result.interrupted) {
+      return { passed: false, usedTics, routeTics, combatTics, trace, failure: interruptedFailure(result), finalState: result.state };
+    }
     if (isCombatCommand(command)) combatTics += result.tics; else routeTics += result.tics;
     const remaining = remainingPathDistance(position, waypoints, finalTarget);
     if (remaining < bestDistance - 4) { bestDistance = remaining; ticsSinceProgress = 0; }

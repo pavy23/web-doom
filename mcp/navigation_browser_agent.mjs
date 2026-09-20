@@ -249,6 +249,28 @@ const budgetReached = target => {
   return Number(telemetry?.worldTics || 0) >= target && Number(telemetry?.stepBudget || 0) === 0;
 };
 
+// doomctl_step_playtest_tics refuses with -2 when the world is no longer
+// paused. The way that happens mid-run is a death: the player dies inside a
+// command whose USE is still latched, the engine's own reborn reloads the
+// level, and G_DoLoadLevel clears `paused`. The run is over at that point, so
+// the step is reported rather than thrown; a thrown one used to surface as a
+// browser_trial_error and lose the run's result.
+// Why a refused step ended the run. A death the engine recorded is the run's
+// real outcome and is reported as one.
+export function interruptedFailure(result) {
+  return Number(result?.telemetry?.deaths || 0) > 0 ? 'player_dead' : 'world_unpaused';
+}
+
+async function stepTics(page, count) {
+  try {
+    await page.evaluate(n => window.DoomControl.stepPlaytestTics(n), count);
+    return null;
+  } catch (error) {
+    if (!/engine code -2\b/.test(String(error?.message || error))) throw error;
+    return 'world_unpaused';
+  }
+}
+
 export async function exactInput(page, command) {
   const tics = Math.max(1, Math.min(12, Math.trunc(command.tics || 1)));
   const before = await page.evaluate(() => window.DoomControl.getPlaytestTelemetry());
@@ -257,20 +279,28 @@ export async function exactInput(page, command) {
   await page.evaluate(cmd => window.DoomControl.queueAgentInput(cmd), { ...command, tics });
   const startTics = Number(before.worldTics || 0);
   const ticHook = ticHooks.get(page);
+  let interrupted = null;
+  let done = 0;
   if (ticHook) {
     for (let tic = 1; tic <= tics; tic++) {
-      await page.evaluate(() => window.DoomControl.stepPlaytestTics(1));
+      interrupted = await stepTics(page, 1);
+      if (interrupted) break;
       await page.waitForFunction(budgetReached, startTics + tic, { timeout: 8000 });
+      done = tic;
       await ticHook({ worldTics: startTics + tic, tic, tics, command });
     }
   } else {
-    await page.evaluate(count => window.DoomControl.stepPlaytestTics(count), tics);
-    await page.waitForFunction(budgetReached, startTics + tics, { timeout: 8000 });
+    interrupted = await stepTics(page, tics);
+    if (!interrupted) {
+      await page.waitForFunction(budgetReached, startTics + tics, { timeout: 8000 });
+      done = tics;
+    }
   }
   return {
     state: await page.evaluate(() => window.DoomControl.getState()),
     telemetry: await page.evaluate(() => window.DoomControl.getPlaytestTelemetry()),
-    tics
+    tics: interrupted ? Math.max(done, 1) : tics,
+    ...(interrupted ? { interrupted } : {})
   };
 }
 // Live floor/ceiling opening of one sector (world units). Returns null when
@@ -490,6 +520,9 @@ export async function navigateEdge(page, graph, edge, options = {}) {
     lastUse = Boolean(command.use);
     const result = await exactInput(page, command);
     usedTics += result.tics;
+    if (result.interrupted) {
+      return { passed: false, edge, usedTics, routeTics, combatTics, trace, failure: interruptedFailure(result), finalState: result.state };
+    }
     if (isCombatCommand(command)) combatTics += result.tics; else routeTics += result.tics;
     // Only route steps count against the no-progress budget; a standing
     // fight is budgeted by combatTics.

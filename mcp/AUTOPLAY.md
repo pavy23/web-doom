@@ -953,6 +953,29 @@ damage          146                185
 
 `noFightFar` fired 18 times in that run and the brake 33.
 
+The ten-run trial is less kind: **0/10**, against 1.0.0's 1/10.
+
+```text
+died in the blue key area (sectors 24-27)   5 runs, tics 2866-3913, damage 120-151
+died in sector 56 with nothing in sight     2 runs, tics 10269 and 10565, 30 kills each
+died at 17:18:610                           1 run,  tic 7420, 46 kills
+step refused, world no longer paused        2 runs, alive at 40 and 53 hp
+```
+
+The one clear under 1.0.0 was a lucky run, not a capability: seven of its
+ten runs were the same death. 1.1.0 spreads the runs out instead (2866 to
+10565 tics, 23 to 46 kills), which is the model steering again, but the
+blue key area still ends half of them.
+
+The last two lines are two separate things worth naming. Sector 56 with no
+enemy in sight is a terrain death, not a fight. And "step refused" was a
+reporting bug, not an engine one: `doomctl_step_playtest_tics` returns -2
+when the world is not paused, which happens mid-run only when the player
+dies inside a command whose USE is still latched, because the engine's own
+reborn reloads the level and `G_DoLoadLevel` clears `paused`. Those two
+runs were deaths; the runner now reads the telemetry and reports them as
+such instead of losing the run to a `browser_trial_error`.
+
 ### E1M2 with the corrected profile (policy 1.1.0, 10 runs)
 
 `exports/autoplay/e1m2-jev-hmp-x10-v101`: **10/10 cleared**, 0 deaths, so
