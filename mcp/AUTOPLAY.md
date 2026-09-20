@@ -951,7 +951,11 @@ kills           17                 31
 damage          146                185
 ```
 
-`noFightFar` fired 18 times in that run and the brake 33.
+`noFightFar` fired 18 times in that run and the brake 33, so the rules
+were live even though `exports/autoplay/e1m3-smoke-v102/report.json`
+stamps it 1.0.0: the trial was launched between the behaviour landing and
+the version string being raised. Bump the version in the same edit as the
+behaviour, or a report's own stamp stops being the authority.
 
 The ten-run trial is less kind: **0/10**, against 1.0.0's 1/10.
 
@@ -976,16 +980,18 @@ reborn reloads the level and `G_DoLoadLevel` clears `paused`. Those two
 runs were deaths; the runner now reads the telemetry and reports them as
 such instead of losing the run to a `browser_trial_error`.
 
-### E1M2 with the corrected profile (policy 1.1.0, 10 runs)
+### E1M2 with the corrected profile (policy 1.0.0, 10 runs)
 
 `exports/autoplay/e1m2-jev-hmp-x10-v101`: **10/10 cleared**, 0 deaths, so
-the profile regression is closed. The rest of the numbers are worse than
+the profile regression is closed. This trial is policy **1.0.0**, not
+1.1.0: it was launched before the 1.1.0 edits landed, and the version in
+`report.json` is the authority. The rest of the numbers are worse than
 the 0.6.2 pipelined trial that last cleared 10/10:
 
 ```text
                     cleared   damage            tics            min health
 0.6.2, pipelined    10/10     105 [69-150]      4167 [4005-4782]
-1.1.0, profile      10/10     152 (185 once)    5258             16
+1.0.0, profile      10/10     152 (185 once)    5258             16
 ```
 
 Nine of the ten runs are tic-identical, which by the note under
@@ -1030,11 +1036,11 @@ keeping the command's aim and shot. Moving does not affect the player's
 own accuracy in vanilla DOOM, so the sidestep is free: it only has to not
 walk into the next hazard, which the same guard checks.
 
-One E1M2 run against the 1.1.0 trial's nine identical ones:
+One E1M2 run against the 1.0.0 trial's nine identical ones:
 
 ```text
                 damage   min health   tics    retreat steps   guard blocks
-1.1.0           152      16           5258    134             (chain of 6 events, 111 hp)
+1.0.0           152      16           5258    134             (chain of 6 events, 111 hp)
 1.2.0           119      44           5648     48             13, of which 5 sidestepped
 ```
 
@@ -1058,20 +1064,36 @@ lower loot threshold, a smaller call budget on a three-monster route)
 with the new rules staying out of the way. That is what the trial was
 for: a short level is where a combat rule regresses things.
 
-E1M2 over ten runs is the open question:
+### E1M2: four arms, and what the ablation actually said
+
+Ten runs each, same map profile, Wilson 95%:
 
 ```text
-                cleared      CI         damage (cleared)   tics (cleared)
-1.1.0           10/10       72%-100%    152 [152-185]      5258 [5129-5258]
-1.2.0            7/10       40%-89%     101 [62-152]       5351 [5153-5648]
+arm                                  policy   cleared   CI          damage (cleared)   health picked up
+v101, corrected profile              1.0.0    10/10     72%-100%    152 [152-185]      30
+v120, sidestep on                    1.2.0     7/10     40%-89%     101 [62-152]        6
+v120b, sidestep on, second sample    1.2.0     5/10     24%-76%     107 [56-152]        4
+v120-nosidestep, guardSidestep=false 1.2.0     4/10     17%-69%      65 [56-173]        2
 ```
 
-Better on the damage, apparently worse on the clear rate, and the two
-intervals overlap, so ten runs cannot separate them. All three deaths are
-the same exit-room imps that the rule was aimed at, at exactly 128 damage
-each, and the runs that died barely looted (12 to 38 tics against 26 to
-155 in the runs that cleared). An ablation with `--jev-opt
-guardSidestep=false` on the same build is the control that settles it.
+The ablation refutes the obvious reading. Turning the sidestep **off** on
+the same build gives 4/10, worse than the 7/10 and 5/10 with it on, so
+the rule is not what cost E1M2 its clear rate. Pooled, the sidestep is
+12/20 against 4/10 without it.
+
+What separates the 10/10 arm from all three 1.2.0 arms is the last
+column: it picked up 30 health items across ten runs where they pick up
+2 to 6. Loot detours are still started (15 to 19 given up per trial) and
+abandoned. The brake count moved the same way, from 514 firings to about
+150, which is what raising `brakeMinSpeed` from 0.5 to 4 and forbidding
+two brakes in a row was meant to do on E1M3, and apparently not what
+E1M2 wanted. That is the next ablation: `brakeMinSpeed=0.5` with
+`brakeConsecutive=true` restores the pre-1.1.0 brake on the current build.
+
+The deeper point stands either way. Health is being treated as an
+emergency measure rather than a route resource: the runs that die are the
+ones that arrive at the exit rooms with nothing banked, and by then there
+is nothing nearby to pick up.
 
 ### A death inside a command
 

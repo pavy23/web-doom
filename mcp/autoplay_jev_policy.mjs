@@ -508,6 +508,7 @@ export async function createJevPolicy(options = {}) {
     // The terrain brake only fires above a walking pace; below it the slide is
     // already harmless and the reverse thrust starts the next one.
     brakeMinSpeed: 4,
+    brakeConsecutive: false,   // true restores the pre-1.1.0 brake, for the ablation
     recentWindowTics: 70,      // "health lost in the last 2 s" window
     engageHoldTics: 35,        // keep consulting this long after a consultation that saw an enemy
     model: undefined,
@@ -632,7 +633,7 @@ export async function createJevPolicy(options = {}) {
     // Momentum check first, on every step (the follower's own steps too):
     // sliding toward a pit is braked whatever the command was.
     const slide = movePreview(state, { forward: 0, strafe: 0 });
-    const brakedLastStep = braking;
+    const brakedLastStep = braking && config.brakeConsecutive !== true;
     braking = false;
     if (!brakedLastStep && slide && movementHazard(geometry, slide.from, slide.to, { ignoreLines: guardIgnoreLines })) {
       const brake = brakeCommand(state, command || { source: 'jev', mode: 'brake', target: 'none', fire: false, danger: 0, attack: false, use: false });
