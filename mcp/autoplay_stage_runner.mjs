@@ -36,7 +36,7 @@ import { EpisodeWorkspace } from './episode_workspace.js';
 import { installFullTopologyValidator } from './topology_validator.js';
 import { installThingAuthoring } from './thing_authoring.js';
 import { installSemanticGeometry } from './semantic_geometry.js';
-import { buildNavigationGraph, findExitProgression, locatePointSector, planLocalPath } from './navigation_graph.js';
+import { buildNavigationGraph, findExitProgression, lineOfWalk, locatePointSector, planLocalPath, solidLines } from './navigation_graph.js';
 import {
   coldBoot, exactInput, isCombatCommand, launchChromium, liveSectorFloor, liveSectorOpening, navigateEdge, remainingPathDistance, safeRecovery, setTicHook
 } from './navigation_browser_agent.mjs';
@@ -187,6 +187,15 @@ export async function approachAndUseExit(page, exit, options = {}) {
       waypoints = planLocalPath(options.graph, Number(state.currentSector), position, exit.midpoint, { ignoreLines: exit.line != null ? [exit.line] : [] });
     }
     while (waypoints && waypoints.length && distance(position, waypoints[0]) < 24) waypoints.shift();
+    // Re-check the straight walk to the next point every step (see navigateEdge).
+    if (options.graph?.geometry) {
+      const ignoreLines = exit.line != null ? [exit.line] : [];
+      const nextPoint = waypoints && waypoints.length ? waypoints[0] : finalTarget;
+      if (!lineOfWalk(options.graph.geometry, position, nextPoint, solidLines(options.graph.geometry).filter(line => !ignoreLines.includes(line.index)))) {
+        waypoints = planLocalPath(options.graph, Number(state.currentSector), position, exit.midpoint, { ignoreLines });
+        while (waypoints.length && distance(position, waypoints[0]) < 24) waypoints.shift();
+      }
+    }
     const target = waypoints && waypoints.length ? waypoints[0] : finalTarget;
     const targetDistance = distance(position, target);
     const desired = headingDegrees(position, target);

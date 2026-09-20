@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
-import { findSectorPath, movementHazard, planLocalPath } from './navigation_graph.js';
+import { findSectorPath, lineOfWalk, movementHazard, planLocalPath, solidLines } from './navigation_graph.js';
 
 const DEFAULT_PLAY_URL = 'http://127.0.0.1:3777/';
 const DEFAULT_COLD_BOOT_TIMEOUT_MS = Math.max(60000, Number(process.env.DOOM_MCP_COLD_BOOT_TIMEOUT_MS || 180000));
@@ -369,10 +369,20 @@ export async function navigateEdge(page, graph, edge, options = {}) {
     const portalDistance = distance(position, edge.midpoint);
     // Local routing: go around walls inside a non-convex sector. Planned on
     // the first step and again whenever the follower stalls.
+    const ignoreLines = edge.line != null ? [edge.line] : [];
     if (waypoints == null || stalled >= 7) {
-      waypoints = planLocalPath(graph, Number(state.currentSector), position, edge.midpoint, { ignoreLines: edge.line != null ? [edge.line] : [] });
+      waypoints = planLocalPath(graph, Number(state.currentSector), position, edge.midpoint, { ignoreLines });
     }
     while (waypoints.length && distance(position, waypoints[0]) < 24) waypoints.shift();
+    // A fight (or a policy strafe) moves the player off the planned line; the
+    // straight walk to the next waypoint can then cross a pit that the plan
+    // went around. Re-check it every step and replan when it is not clear
+    // (E1M3 sector 47: eight of ten runs ended in the nukage this way).
+    const nextPoint = waypoints.length ? waypoints[0] : edge.midpoint;
+    if (graph?.geometry && !lineOfWalk(graph.geometry, position, nextPoint, solidLines(graph.geometry).filter(line => !ignoreLines.includes(line.index)))) {
+      waypoints = planLocalPath(graph, Number(state.currentSector), position, edge.midpoint, { ignoreLines });
+      while (waypoints.length && distance(position, waypoints[0]) < 24) waypoints.shift();
+    }
     const target = waypoints.length ? waypoints[0] : (portalDistance < 44 ? cross : edge.midpoint);
     const targetDistance = distance(position, target);
     const desired = headingDegrees(position, target);

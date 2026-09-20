@@ -15,7 +15,7 @@ import { appendFile } from 'node:fs/promises';
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 import { lineOfWalk, movementHazard } from './navigation_graph.js';
 
-export const JEV_POLICY_VERSION = '0.7.2-jev-policy';
+export const JEV_POLICY_VERSION = '0.7.3-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -441,7 +441,7 @@ export async function createJevPolicy(options = {}) {
   const stats = {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, rulesOnly: config.rulesOnly, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
-    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
+    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
     loot: { shotgun: 0, health: 0, shells: 0, armor: 0 },
     pipeline: { lagTics: options.pipelineLagTics || 0, inflightLaunched: 0, applied: 0, reused: 0, stalls: 0, stallMsTotal: 0, lagTicsTotal: 0 }
   };
@@ -479,26 +479,65 @@ export async function createJevPolicy(options = {}) {
   // sector 48 after a retreat/loot step backed into it. The forward vector
   // is the player's angle; +strafe is to the right (angle - 90).
   const UNITS_PER_TIC = 10; // deliberately above the engine's top speed
+  const MOMENTUM_TICS = 10; // vanilla friction 0.90625/tic: a stopped player slides ~10x its last per-tic speed
+  let lastPose = null;      // { x, y, tic } from the previous decide() step, for the velocity estimate
+  let velocity = { x: 0, y: 0 };
+  function trackVelocity(state) {
+    const player = state?.player || {};
+    const tic = Number(state?.levelTime ?? 0);
+    if (lastPose && tic > lastPose.tic && tic - lastPose.tic <= 12) {
+      velocity = { x: (Number(player.x) - lastPose.x) / (tic - lastPose.tic), y: (Number(player.y) - lastPose.y) / (tic - lastPose.tic) };
+    } else velocity = { x: 0, y: 0 };
+    lastPose = { x: Number(player.x), y: Number(player.y), tic };
+  }
   function movePreview(state, command) {
     const player = state?.player || {};
-    const forward = Number(command.forward || 0), strafe = Number(command.strafe || 0);
-    if (!forward && !strafe) return null;
+    const forward = Number(command?.forward || 0), strafe = Number(command?.strafe || 0);
+    const from = { x: Number(player.x), y: Number(player.y) };
+    // Where momentum alone takes the player, then the command on top of it.
+    const slide = { x: from.x + velocity.x * MOMENTUM_TICS, y: from.y + velocity.y * MOMENTUM_TICS };
+    if (!forward && !strafe) return { from, to: slide, slide };
     const angle = Number(player.angle) * Math.PI / 180;
     const fx = Math.cos(angle), fy = Math.sin(angle);
     const rx = Math.cos(angle - Math.PI / 2), ry = Math.sin(angle - Math.PI / 2);
     const magnitude = Math.hypot(forward, strafe);
     const length = 16 + UNITS_PER_TIC * Number(command.tics || 3) * magnitude;
     const dx = (forward * fx + strafe * rx) / magnitude, dy = (forward * fy + strafe * ry) / magnitude;
-    const from = { x: Number(player.x), y: Number(player.y) };
-    return { from, to: { x: from.x + dx * length, y: from.y + dy * length } };
+    return { from, to: { x: slide.x + dx * length, y: slide.y + dy * length }, slide };
   }
+  let guardIgnoreLines = [];   // the portal line of the edge being walked (a route may drop off a ledge on purpose)
   function movementUnsafe(state, command) {
     if (!config.terrainGuard || !geometry || !command) return null;
     const preview = movePreview(state, command);
     if (!preview) return null;
-    return movementHazard(geometry, preview.from, preview.to);
+    return movementHazard(geometry, preview.from, preview.to, { ignoreLines: guardIgnoreLines });
+  }
+  // Momentum alone heading over an edge: the only useful command is the
+  // brake, a thrust against the current velocity (expressed in the
+  // player's forward/right frame).
+  function brakeCommand(state, command) {
+    const player = state?.player || {};
+    const speed = Math.hypot(velocity.x, velocity.y);
+    if (speed < 0.5) return null;
+    const angle = Number(player.angle) * Math.PI / 180;
+    const fx = Math.cos(angle), fy = Math.sin(angle);
+    const rx = Math.cos(angle - Math.PI / 2), ry = Math.sin(angle - Math.PI / 2);
+    const forward = -(velocity.x * fx + velocity.y * fy) / speed;
+    const strafe = -(velocity.x * rx + velocity.y * ry) / speed;
+    return { ...command, forward: round(0.7 * forward, 2), strafe: round(0.7 * strafe, 2), tics: 2 };
   }
   async function guardCommand(state, command) {
+    if (!config.terrainGuard || !geometry) return command;
+    // Momentum check first, on every step (the follower's own steps too):
+    // sliding toward a pit is braked whatever the command was.
+    const slide = movePreview(state, { forward: 0, strafe: 0 });
+    if (slide && movementHazard(geometry, slide.from, slide.to, { ignoreLines: guardIgnoreLines })) {
+      const brake = brakeCommand(state, command || { source: 'jev', mode: 'brake', target: 'none', fire: false, danger: 0, attack: false, use: false });
+      if (brake) {
+        stats.rules.terrainBrake++;
+        return { ...brake, rules: [...(brake.rules || []), 'terrainBrake'] };
+      }
+    }
     if (!command) return command;
     const hazard = movementUnsafe(state, command);
     if (!hazard) return command;
@@ -698,6 +737,8 @@ export async function createJevPolicy(options = {}) {
     return Math.max(0, peak - health);
   }
   async function decide(context) {
+    trackVelocity(context.state);
+    guardIgnoreLines = context.edge?.line != null ? [Number(context.edge.line)] : context.exit?.line != null ? [Number(context.exit.line)] : [];
     const command = await decideUnguarded(context);
     return guardCommand(context.state, command);
   }
