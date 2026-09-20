@@ -15,7 +15,7 @@ import { appendFile } from 'node:fs/promises';
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 import { lineOfWalk, movementHazard } from './navigation_graph.js';
 
-export const JEV_POLICY_VERSION = '0.7.1-jev-policy';
+export const JEV_POLICY_VERSION = '0.7.2-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -367,7 +367,15 @@ export function shouldConsult(state, options = {}, memory = {}) {
   const meleeRange = Number(options.meleeRange ?? 96);
   const inReach = (state?.enemies || []).some(enemy => Number(enemy.distance) <= meleeRange && Number(enemy.health) > 0);
   const hurt = memory.lastHealth != null && health < Number(memory.lastHealth);
-  return visible > 0 || health < Number(options.lowHealth ?? 40) || inReach || hurt;
+  // An enemy with a clear shot from outside the view cone (behind, at the
+  // side) is a reason as good as one in view: E1M3 runs stood at a door for
+  // 130 tics while a zombieman behind them shot 33 hp off, the policy turning
+  // toward it on the hurt steps and the follower turning back on the others.
+  const canHit = (state?.enemies || []).some(enemy => enemy.lineOfSight && Number(enemy.health) > 0 && Number(enemy.distance) <= effectiveRange(enemy.name));
+  // ... and once engaged, stay engaged for a while (engageHoldTics), so the
+  // follower and the policy stop alternating on the heading.
+  const engaged = memory.engagedUntilTic != null && Number(state?.levelTime ?? 0) < Number(memory.engagedUntilTic);
+  return visible > 0 || health < Number(options.lowHealth ?? 40) || inReach || hurt || canHit || engaged;
 }
 
 export async function createJevPolicy(options = {}) {
@@ -415,6 +423,7 @@ export async function createJevPolicy(options = {}) {
     runHysteresis: 0.1,        // band around runThreshold before the mode flips
     retreatMaxDistance: 320,   // retreat only from enemies inside this distance
     recentWindowTics: 70,      // "health lost in the last 2 s" window
+    engageHoldTics: 35,        // keep consulting this long after a consultation that saw an enemy
     model: undefined,
     log: null,                 // JSONL path
     onDecision: null,          // async (entry) => void, called after every consultation (overlay, live views)
@@ -555,6 +564,15 @@ export async function createJevPolicy(options = {}) {
     const tic = Number(state.levelTime);
     const picked = lootPicked(state);
     const dist = Math.hypot(loot.x - Number(player.x), loot.y - Number(player.y));
+    // Something got a clear shot meanwhile: stop the detour (the item stays
+    // eligible) unless the player is desperate for health. Ten identical
+    // E1M3 runs walked 240 units toward a medikit with an imp at 52 units.
+    if (!picked && shootersNow(state) > 0 && !(loot.kind === 'health' && Number(player.health) < config.healthLootDesperate)) {
+      stats.rules.lootGivenUp++;
+      await record({ kind: 'loot_end', tic, lootKind: loot.kind, picked: false, distance: round(dist), tics: tic - loot.sinceTic, reason: 'interrupted' });
+      loot = null;
+      return null;
+    }
     // No progress toward the item for several steps means a wall is in the
     // way (items are targeted in a straight line): give it up.
     loot.noProgress = dist >= loot.lastDist - 1 ? loot.noProgress + 1 : 0;
@@ -669,6 +687,7 @@ export async function createJevPolicy(options = {}) {
   }
 
   let lastHealth = null;
+  let engagedUntilTic = null; // consultations continue until this tic after one that saw an enemy
   const healthHistory = [];   // { tic, health } per step, for the recent-damage window
   function recentDamage(state) {
     const tic = Number(state?.levelTime ?? 0);
@@ -685,7 +704,7 @@ export async function createJevPolicy(options = {}) {
   async function decideUnguarded(context) {
     const { state, proposal } = context;
     stepsSinceCall++;
-    const consult = shouldConsult(state, config, { lastHealth });
+    const consult = shouldConsult(state, config, { lastHealth, engagedUntilTic });
     lastHealth = Number(state?.player?.health ?? lastHealth);
     const lost = recentDamage(state);
     coverInfo(context); // keep the edge entry point current even on steps that are not consulted
@@ -703,6 +722,7 @@ export async function createJevPolicy(options = {}) {
     if (stats.calls >= config.maxCalls) { stats.capped = true; return null; }
 
     const compact = compactState(state, { ...context, maxEnemies: config.maxEnemies, meleeRange: config.meleeRange, recentDamage: lost });
+    if (compact.visibleEnemies.length) engagedUntilTic = Number(state.levelTime) + config.engageHoldTics;
     const questions = buildQuestions(compact, sdk);
     const request = { state: compact, questions, ...(config.model ? { model: config.model } : {}) };
     stepsSinceCall = 0;
