@@ -15,7 +15,7 @@ import { appendFile } from 'node:fs/promises';
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 import { coverPoint, lineOfWalk, movementHazard } from './navigation_graph.js';
 
-export const JEV_POLICY_VERSION = '1.2.0-jev-policy';
+export const JEV_POLICY_VERSION = '1.3.0-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -505,10 +505,13 @@ export async function createJevPolicy(options = {}) {
     // E1M3 runs died holding a shotgun on an imp 348 units away, which is past
     // the range where the pellet spread still lands.
     weaponRangeSlack: 1.1,
-    // The terrain brake only fires above a walking pace; below it the slide is
-    // already harmless and the reverse thrust starts the next one.
-    brakeMinSpeed: 4,
-    brakeConsecutive: false,   // true restores the pre-1.1.0 brake, for the ablation
+    // The terrain brake (see brakeCommand). Measured on E1M2: 10/10 clears at
+    // damage 98 with these values, 4/10 to 7/10 with the 1.1.0 pair
+    // (minSpeed 4, no consecutive brakes) that was meant to stop an E1M3
+    // oscillation and did not improve E1M3's clear rate either.
+    brakeMinSpeed: 0.5,
+    brakeConsecutive: true,    // false forbids two brakes in a row (the 1.1.0 rule)
+    brakeFullSpeed: 8,         // full counter-thrust at and above this speed, scaled below it
     recentWindowTics: 70,      // "health lost in the last 2 s" window
     engageHoldTics: 35,        // keep consulting this long after a consultation that saw an enemy
     model: undefined,
@@ -616,17 +619,23 @@ export async function createJevPolicy(options = {}) {
   function brakeCommand(state, command) {
     const player = state?.player || {};
     const speed = Math.hypot(velocity.x, velocity.y);
-    // Below a walking pace the slide is already harmless and a reverse thrust
-    // only starts the next slide: two E1M3 runs spent their last twenty tics
-    // alternating full forward and full back. The engine's own friction
-    // (0.90625 per tic) finishes the job.
-    if (speed < Number(config.brakeMinSpeed ?? 4)) return null;
+    if (speed < Number(config.brakeMinSpeed ?? 0.5)) return null;
+    // Scale the counter-thrust to the speed. A full thrust against a slow
+    // slide reverses it instead of stopping it, and the reversed slide reads
+    // as a fresh hazard: seven E1M3 runs spent their last twenty tics
+    // alternating full forward and full back. Raising the threshold to 4 and
+    // forbidding two brakes in a row stopped that, and cost E1M2 its clear
+    // rate: the brake between 0.5 and 4 is also what keeps a loot detour on
+    // its feet, and suppressing it took health pickups from 30 per ten runs
+    // to 2. Scaling is never stronger than the brake that measured 10/10 and
+    // damps instead of flipping below brakeFullSpeed.
+    const scale = Math.min(1, speed / Number(config.brakeFullSpeed ?? 8));
     const angle = Number(player.angle) * Math.PI / 180;
     const fx = Math.cos(angle), fy = Math.sin(angle);
     const rx = Math.cos(angle - Math.PI / 2), ry = Math.sin(angle - Math.PI / 2);
     const forward = -(velocity.x * fx + velocity.y * fy) / speed;
     const strafe = -(velocity.x * rx + velocity.y * ry) / speed;
-    return { ...command, forward: round(0.7 * forward, 2), strafe: round(0.7 * strafe, 2), tics: 2 };
+    return { ...command, forward: round(0.7 * scale * forward, 2), strafe: round(0.7 * scale * strafe, 2), tics: 2 };
   }
   async function guardCommand(state, command) {
     if (!config.terrainGuard || !geometry) return command;
