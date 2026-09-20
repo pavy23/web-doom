@@ -15,7 +15,7 @@ import { appendFile } from 'node:fs/promises';
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 import { coverPoint, lineOfWalk, movementHazard } from './navigation_graph.js';
 
-export const JEV_POLICY_VERSION = '0.9.0-jev-policy';
+export const JEV_POLICY_VERSION = '1.5.0-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -116,6 +116,17 @@ export function compactState(state, context = {}) {
       distanceToWaypoint: round(context.targetDistance ?? 0),
       waypointBearing: round(context.delta ?? 0)
     },
+    // What kind of level this is (autoplay_map_profile.mjs). Without it every
+    // level reads the same to the model: six monsters with two stimpacks and
+    // forty-five with ten look identical from one consultation.
+    ...(context.profile ? {
+      level: {
+        kind: context.profile.brief,
+        monstersOnRoute: context.profile.monsters.onRoute,
+        killedSoFar: Number(player.kills ?? 0),
+        healthPickupsOnRoute: context.profile.items.onRoute.health
+      }
+    } : {}),
     visibleEnemies: enemies,
     enemyCountTotal: Number(state?.enemyCount ?? 0)
   };
@@ -207,6 +218,15 @@ const HITSCAN = new Set(['zombieman', 'shotgun_guy', 'chaingun_guy', 'heavy_weap
 // Monsters whose ranged attack is a projectile: sidestepping works, standing
 // still (or backing straight away) does not.
 const PROJECTILE = new Set(['imp', 'cacodemon', 'baron_of_hell', 'hell_knight', 'revenant', 'mancubus', 'arachnotron', 'cyberdemon']);
+// How far each weapon is worth standing still for. The shotgun's pellets
+// spread past ~300 units and the fists reach 64; holding position to fire
+// beyond these is time spent being shot for almost no damage dealt.
+// Indexed by weapontype_t.
+const WEAPON_RANGE = [64, 700, 320, 700, 900, 900, 900, 64, 240];
+export function weaponRange(weapon) {
+  const index = Number(weapon);
+  return Number.isFinite(index) && WEAPON_RANGE[index] != null ? WEAPON_RANGE[index] : 700;
+}
 export function isProjectile(name) { return PROJECTILE.has(String(name || '').toLowerCase()); }
 function isHitscan(name) {
   return HITSCAN.has(String(name || '').toLowerCase().replace(/\s+/g, '_'));
@@ -271,6 +291,13 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
   const pointBlank = Boolean(target) && Number(target.distance) <= Number(options.pointBlankDistance ?? 96);
   let fire = Number(answers.fire?.noul ?? 0) >= Number(options.fireThreshold ?? 0.4);
   if (pointBlank && !fire) { fire = true; rules.push('pointBlank'); }
+  // barrelBlock: a barrel stands in the line of fire, close enough that its
+  // blast reaches the shooter. One shot into a barrel 44 units away is 97
+  // damage, which is how all ten E1M3 runs at Hey Not Too Rough died at the
+  // same tic. Hold fire whatever the model and the other fire rules say, and
+  // step out of the line rather than stand in it.
+  const barrel = options.barrelInAim || null;
+  if (barrel) { fire = false; rules.push('barrelBlock'); }
   let mode = answers.mode?.choice;
   if (options.forceMode && options.forceMode !== mode) { mode = options.forceMode; rules.push('stall'); }
   else if (options.forceMode) { rules.push('stall'); }
@@ -287,6 +314,26 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
   const shooters = Number(compact.threat?.enemiesThatCanHitPlayerNow ?? 0);
   if (mode === 'advance' && target && shooters > 0 && Number(compact.player?.health) < Number(options.lowHealth ?? 40)) {
     mode = 'fight'; fire = true; rules.push('lowHealthHold');
+  }
+  // barrelStandoff: a barrel within blast range while something can shoot is
+  // a hazard even with the player's own trigger held. An E1M3 run lost 87 of
+  // 100 hp standing 38 units from one that an imp's fireball lit. Step
+  // directly away from it, keeping the aim on the target, before doing
+  // anything else. Bearing is measured counter-clockwise from the facing
+  // (positive is left) and agent +strafe is right, so away is -cos, +sin.
+  const barrelNear = options.barrelNear || null;
+  if (barrelNear && shooters > 0 && !options.holdPosition && options.barrelStandoff !== false) {
+    rules.push('barrelStandoff');
+    const radians = Number(barrelNear.bearing) * Math.PI / 180;
+    const reach = Number(options.barrelStandoffMove ?? 0.6);
+    return {
+      forward: round(-reach * Math.cos(radians), 2),
+      strafe: round(reach * Math.sin(radians), 2),
+      turn: target && Math.abs(target.bearing) > aimTolerance ? turnToward(target.bearing, 0.4) : 0,
+      attack: false, use: false, tics: 3,
+      source: 'jev', mode: 'barrel', target: target?.id || 'none', fire: false,
+      danger: round(answers.danger?.score ?? 0, 2), rules
+    };
   }
   // cover: fighting two or more shooters in the open, close to the point
   // where the player entered this edge (the doorway it came through), back
@@ -329,15 +376,46 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
   const strafeVs = options.projectileStrafe !== false && options.strafeRoomClear !== false && !options.holdPosition && isProjectile(target.name) && !pointBlank
     ? 0.5 * Number(options.dodgeSide ?? 1) : 0;
   if (strafeVs) { rules.push('projectileStrafe'); meta.rules = rules; }
+  // noFightFar: standing still to shoot a target the weapon cannot reach is
+  // time spent being shot for nothing. Seven tic-identical E1M3 runs died
+  // holding position with a shotgun against an imp 348 units away. Keep the
+  // route command and fire only when it comes into range. Melee range
+  // overrides: something that close is dealt with wherever it stands.
+  if (mode === 'fight' && !options.holdPosition && !pointBlank
+      && Number(target.distance) > weaponRange(options.playerWeapon) * Number(options.weaponRangeSlack ?? 1.1)) {
+    rules.push('noFightFar');
+    meta.rules = rules;
+    meta.mode = 'advance';
+    if (fire && aligned) return { ...proposal, attack: true, ...meta };
+    // Null hands the step back to the route follower, which loses the rule
+    // names with the command, so the counter is bumped here instead.
+    if (typeof options.onRule === 'function') options.onRule('noFightFar');
+    return null;
+  }
   if (mode === 'fight') {
     if (!aligned) return { forward: 0, strafe: strafeVs, turn: turnToward(target.bearing), attack: false, use: false, tics: aimTics(target.bearing), ...meta };
     // fightFires: having chosen to stand and fight, an aligned shot at an
     // enemy that can hit back is never withheld. With one shell left the
     // model answered fire 0.2 and the player stood still, aimed, unhurt and
     // silent, for 130 tics while a zombieman walked up to it.
+    if (barrel) {
+      // Aligned on the target and a barrel is in the way: sidestep so the
+      // barrel falls off the line, keeping the facing. Agent +strafe is
+      // right, so step away from the side the barrel sits on.
+      const away = Number(barrel.bearing) > 0 ? 1 : -1;
+      return { forward: 0, strafe: 0.6 * away, turn: 0, attack: false, use: false, tics: 3, ...meta };
+    }
     let attack = fire;
     if (!attack && target.canHitPlayerNow) { attack = true; rules.push('fightFires'); meta.rules = rules; meta.fire = true; }
     return { forward: 0, strafe: strafeVs, turn: 0, attack, use: false, tics: 3, ...meta };
+  }
+  if (mode === 'retreat' && Number(options.targetDrift ?? 0) > Number(options.retreatDriftLimit ?? 192)) {
+    // Already this far off the route target: stand and fight rather than give
+    // up more ground.
+    mode = 'fight';
+    meta.mode = 'fight';
+    rules.push('retreatDrift');
+    meta.rules = rules;
   }
   if (mode === 'retreat') {
     // Backing away from an enemy that is already out of its effective range
@@ -426,8 +504,20 @@ export async function createJevPolicy(options = {}) {
     lootShotgun: true,         // after killing a shotgun guy with the pistol, walk over its dropped shotgun
     lootTimeoutTics: 140,      // give a detour at most 4 s
     items: [],                 // static map pickups (autoplay_items.mjs) for health / shells loot
+    // Explosive barrels. A barrel's blast is 128 units at its centre and
+    // falls off linearly, so one shot into a barrel 44 units away is 97
+    // damage to the shooter: that killed all ten E1M3 runs at Hey Not Too
+    // Rough, at the same tic, while the player aimed at a zombieman standing
+    // behind it. Nothing in the policy knew barrels existed.
+    barrels: [],
+    barrelBlast: 128,          // never fire through a barrel closer than this
+    barrelAimRadius: 24,       // half-width of the shot cone a barrel blocks
+    barrelStandoff: true,      // step out of a barrel's blast when something can shoot it
+    barrelStandoffMove: 0.6,
     graph: null,               // navigation graph (with geometry) for the terrain guard and walkable loot
     terrainGuard: true,        // never send a combat/loot step that walks into a wall, a drop or a damaging floor
+    guardSidestep: true,       // ... and when the blocked step was a fight or a retreat, sidestep rather than stand still
+    guardSidestepStrafe: 0.6,
     projectileStrafe: true,    // strafe while fighting / retreating from projectile monsters ...
     strafeRoom: 64,            // ... only where both sides have this much free floor. The E1M1 HMP ablation
                                // went from 87-89 damage to 18 without the strafe (in the 64-wide exit corridor
@@ -441,7 +531,7 @@ export async function createJevPolicy(options = {}) {
     lootArmor: true,           // walk to an armor item when the player has less than armorLootBelow armor and nothing is shooting
     armorLootBelow: 50,
     healthLootDesperate: 30,   // ... even under fire below this
-    shellsLootBelow: 6,        // walk to shells when the shotgun has fewer than this
+    shellsLootBelow: 12,       // walk to shells when the shotgun has fewer than this (a shotgun blast is one shell)
     itemLootRadius: 256,       // only items this close (straight line; walls end it via the stall check)
     threatPriority: true,      // retarget to the most dangerous enemy in reach when not locked on
     pipelineLagTics: 0,        // > 0: pipelined consultation, answers applied this many tics after their state
@@ -449,11 +539,33 @@ export async function createJevPolicy(options = {}) {
     runThreshold: 0.5,         // safeToRun noul at or above this keeps advancing
     runHysteresis: 0.1,        // band around runThreshold before the mode flips
     retreatMaxDistance: 320,   // retreat only from enemies inside this distance
+    // How far a fight may drag the player away from the route target before
+    // retreating stops. Without it an E1M2 fight backed the player out of the
+    // switch's room, up a lift into another sector, and the trigger approach
+    // (which routes inside one sector) could never walk back.
+    retreatDriftLimit: 192,
+    // How far past a weapon's useful range a fight is still worth standing
+    // still for (see WEAPON_RANGE and the noFightFar rule). Seven tic-identical
+    // E1M3 runs died holding a shotgun on an imp 348 units away, which is past
+    // the range where the pellet spread still lands.
+    weaponRangeSlack: 1.1,
+    // The terrain brake (see brakeCommand). Measured on E1M2: 10/10 clears at
+    // damage 98 with these values, 4/10 to 7/10 with the 1.1.0 pair
+    // (minSpeed 4, no consecutive brakes) that was meant to stop an E1M3
+    // oscillation and did not improve E1M3's clear rate either.
+    brakeMinSpeed: 0.5,
+    brakeConsecutive: true,    // false forbids two brakes in a row (the 1.1.0 rule)
+    brakeFullSpeed: 8,         // full counter-thrust at and above this speed, scaled below it
     recentWindowTics: 70,      // "health lost in the last 2 s" window
     engageHoldTics: 35,        // keep consulting this long after a consultation that saw an enemy
     model: undefined,
     log: null,                 // JSONL path
     onDecision: null,          // async (entry) => void, called after every consultation (overlay, live views)
+    profile: null,             // autoplay_map_profile.mjs: thresholds the level's shape justifies
+    // Order: these defaults, then the map profile, then what the caller asked
+    // for explicitly (the runner's --jev-opt), so a profile never overrides a
+    // deliberate setting and a deliberate setting never has to repeat one.
+    ...(options.profile?.config || {}),
     ...options
   };
   const sdk = await import('@typesafe-ai/sdk');
@@ -468,7 +580,7 @@ export async function createJevPolicy(options = {}) {
   const stats = {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, rulesOnly: config.rulesOnly, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
-    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, coverStarts: 0, coverArrived: 0, coverMove: 0, coverFight: 0, weaponSelect: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
+    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, coverStarts: 0, coverArrived: 0, coverMove: 0, coverFight: 0, retreatDrift: 0, noFightFar: 0, guardSidestep: 0, barrelBlock: 0, barrelStandoff: 0, weaponSelect: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
     loot: { shotgun: 0, health: 0, shells: 0, armor: 0 },
     pipeline: { lagTics: options.pipelineLagTics || 0, inflightLaunched: 0, applied: 0, reused: 0, stalls: 0, stallMsTotal: 0, lagTicsTotal: 0 }
   };
@@ -533,6 +645,12 @@ export async function createJevPolicy(options = {}) {
     return { from, to: { x: slide.x + dx * length, y: slide.y + dy * length }, slide };
   }
   let guardIgnoreLines = [];   // the portal line of the edge being walked (a route may drop off a ledge on purpose)
+  // Did the previous step brake? Braking on consecutive steps is what made
+  // the oscillation: the brake reverses the velocity, the reversed velocity
+  // reads as a fresh slide toward the same edge, and the next brake reverses
+  // it back. Seven E1M3 runs spent their last twenty tics alternating f0.7
+  // and f-0.7. Braking at most every other step lets friction settle it.
+  let braking = false;
   function movementUnsafe(state, command) {
     if (!config.terrainGuard || !geometry || !command) return null;
     const preview = movePreview(state, command);
@@ -545,22 +663,35 @@ export async function createJevPolicy(options = {}) {
   function brakeCommand(state, command) {
     const player = state?.player || {};
     const speed = Math.hypot(velocity.x, velocity.y);
-    if (speed < 0.5) return null;
+    if (speed < Number(config.brakeMinSpeed ?? 0.5)) return null;
+    // Scale the counter-thrust to the speed. A full thrust against a slow
+    // slide reverses it instead of stopping it, and the reversed slide reads
+    // as a fresh hazard: seven E1M3 runs spent their last twenty tics
+    // alternating full forward and full back. Raising the threshold to 4 and
+    // forbidding two brakes in a row stopped that, and cost E1M2 its clear
+    // rate: the brake between 0.5 and 4 is also what keeps a loot detour on
+    // its feet, and suppressing it took health pickups from 30 per ten runs
+    // to 2. Scaling is never stronger than the brake that measured 10/10 and
+    // damps instead of flipping below brakeFullSpeed.
+    const scale = Math.min(1, speed / Number(config.brakeFullSpeed ?? 8));
     const angle = Number(player.angle) * Math.PI / 180;
     const fx = Math.cos(angle), fy = Math.sin(angle);
     const rx = Math.cos(angle - Math.PI / 2), ry = Math.sin(angle - Math.PI / 2);
     const forward = -(velocity.x * fx + velocity.y * fy) / speed;
     const strafe = -(velocity.x * rx + velocity.y * ry) / speed;
-    return { ...command, forward: round(0.7 * forward, 2), strafe: round(0.7 * strafe, 2), tics: 2 };
+    return { ...command, forward: round(0.7 * scale * forward, 2), strafe: round(0.7 * scale * strafe, 2), tics: 2 };
   }
   async function guardCommand(state, command) {
     if (!config.terrainGuard || !geometry) return command;
     // Momentum check first, on every step (the follower's own steps too):
     // sliding toward a pit is braked whatever the command was.
     const slide = movePreview(state, { forward: 0, strafe: 0 });
-    if (slide && movementHazard(geometry, slide.from, slide.to, { ignoreLines: guardIgnoreLines })) {
+    const brakedLastStep = braking && config.brakeConsecutive !== true;
+    braking = false;
+    if (!brakedLastStep && slide && movementHazard(geometry, slide.from, slide.to, { ignoreLines: guardIgnoreLines })) {
       const brake = brakeCommand(state, command || { source: 'jev', mode: 'brake', target: 'none', fire: false, danger: 0, attack: false, use: false });
       if (brake) {
+        braking = true;
         stats.rules.terrainBrake++;
         return { ...brake, rules: [...(brake.rules || []), 'terrainBrake'] };
       }
@@ -578,11 +709,26 @@ export async function createJevPolicy(options = {}) {
       loot = null;
       return null;
     }
-    // A sideways component can flip sides; otherwise stand and keep the
-    // aim / attack of the original command.
+    // A sideways component can flip sides.
     if (Number(command.strafe || 0)) {
       const flipped = { ...command, strafe: -Number(command.strafe), rules };
       if (!movementUnsafe(state, flipped)) { dodgeSide *= -1; return flipped; }
+    } else if (config.guardSidestep !== false && command.target && command.target !== 'none') {
+      // guardSidestep: a backpedal into a wall becomes standing still in the
+      // open, which is the worst answer to a fireball. Most of E1M2's damage
+      // is one such chain in the exit rooms, starting with a blocked retreat
+      // that cost 21 hp, and E1M3 lost 51 hp in two steps the same way.
+      // Sidestep instead, keeping the aim and the shot: moving does not
+      // affect the player's own accuracy in vanilla DOOM.
+      const reach = Number(config.guardSidestepStrafe ?? 0.6);
+      for (const side of [dodgeSide, -dodgeSide]) {
+        const step = { ...command, forward: 0, strafe: reach * side, rules: [...rules, 'guardSidestep'] };
+        if (!movementUnsafe(state, step)) {
+          dodgeSide = side;
+          stats.rules.guardSidestep++;
+          return step;
+        }
+      }
     }
     return { ...command, forward: 0, strafe: 0, rules, hazard: hazard.kind };
   }
@@ -603,6 +749,7 @@ export async function createJevPolicy(options = {}) {
   let lastMode = null;
   let lastTarget = null;       // the enemy fought at the previous consultation (sticky target)
   let lastKills = null;
+  const heldWeapons = new Set([1]);   // weapons seen in the player's hands (the state has no owned set)
   let loot = null;             // { x, y, sinceTic, shells } dropped shotgun to walk over
 
   // World position of an enemy from the player's pose and the enemy's polar
@@ -633,7 +780,12 @@ export async function createJevPolicy(options = {}) {
     // Something got a clear shot meanwhile: stop the detour (the item stays
     // eligible) unless the player is desperate for health. Ten identical
     // E1M3 runs walked 240 units toward a medikit with an imp at 52 units.
-    if (!picked && shootersNow(state) > 0 && !(loot.kind === 'health' && Number(player.health) < config.healthLootDesperate)) {
+    // A dropped shotgun is worth the shots taken walking to it (the whole
+    // rest of the level is fought with it), so only desperate health ends
+    // that detour; the same for a medikit the player is desperate for.
+    const worthTheRisk = (loot.kind === 'shotgun' && Number(player.health) >= config.healthLootDesperate)
+      || (loot.kind === 'health' && Number(player.health) < config.healthLootDesperate);
+    if (!picked && shootersNow(state) > 0 && !worthTheRisk) {
       stats.rules.lootGivenUp++;
       await record({ kind: 'loot_end', tic, lootKind: loot.kind, picked: false, distance: round(dist), tics: tic - loot.sinceTic, reason: 'interrupted' });
       loot = null;
@@ -702,7 +854,11 @@ export async function createJevPolicy(options = {}) {
       const item = nearestItem(state, 'armor');
       if (item) return startLoot(state, 'armor', item.x, item.y, item.id);
     }
-    if (config.lootShells && Number(player.weapon) === 2 && Number(player.ammo?.shells ?? 0) < config.shellsLootBelow && shooters === 0) {
+    // Shells are worth collecting whenever the player owns a shotgun, not
+    // only while holding one: the engine drops back to the pistol when the
+    // shells run out, and a rule keyed on the weapon in hand then never
+    // refills (E1M3 ran the whole level on the pistol with shells lying about).
+    if (config.lootShells && heldWeapons.has(2) && Number(player.ammo?.shells ?? 0) < config.shellsLootBelow && shooters === 0) {
       const item = nearestItem(state, 'shells');
       if (item) return startLoot(state, 'shells', item.x, item.y, item.id);
     }
@@ -733,10 +889,47 @@ export async function createJevPolicy(options = {}) {
     return hurt || inFront;
   }
 
+  // A rule that hands the step back to the follower (returning null) has no
+  // command to carry its name on, so it reports itself here.
+  const onRule = rule => { stats.rules[rule] = (stats.rules[rule] || 0) + 1; };
+
+  // Is a barrel standing in the line of fire, close enough that its blast
+  // would reach the player? Hitscan shots travel along the player's facing,
+  // so the test is the barrel's bearing off that facing against the angle it
+  // subtends. Returns the nearest offender, which the fire rules then refuse
+  // to shoot through.
+  // `aim` is a barrel the player would shoot; `near` is any barrel whose
+  // blast reaches the player, which is a danger on its own because anything
+  // else can set it off. One E1M3 run lost 87 of 100 hp standing 38 units
+  // from a barrel with its own weapon holstered: an imp's fireball lit it.
+  function barrelInfo(state) {
+    const barrels = config.barrels || [];
+    const empty = { aim: null, near: null };
+    if (!barrels.length) return empty;
+    const player = state?.player || {};
+    const px = Number(player.x), py = Number(player.y), facing = Number(player.angle);
+    if (!Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(facing)) return empty;
+    const blast = Number(config.barrelBlast ?? 128);
+    let aim = null, near = null;
+    for (const barrel of barrels) {
+      const dx = barrel.x - px, dy = barrel.y - py;
+      const distance = Math.hypot(dx, dy);
+      if (distance > blast || distance < 1) continue;
+      let bearing = Math.atan2(dy, dx) * 180 / Math.PI - facing;
+      while (bearing > 180) bearing -= 360;
+      while (bearing < -180) bearing += 360;
+      const entry = { ...barrel, distance: round(distance, 1), bearing: round(bearing, 1) };
+      if (!near || distance < near.distance) near = entry;
+      const halfWidth = Math.atan2(Number(config.barrelAimRadius ?? 24), distance) * 180 / Math.PI;
+      if (Math.abs(bearing) <= halfWidth && (!aim || distance < aim.distance)) aim = entry;
+    }
+    return { aim, near };
+  }
   function ruleOptions(compact, state, context) {
     const stalled = detectStall(state, compact);
+    const barrels = barrelInfo(state);
     const holding = Boolean(coverSpot?.arrived) && Number(state?.levelTime ?? 0) < Number(coverSpot?.holdUntil ?? 0);
-    return { ...config, dodgeSide, lastTarget, cover: context ? coverInfo(context) : null, holdPosition: holding, strafeRoomClear: strafeRoomClear(state), ...(stalled ? { forceMode: 'fight' } : {}) };
+    return { ...config, dodgeSide, lastTarget, cover: context ? coverInfo(context) : null, holdPosition: holding, strafeRoomClear: strafeRoomClear(state), targetDrift: targetDrift(context), playerWeapon: Number(state?.player?.weapon), barrelInAim: barrels.aim, barrelNear: barrels.near, onRule, ...(stalled ? { forceMode: 'fight' } : {}) };
   }
   // Is there room to strafe? Both sides of the player must have
   // config.strafeRoom units of floor with no wall, drop or nukage shore.
@@ -751,6 +944,19 @@ export async function createJevPolicy(options = {}) {
       if (movementHazard(geometry, from, to, { ignoreLines: guardIgnoreLines })) return false;
     }
     return true;
+  }
+
+  // How far the player has drifted from the best approach it managed on this
+  // route step: the measure of ground given up to a fight.
+  let driftEdge = null;
+  let bestTargetDistance = Infinity;
+  function targetDrift(context) {
+    const edgeId = context?.edge?.id || 'exit';
+    const distance = Number(context?.targetDistance);
+    if (driftEdge !== edgeId) { driftEdge = edgeId; bestTargetDistance = Infinity; }
+    if (!Number.isFinite(distance)) return 0;
+    if (distance < bestTargetDistance) bestTargetDistance = distance;
+    return distance - bestTargetDistance;
   }
 
   // Geometric cover: see config.coverSeek. `coverSpot` is the spot being
@@ -801,7 +1007,9 @@ export async function createJevPolicy(options = {}) {
       }
       return null;
     }
-    if (coverCount >= config.coverMaxPerEdge) return null;
+    // Cover walks away from the route too, so the same drift limit applies to
+    // starting a new one.
+    if (coverCount >= config.coverMaxPerEdge || targetDrift(context) > config.retreatDriftLimit) return null;
     const threats = hitscanShooters(state);
     const health = Number(player.health);
     if (threats.length < config.coverShooters && !(threats.length >= 1 && health < config.coverLowHealth)) return null;
@@ -840,24 +1048,39 @@ export async function createJevPolicy(options = {}) {
     const peak = Math.max(...healthHistory.map(h => h.health));
     return Math.max(0, peak - health);
   }
-  // Weapons the player has been seen holding (the state carries the ready
-  // weapon and the ammo, not the owned set): 1 pistol, 2 shotgun, 3 chaingun.
-  const ownedWeapons = new Set([1]);
+  // Which weapon to hold. The engine state reports the ready weapon and the
+  // ammo, not the owned set, and asking for a weapon the player does not own
+  // is a no-op: vanilla P_PlayerThink applies BT_CHANGE only when
+  // weaponowned[newweapon] and its ammo are there. So the rule asks and lets
+  // the engine decide. (An earlier version gated on weapons seen in hand and
+  // never fired once: the run that never picked a shotgun up could never ask
+  // for one either.)
   let lastWeaponRequestTic = -Infinity;
+  let pendingWeapon = null;      // { weapon, tic } of the last request, to learn what the player does not own
+  const deniedWeapons = new Set();
   function weaponWanted(state) {
     if (!config.weaponSelect) return null;
     const player = state?.player || {};
     const weapon = Number(player.weapon);
-    if (Number.isFinite(weapon)) ownedWeapons.add(weapon);
     const tic = Number(state?.levelTime ?? 0);
+    if (Number.isFinite(weapon)) { heldWeapons.add(weapon); deniedWeapons.delete(weapon); }
+    // A request that did not take within a switch's worth of tics means the
+    // player does not own that weapon (the engine ignores BT_CHANGE then):
+    // stop asking, until it turns up in hand.
+    if (pendingWeapon && tic - pendingWeapon.tic >= config.weaponSelectHoldTics) {
+      if (weapon !== pendingWeapon.weapon) deniedWeapons.add(pendingWeapon.weapon);
+      pendingWeapon = null;
+    }
     if (tic - lastWeaponRequestTic < config.weaponSelectHoldTics) return null;
     const shells = Number(player.ammo?.shells ?? 0), bullets = Number(player.ammo?.bullets ?? 0);
+    const want = candidate => candidate !== weapon && !deniedWeapons.has(candidate);
     let wanted = null;
-    if (weapon === 1 && ownedWeapons.has(2) && shells > 0) wanted = 2;
-    else if (weapon === 1 && ownedWeapons.has(3) && bullets > 0) wanted = 3;
-    else if (weapon === 0 && bullets > 0) wanted = 1;
+    if (weapon <= 1 && shells > 0 && want(2)) wanted = 2;        // the shotgun beats the pistol at every range that matters
+    else if (weapon <= 1 && bullets > 0 && want(3)) wanted = 3;  // a chaingun if there is one
+    else if (weapon === 0 && bullets > 0 && want(1)) wanted = 1; // fists with bullets in the pocket
     if (wanted == null) return null;
     lastWeaponRequestTic = tic;
+    pendingWeapon = { weapon: wanted, tic };
     stats.rules.weaponSelect++;
     return wanted;
   }
@@ -897,7 +1120,7 @@ export async function createJevPolicy(options = {}) {
     }
     if (stats.calls >= config.maxCalls) { stats.capped = true; return null; }
 
-    const compact = compactState(state, { ...context, maxEnemies: config.maxEnemies, meleeRange: config.meleeRange, recentDamage: lost });
+    const compact = compactState(state, { ...context, maxEnemies: config.maxEnemies, meleeRange: config.meleeRange, recentDamage: lost, profile: config.profile });
     if (compact.visibleEnemies.length) engagedUntilTic = Number(state.levelTime) + config.engageHoldTics;
     const questions = buildQuestions(compact, sdk);
     const request = { state: compact, questions, ...(config.model ? { model: config.model } : {}) };

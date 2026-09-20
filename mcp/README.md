@@ -46,8 +46,13 @@ npm install
 export TYPESAFE_API_KEY=...          # policy runs only
 npm run autoplay:e1m1:hmp:watch      # watch Jev play E1M1 at Hurt Me Plenty
 npm run autoplay:e1m2:hmp:record     # record E1M2 to exports/autoplay/e1m2-jev-hmp-rec/run-0.webm
-npm run autoplay:e1m2:hmp:x10        # 10-run trial with report, step and decision logs
+npm run autoplay:e1m2:hmp:x10        # 10-run trial, 4 runs at a time, with report, step and decision logs
+npm run test:autoplay:weapon         # engine self-test for the weapon-change input
 ```
+
+The policy's thresholds come from a per-map profile derived from the WAD and
+the navigation graph (`autoplay_map_profile.mjs`), not from the map's name;
+`--jev-opt key=value` overrides any single one for an ablation.
 
 `AUTOPLAY.md` documents the runner, the policy, every trial and the recording
 and dashboard tools; the root README has the results table.

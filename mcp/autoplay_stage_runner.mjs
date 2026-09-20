@@ -38,11 +38,12 @@ import { installThingAuthoring } from './thing_authoring.js';
 import { installSemanticGeometry } from './semantic_geometry.js';
 import { buildNavigationGraph, findExitProgression, lineOfWalk, locatePointSector, planLocalPath, solidLines } from './navigation_graph.js';
 import {
-  coldBoot, exactInput, isCombatCommand, launchChromium, liveSectorFloor, liveSectorOpening, navigateEdge, remainingPathDistance, safeRecovery, setTicHook
+  coldBoot, exactInput, interruptedFailure, isCombatCommand, launchChromium, liveSectorFloor, liveSectorOpening, mergeTelemetry, navigateEdge, remainingPathDistance, safeRecovery, setTicHook
 } from './navigation_browser_agent.mjs';
 import { OBJECTIVE_ORDER, OBJECTIVE_VERSION, compareToBaseline, rankRuns, runMetrics } from './autoplay_objective.mjs';
 import { installOverlay, updateOverlay } from './autoplay_overlay.mjs';
 import { loadMapItems } from './autoplay_items.mjs';
+import { buildMapProfile } from './autoplay_map_profile.mjs';
 import { createRecorder, findFfmpeg } from './autoplay_recorder.mjs';
 
 // LinuxDOOM skill_t: 0 ITYTD, 1 HNTR, 2 HMP, 3 UV, 4 Nightmare. The CLI takes
@@ -244,6 +245,9 @@ export async function approachAndUseExit(page, exit, options = {}) {
       throw error;
     }
     usedTics += result.tics;
+    if (result.interrupted) {
+      return { passed: false, usedTics, routeTics, combatTics, trace, failure: interruptedFailure(result), finalState: result.state };
+    }
     if (isCombatCommand(command)) combatTics += result.tics; else routeTics += result.tics;
     const remaining = remainingPathDistance(position, waypoints, finalTarget);
     if (remaining < bestDistance - 4) { bestDistance = remaining; ticsSinceProgress = 0; }
@@ -316,7 +320,10 @@ export async function activateTrigger(page, edge, options = {}) {
     }
     return opening >= PLAYER_HEIGHT_UNITS;
   };
-  return approachAndUseExit(page, { midpoint: edge.midpoint, trigger: edge.action }, { ...options, success, failureLabel: 'trigger', maxTics: options.maxTicsPerEdge });
+  // `line` matters: a wall switch sits on a one-sided line, so the straight
+  // walk to its midpoint always reads as blocked. Without the exception the
+  // approach replans every step and never reaches the switch.
+  return approachAndUseExit(page, { midpoint: edge.midpoint, trigger: edge.action, line: edge.line }, { ...options, success, failureLabel: 'trigger', maxTics: options.maxTicsPerEdge });
 }
 const PLAYER_HEIGHT_UNITS = 56;
 
@@ -508,7 +515,9 @@ export async function runStageAttempt(page, stage, options = {}) {
   // After the exit fires the engine is in intermission and reports no player,
   // so the last in-level telemetry sample is the run's final measurement.
   const live = await telemetry(page).catch(() => null);
-  attempt.telemetry = live?.ready ? live : lastTelemetry;
+  // mergeTelemetry is the identity unless a counter went backwards, which
+  // only a mid-command death and its reborn can do (see navigation_browser_agent).
+  attempt.telemetry = live?.ready ? mergeTelemetry(lastTelemetry, live) : lastTelemetry;
   attempt.completedAt = new Date().toISOString();
   return attempt;
 }
@@ -572,9 +581,25 @@ export async function runStageClearTrial(input = {}) {
     ? (await loadMapItems(config.iwadPath, config.map, { skill: config.skill ?? 0 }))
       .map(item => ({ ...item, sector: locatePointSector(stage.workspace, { x: item.x, y: item.y }) }))
     : [];
+  // Explosive barrels (doomednum 2035). They are not skill-filtered and are
+  // not pickups, so they come straight from the map's things. Every one of
+  // ten E1M3 runs at Hey Not Too Rough died at tic 827 to a barrel 44 units
+  // away that the policy shot itself while aiming at a zombieman behind it.
+  const mapBarrels = usesPolicy
+    ? (stage.workspace.geometry?.things || [])
+      .filter(thing => Number(thing.doomEdNum ?? thing.type) === 2035)
+      .map(thing => ({ x: Number(thing.x), y: Number(thing.y) }))
+    : [];
+  // What kind of level this is: drives the policy's thresholds (under any
+  // explicit --jev-opt) and tells the model what it is walking into.
+  const mapProfile = usesPolicy
+    ? await buildMapProfile({ workspace: stage.workspace, graph: stage.graph, progression: stage.progression, iwadPath: config.iwadPath, map: config.map, skill: config.skill ?? 0 })
+    : null;
+  if (mapProfile) console.error(`autoplay profile ${config.map}: ${mapProfile.brief} config ${JSON.stringify(mapProfile.config)}`);
   const report = {
     version: AUTOPLAY_VERSION,
     map: config.map,
+    mapProfile,
     godMode: Boolean(config.godMode),
     skill: config.skill ?? null,
     policy: config.policy || 'none',
@@ -597,10 +622,36 @@ export async function runStageClearTrial(input = {}) {
   if (recording && !recording.ffmpegPath) throw new Error('--record needs ffmpeg: set DOOM_MCP_FFMPEG, install ffmpeg, or run `npx playwright install ffmpeg`');
   if (recording) report.recording = { every: recording.every, quality: recording.quality, bitrate: recording.bitrate, ffmpeg: recording.ffmpegPath };
 
-  const browser = await launchChromium({ headed: Boolean(config.headed) });
+  // One Chromium for the whole trial, with a replacement on hand. A crash of
+  // the shared browser used to take every run in flight with it: an E1M3
+  // trial lost four of ten to "Target page, context or browser has been
+  // closed" from one death, and a lost run is not a result.
+  let browser = await launchChromium({ headed: Boolean(config.headed) });
+  let relaunches = 0;
+  const newRunPage = async () => {
+    try {
+      return await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    } catch (error) {
+      if (relaunches >= 3) throw error;
+      relaunches++;
+      console.error(`autoplay: relaunching Chromium after ${String(error?.message || error).split('\n')[0]}`);
+      await browser.close().catch(() => {});
+      browser = await launchChromium({ headed: Boolean(config.headed) });
+      return browser.newPage({ viewport: { width: 1280, height: 800 } });
+    }
+  };
   try {
-    for (let runIndex = 0; runIndex < Number(config.runs); runIndex++) {
-      const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    // Runs are independent: each one gets a fresh page and its own policy, and
+    // a run is a pure function of the commands it sends. Wall-clock time per
+    // run is dominated by waiting for the engine, which paces tics at 35 Hz,
+    // so several runs fit side by side on one machine. Recording and headed
+    // mode stay sequential: both are watched, and N ffmpeg encoders next to N
+    // screenshot streams would compete for the same cores.
+    const concurrency = recording || config.headed ? 1 : Math.max(1, Math.min(Number(config.concurrency || 1), Number(config.runs)));
+    const results = new Array(Number(config.runs));
+    let nextRun = 0;
+    const runOne = async (runIndex) => {
+      const page = await newRunPage();
       const diagnostics = [];
       page.on('pageerror', error => diagnostics.push({ type: 'pageerror', message: String(error?.message || error) }));
       page.on('console', message => { if (message.type() === 'error') diagnostics.push({ type: 'console', message: message.text() }); });
@@ -628,7 +679,7 @@ export async function runStageClearTrial(input = {}) {
         if (config.policy === 'jev' || config.policy === 'rules') {
           const { createJevPolicy } = await import('./autoplay_jev_policy.mjs');
           policy = await createJevPolicy({
-            ...(config.jev || {}), rulesOnly: config.policy === 'rules', log: policyLog, runIndex, items: mapItems, graph: stage.graph,
+            profile: mapProfile, ...(config.jev || {}), rulesOnly: config.policy === 'rules', log: policyLog, runIndex, items: mapItems, barrels: mapBarrels, graph: stage.graph,
             onDecision: config.overlay === false ? null : entry => updateOverlay(page, { jev: entry })
           });
         }
@@ -680,7 +731,7 @@ export async function runStageClearTrial(input = {}) {
       }
       attempt.runIndex = runIndex;
       attempt.diagnostics = diagnostics;
-      report.runs.push(attempt);
+      results[runIndex] = attempt;
       if (policy && !attempt.policy) attempt.policy = policy.summary();
       console.error(`autoplay ${config.map} run ${runIndex}: ${attempt.passed ? 'CLEARED' : 'FAILED'} ${JSON.stringify({
         skill: attempt.skill ?? null,
@@ -689,7 +740,12 @@ export async function runStageClearTrial(input = {}) {
         ...(attempt.policy ? { jevCalls: attempt.policy.calls, jevOverrides: attempt.policy.overrides, jevInputTokens: attempt.policy.inputTokens, jevCostUsd: attempt.policy.estimatedInputCostUsd } : {}),
         ...(attempt.video ? { video: attempt.video.path, videoSeconds: attempt.video.seconds, videoBytes: attempt.video.bytes, videoError: attempt.video.error || attempt.video.captureError || null } : {})
       })}`);
-    }
+    };
+    const worker = async () => { while (true) { const index = nextRun++; if (index >= Number(config.runs)) return; await runOne(index); } };
+    if (concurrency > 1) console.error(`autoplay ${config.map}: ${config.runs} runs, ${concurrency} at a time`);
+    await Promise.all(Array.from({ length: concurrency }, worker));
+    report.runs = results.filter(Boolean);
+    report.concurrency = concurrency;
   } finally {
     await browser.close();
   }
@@ -734,7 +790,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       'report-dir': { type: 'string' },
       policy: { type: 'string', default: 'none' },
       'jev-dry-run': { type: 'boolean', default: false },
-      'jev-max-calls': { type: 'string', default: '600' },
+      'jev-max-calls': { type: 'string' },   // no default: the map profile sets it unless given
       'jev-model': { type: 'string' },
       'jev-pipeline': { type: 'string' },      // lag in tics; answers apply this long after their state
       'jev-min-steps': { type: 'string', default: '1' },
@@ -743,6 +799,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       skill: { type: 'string' },
       headed: { type: 'boolean', default: false },
       overlay: { type: 'boolean', default: true },
+      concurrency: { type: 'string', default: '1' },   // runs in flight at once; forced to 1 while recording or headed
       record: { type: 'boolean', default: false },
       'record-every': { type: 'string', default: 'tic' },   // tic: one frame per world tic; step: one per command
       'record-quality': { type: 'string', default: '80' }, // JPEG quality of the captured frames
@@ -760,6 +817,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       skill: parseSkill(values.skill),
       headed: Boolean(values.headed),
       overlay: Boolean(values.overlay),
+      concurrency: Number(values.concurrency),
       record: Boolean(values.record),
       recordEvery: String(values['record-every']),
       recordQuality: Number(values['record-quality']),
@@ -772,7 +830,8 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       maxCombatTicsPerEdge: Number(values['max-combat-tics']),
       policy: String(values.policy),
       jev: {
-        dryRun: Boolean(values['jev-dry-run']), maxCalls: Number(values['jev-max-calls']), model: values['jev-model'],
+        dryRun: Boolean(values['jev-dry-run']), model: values['jev-model'],
+        ...(values['jev-max-calls'] ? { maxCalls: Number(values['jev-max-calls']) } : {}),
         pipelineLagTics: values['jev-pipeline'] ? Number(values['jev-pipeline']) : 0,
         minStepsBetweenCalls: Number(values['jev-min-steps']),
         ...Object.fromEntries((values['jev-opt'] || []).map(pair => {

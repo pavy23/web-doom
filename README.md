@@ -287,8 +287,16 @@ Two layers:
    in reach the engine state is compressed to ~1,400 tokens and Jev answers
    five typed questions (safe to keep running, response, target, fire,
    danger). Code-owned safety rules sit on top (stall, point-blank, hitscan
-   fight, low-health hold, projectile strafe, terrain guard, loot). The
-   objective is lexicographic: deaths, then damage taken, then world tics.
+   fight, low-health hold, projectile strafe, geometric cover, weapon
+   selection, terrain guard, loot). The objective is lexicographic: deaths,
+   then damage taken, then world tics.
+
+The objective is the same on every map; the thresholds that serve it are
+derived per map from the WAD and the navigation graph — monsters on the
+route and how they attack, items to pick up, route length — so a level with
+forty hitscan monsters and one with six do not share a "walk to a medikit
+below 50 hp" rule. Nothing keys on the map's name, so a generated map gets
+a profile too.
 
 Two clips, recorded with `--record` (one frame per world tic, so they run at
 game time). The previews below are 8-second excerpts; the full clips play on
@@ -326,7 +334,10 @@ node autoplay_postmortem.mjs exports/autoplay/e1m3-jev-hmp-x10   # where each ru
 
 Flags: `--map E1M1..E1M3`, `--skill itytd|hntr|hmp|uv|nightmare`, `--policy
 jev|rules|none`, `--jev-pipeline 8` (answers applied 8 tics after their state,
-no pauses while the model thinks), `--headed`, `--record`, `--runs N`,
+no pauses while the model thinks), `--concurrency N` (runs of a trial in
+parallel; 4 cuts a 10-run trial to about a third of the wall clock and the
+output stays step-for-step identical), `--jev-opt key=value` (override one
+policy setting, for ablations), `--headed`, `--record`, `--runs N`,
 `--baseline other/report.json`.
 
 ### Results (10-run trials unless noted, policy 0.7.x, `--jev-pipeline 8`)
@@ -337,7 +348,8 @@ no pauses while the model thinks), `--headed`, `--record`, `--runs N`,
 | E1M1, HMP | dies in the exit corridor | **10/10**, damage 18-39 (policy 0.8.1; 15 [0-24] with 0.6.2) | |
 | E1M1, UV | dies in the courtyard | 1-2/10 (pooled 5/16); rules-only control 0/10 | competence boundary: 16 shotgun guys in an open hangar with a pistol |
 | E1M2, HMP | clears, 183 damage | **10/10**, damage 105 [69-150], +7% time | keys, remote doors, lifts |
-| E1M3, HMP | dies at tic 587 | 0-1/10 over six trials; open | ~45 mostly-hitscan monsters, a walkway between nukage lakes, a stair builder before the exit; the follower completes it in god mode, the policy fights shotgun guys with a pistol (no weapon-change input yet) and dies |
+| E1M3, HMP | dies at tic 587 | 0-1/10 over nine trials; open | 40 monsters on the route, three quarters hitscan, a walkway between nukage lakes, a key detour and a stair builder before the exit |
+| E1M3, HNTR | dies at tic 1872 | 1/10 | half the monsters and twice the health per monster, and the same clear rate: the level is not failing because it is crowded |
 
 Cost: a run consults Jev 70-500 times at ~$0.00004 per call, so a 10-run
 trial is $0.10-0.20; the same judgments through a frontier LLM would cost

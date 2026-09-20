@@ -23,7 +23,8 @@ node autoplay_stage_runner.mjs --map E1M1 --runs 3 [--no-god] [--max-edge-tics 2
 
 The runner starts the local game bridge itself (`DOOM_MCP_PORT`, default 3777),
 serves the runtime from `direct/` or `mcp/.cache/direct-runtime`, and exits when
-the trial is written.
+the trial is written. Two runners at once need two ports: set `DOOM_MCP_PORT`
+on the second one.
 
 If the host's Chromium does not match the pinned Playwright revision, point the
 launcher at an executable:
@@ -140,6 +141,53 @@ with `--baseline other/report.json`, the deltas of this trial's best run
 against the baseline's best run plus a one-line verdict
 (`better: damageTaken 33 -> 10`, `worse: did not clear`, ...). The CLI prints
 both lines after the summary.
+
+## Map profile: one objective, per-level thresholds
+
+The objective above is the same on every map. The thresholds that serve it
+are not. At Hurt Me Plenty, measured on the planned route:
+
+| | route | monsters on route | hitscan | health items (points) | shells | armor |
+|---|---|---|---|---|---|---|
+| E1M1 | 4,267 units, 20 transitions, no key | 3 | 67% | 2 (35) | 3 | 0 |
+| E1M2 | 8,897 units, 70 transitions, red key | 14 | 79% | 7 (145) | 3 | 0 |
+| E1M3 | 12,136 units, 60 transitions, blue key | 40 | 75% | 10 (160) | 8 | 1 |
+
+"Walk to a medikit below 50 hp" is timid on the first and reckless on the
+last: E1M3 is 4 health points per monster on the route where E1M2 is 10.
+
+`autoplay_map_profile.mjs` derives a profile from the WAD and the
+navigation graph before the first run, never from the map's name, so a
+generated map gets one too. It counts the monsters and items whose sector
+is on the planned route, classifies each monster by how it attacks
+(hitscan cannot be dodged, which is what the cover and strafe rules are
+for) and how tough it is, and measures the route's length.
+
+`deriveConfig` turns that into settings, one sentence of reasoning each:
+
+| Setting | Rule | E1M1 | E1M2 | E1M3 |
+|---|---|---|---|---|
+| `healthLootBelow` | danger sets it, supply only decides whether a detour is possible | 45 | 70 | 70 |
+| `shellsLootBelow` | keep a margin wherever the route carries shells | 12 | 12 | 12 |
+| `lootArmor` | only where the route has armor | false | false | true |
+| `lowHealth` | never advance into a shooter below this; rises on crowded or tough levels | 40 | 40 | 50 |
+| `coverSeek` | cover costs time and only pays against hitscan groups | false | true | true |
+| `maxCalls` | budget grows with the number of route transitions | 400 | 900 | 800 |
+| `strafeRoom` | crowded levels leave less room to sidestep | 64 | 64 | 96 |
+
+Order of precedence: the policy defaults, then the profile, then the
+explicit `--jev-opt key=value`, so a profile never overrides a deliberate
+setting and a deliberate setting never has to repeat one. The profile is
+written to `report.mapProfile`, printed as one `autoplay profile` line at
+startup, and a short `level` block goes into the model's state so the brief
+matches the level too.
+
+Counting pickups alone was the wrong rule and cost a working level: E1M2's
+seven health items read as "moderate" next to E1M3's ten, so E1M2 got
+`healthLootBelow` 60 and `lowHealth` 50 and fell from 10/10 to 1/10. The
+supply is nearly the same on both levels; what differs is what it has to
+cover. The corrected rule keys on the danger, and the supply only decides
+whether a detour is possible at all.
 
 ## Dashboard
 
@@ -827,6 +875,323 @@ What E1M3 taught, in one line each:
 5. E1M1 is unaffected: policy 0.7.3 clears E1M1 HMP (24 and 60 damage in
    two runs), with more calls than 0.6.2 (109-152 vs ~70) because of the
    engagement hold.
+
+### Policy 0.9.0: weapon selection, and the engine change it needed
+
+Every E1M3 fight past the first area was a pistol fight with shells in the
+pocket. Vanilla DOOM switches to a weapon when it is picked up and back to
+the pistol when its ammo runs out, but never forward again when ammo is
+picked up later, and the agent input had forward/strafe/turn/attack/use
+and no way to say "hold the shotgun".
+
+The engine side is three small changes, all in the direct port:
+
+1. `doom_multi_agent.c` and `doom_agent_input.c` carry a `weapon_change`
+   field per queued command, exposed as `doomctl_queue_player_weapon` and
+   `doomctl_queue_agent_weapon`.
+2. The bits go into the ticcmd as `BT_CHANGE | (weapon << BT_WEAPONSHIFT)`
+   while the command still has tics left to execute, and are cleared after
+   the world tic, so one request is one switch.
+3. `agent_input_bridge.js` forwards an optional `params.weapon` and stays
+   quiet on an older engine build that does not have the export.
+
+`P_PlayerThink` validates the request itself (`weaponowned` and the ammo
+for it), so the policy does not have to know what the player owns, which
+matters because the state reports the ready weapon and the ammo counts and
+no owned set. An earlier version gated the rule on weapons seen in the
+player's hands and was therefore circular: it could never ask for a weapon
+it had not already been given. The rule now asks, watches for
+`weaponSelectHoldTics` (35, about one switch's worth of lower-and-raise),
+and remembers a weapon the engine ignored as not owned.
+
+`npm run test:autoplay:weapon` is the self-test: fists (always owned) must
+take, the pistol must take on the way back, the BFG must be ignored. It
+waits 40 tics per request because a switch is about 32.
+
+### Policy 1.0.0: how far a fight may drag the player
+
+A fight on E1M2 backed the player out of the switch's room, up a lift and
+into another sector, from where the trigger approach (which routes inside
+one sector) could never walk back, and the run ended in
+`trigger_no_progress`. `retreatDriftLimit` (192 units) measures the ground
+given up against the best approach reached on the current route step and
+stops the retreat there.
+
+### Policy 1.1.0: a weapon's range, and not braking twice
+
+Seven of ten E1M3 runs in the 1.0.0 trial were tic-identical and died the
+same way at `47:50:686`: the player stands at 60 hp firing a shotgun at an
+imp 348 units away, takes 58 damage in one step, and then oscillates in
+place until it dies. Two rules came out of it.
+
+`noFightFar`: a shotgun's pellets spread past about 300 units, the fists
+reach 64. Standing still to fire past a weapon's useful range is time
+spent being shot for almost nothing, so the rule keeps the route command
+and lets the fight happen when the target is in range. `WEAPON_RANGE` is
+indexed by `weapontype_t`, `weaponRangeSlack` (1.1) is the margin, and
+point-blank and held cover spots override it: something that close is
+dealt with wherever it stands.
+
+The brake: the terrain brake thrusts against the current velocity when
+momentum alone would carry the player over an edge. Applied on every
+consecutive step it reverses the velocity, the reversed velocity reads as
+a fresh slide toward the same edge, and the next brake reverses it back,
+twenty tics of full forward and full back while the shooting continued.
+The brake now needs a speed above a walking pace (`brakeMinSpeed` 4) and
+never fires on two steps in a row; the engine's own friction (0.90625 per
+tic) finishes the job.
+
+One E1M3 run, against the seven tic-identical 1.0.0 runs it replaces:
+
+```text
+                1.0.0              1.1.0
+died at tic     2857               6479
+died at edge    47:50:686          56:74:496 (two imps inside 70 units)
+kills           17                 31
+damage          146                185
+```
+
+`noFightFar` fired 18 times in that run and the brake 33, so the rules
+were live even though `exports/autoplay/e1m3-smoke-v102/report.json`
+stamps it 1.0.0: the trial was launched between the behaviour landing and
+the version string being raised. Bump the version in the same edit as the
+behaviour, or a report's own stamp stops being the authority.
+
+The ten-run trial is less kind: **0/10**, against 1.0.0's 1/10.
+
+```text
+died in the blue key area (sectors 24-27)   5 runs, tics 2866-3913, damage 120-151
+died in sector 56 with nothing in sight     2 runs, tics 10269 and 10565, 30 kills each
+died at 17:18:610                           1 run,  tic 7420, 46 kills
+step refused, world no longer paused        2 runs, alive at 40 and 53 hp
+```
+
+The one clear under 1.0.0 was a lucky run, not a capability: seven of its
+ten runs were the same death. 1.1.0 spreads the runs out instead (2866 to
+10565 tics, 23 to 46 kills), which is the model steering again, but the
+blue key area still ends half of them.
+
+The last two lines are two separate things worth naming. Sector 56 with no
+enemy in sight is a terrain death, not a fight. And "step refused" was a
+reporting bug, not an engine one: `doomctl_step_playtest_tics` returns -2
+when the world is not paused, which happens mid-run only when the player
+dies inside a command whose USE is still latched, because the engine's own
+reborn reloads the level and `G_DoLoadLevel` clears `paused`. Those two
+runs were deaths; the runner now reads the telemetry and reports them as
+such instead of losing the run to a `browser_trial_error`.
+
+### E1M2 with the corrected profile (policy 1.0.0, 10 runs)
+
+`exports/autoplay/e1m2-jev-hmp-x10-v101`: **10/10 cleared**, 0 deaths, so
+the profile regression is closed. This trial is policy **1.0.0**, not
+1.1.0: it was launched before the 1.1.0 edits landed, and the version in
+`report.json` is the authority. The rest of the numbers are worse than
+the 0.6.2 pipelined trial that last cleared 10/10:
+
+```text
+                    cleared   damage            tics            min health
+0.6.2, pipelined    10/10     105 [69-150]      4167 [4005-4782]
+1.0.0, profile      10/10     152 (185 once)    5258             16
+```
+
+Nine of the ten runs are tic-identical, which by the note under
+[Determinism](#determinism) means the rules are deciding and the model is
+not steering. The post-mortem says where the damage is: six events between
+tics 3321 and 3847 in the exit rooms (sectors 137 and 138), about 111 of
+the 152 points, all against two imps. The first of them is a retreat the
+terrain guard blocked, which is what 1.2.0 addresses.
+
+### Where E1M3 stands after three policy versions
+
+Ten runs each at Hurt Me Plenty, `--jev-pipeline 8`, Wilson 95%:
+
+```text
+          cleared      CI        damage med   kills med   deaths at
+1.0.0     1/10        2%-40%     146          17          7 identical runs at 47:50:686
+1.1.0     0/10        0%-28%     150          26          spread over 6 edges
+1.2.0     1/10        2%-40%     180          33          spread over 7 edges
+```
+
+The three intervals overlap completely: on this evidence the level is not
+being cleared and none of the three versions changed that. What did change
+is the shape of the runs. Under 1.0.0 seven of ten were the same death;
+under 1.2.0 no edge takes more than two. The kills median doubled. The
+policy is getting further into the level and dying somewhere else, which
+is progress in the fights and not yet progress in the objective.
+
+E1M3 needs something the tactical layer does not have. The route is 40
+monsters over 12,136 units with 4 health points of pickup per monster,
+which is a level to be run rather than fought, and every rule here is
+about fighting better.
+
+### Barrels, and what E1M3 at Hey Not Too Rough actually said
+
+The question was whether E1M3 is beyond this stack or only beyond it at
+Hurt Me Plenty. At HNTR the route carries 20 monsters instead of 40 with
+the same 160 health points, which is E1M2's density and twice E1M3's
+health per monster. The trial answered a different question first.
+
+All ten HNTR runs under 1.3.0 died at tic 827, tic-identical: 97 damage
+in one step, no enemy in the view cone, ordinary floor. The cause is a
+barrel 44 units away at (-1968,-2448). The policy aimed at a zombieman
+standing behind it and fired. A barrel's blast is 128 units at the centre
+and falls off with distance, so at 44 units it is 97 damage to the
+shooter. Nothing in the policy knew barrels existed, and E1M1 has 6,
+E1M2 24 and E1M3 28.
+
+`barrelBlock` (1.4.0) holds fire when a barrel sits in the shot cone
+within blast range. That moved the deaths from tic 827 to about 2,200.
+The trace of the new death says the rule was half of one: at tic 1980 a
+run lost 87 of 100 hp standing 38 units from a barrel with its own
+trigger off, because an imp's fireball lit it. `barrelStandoff` (1.5.0)
+steps out of any barrel's blast while something can shoot.
+
+Ten runs at HNTR with both rules:
+
+```text
+cleared        1/10, Wilson 2%-40%
+deepest runs   7405 tics (the clear), 6944, 6829, 6130
+shallow runs   4 between 2993 and 3251, all in the blue key area
+median         3791 tics, 9 kills
+```
+
+**This does not support the difficulty hypothesis.** E1M3 at HMP under
+1.2.0 was also 1/10. Halving the monsters, doubling the health per
+monster and dropping the density to E1M2's did not change the clear
+rate; it only moved where the runs end. Four of ten still finish in
+sectors 24 to 27, which is where half the HMP runs finish too.
+
+So E1M3 is not failing because it is crowded. Something about the blue
+key area defeats this policy at both skills, and that is where the next
+work belongs, not in more damage arithmetic.
+
+### Running trials that outlive the turn
+
+Two trials were lost to processes being reaped between turns, one of
+them mid-trial with six of ten runs done and no `report.json` written.
+`nohup` and `disown` did not survive it. Trials must be started through
+the harness's own background mechanism, which does. Related: a Chromium
+crash used to take every run in flight with it, because the trial shares
+one browser; the runner now replaces it up to three times.
+
+### Policy 1.2.0: a blocked retreat sidesteps instead of standing still
+
+When the terrain guard rejects a step it keeps the aim and zeroes the
+movement. For a backpedal into a wall that means standing still in the
+open, which is the worst possible answer to a fireball. It is the first
+event in E1M2's damage chain (21 hp) and it cost E1M3 51 hp in two steps.
+
+`guardSidestep` tries a pure sidestep to either side before standing,
+keeping the command's aim and shot. Moving does not affect the player's
+own accuracy in vanilla DOOM, so the sidestep is free: it only has to not
+walk into the next hazard, which the same guard checks.
+
+One E1M2 run against the 1.0.0 trial's nine identical ones:
+
+```text
+                damage   min health   tics    retreat steps   guard blocks
+1.0.0           152      16           5258    134             (chain of 6 events, 111 hp)
+1.2.0           119      44           5648     48             13, of which 5 sidestepped
+```
+
+The exit-room chain is gone: two events for 36 points where there were
+six for 111, and the player never drops below 44 hp. The run is 390 tics
+longer, which the objective ranks below the damage.
+
+E1M1 at HMP, 10 runs under 1.2.0, is the best result the level has had:
+
+```text
+                cleared   damage              min health   tics
+0.8.1           10/10     18-39
+1.2.0           10/10     15 [15-39]          61-85        1554-1912
+```
+
+Six of the ten took exactly 15, which is the two zombiemen's opening
+shots and nothing else. Credit where it is due: across all ten runs
+`guardSidestep` fired once and `noFightFar` not at all, so this is not
+the new rules improving E1M1. It is the map profile (`coverSeek` off, a
+lower loot threshold, a smaller call budget on a three-monster route)
+with the new rules staying out of the way. That is what the trial was
+for: a short level is where a combat rule regresses things.
+
+### E1M2: four arms, and what the ablation actually said
+
+Ten runs each, same map profile, Wilson 95%:
+
+```text
+arm                                  policy   cleared   CI          damage (cleared)   health picked up
+v101, corrected profile              1.0.0    10/10     72%-100%    152 [152-185]      30
+v120, sidestep on                    1.2.0     7/10     40%-89%     101 [62-152]        6
+v120b, sidestep on, second sample    1.2.0     5/10     24%-76%     107 [56-152]        4
+v120-nosidestep, guardSidestep=false 1.2.0     4/10     17%-69%      65 [56-173]        2
+```
+
+The ablation refutes the obvious reading. Turning the sidestep **off** on
+the same build gives 4/10, worse than the 7/10 and 5/10 with it on, so
+the rule is not what cost E1M2 its clear rate. Pooled, the sidestep is
+12/20 against 4/10 without it.
+
+What separates the 10/10 arm from all three 1.2.0 arms is the last
+column: it picked up 30 health items across ten runs where they pick up
+2 to 6. Loot detours are still started (15 to 19 given up per trial) and
+abandoned. The brake count moved the same way, from 514 firings to about
+150, which is what raising `brakeMinSpeed` from 0.5 to 4 and forbidding
+two brakes in a row was meant to do on E1M3, and apparently not what
+E1M2 wanted. That is the next ablation: `brakeMinSpeed=0.5` with
+`brakeConsecutive=true` restores the pre-1.1.0 brake on the current build.
+
+The deeper point stands either way. Health is being treated as an
+emergency measure rather than a route resource: the runs that die are the
+ones that arrive at the exit rooms with nothing banked, and by then there
+is nothing nearby to pick up.
+
+### A death inside a command
+
+`doomctl_step_playtest_tics` returns -2 when the world is not paused. Mid
+run that has one cause: the player dies inside a command whose USE is
+still latched, the engine's own reborn reloads the level, and
+`G_DoLoadLevel` clears `paused`. The next step threw, and two E1M3 runs
+were written off as `browser_trial_error` with their results lost.
+
+`exactInput` now reports the refusal instead of throwing, and the callers
+end the attempt with what the telemetry supports, which for a recorded
+death is `player_dead`. The reload also resets the player's own counters
+while the playtest accumulators survive it, so one run came back reading
+0 kills after 7,991 world tics. `mergeTelemetry` takes the earlier value
+wherever a counter went backwards; on a run that never rebore it is the
+identity.
+
+## Running a trial in parallel (`--concurrency N`)
+
+Runs in a trial are independent by construction: each one boots its own
+page, and the only shared state is the report. `--concurrency N` runs N of
+them at a time through a worker pool, writing each result into its own
+slot so the report's run order does not depend on which finished first. It
+is forced to 1 with `--record` or `--headed`, where a single window is the
+point.
+
+Measured on E1M1, rules-only, 4 runs: 4m43s at `--concurrency 1` against
+1m52s at `--concurrency 4`, with step-for-step identical output. The
+`*:x10` scripts pass `--concurrency 4`.
+
+### Where a step's wall-clock time goes
+
+A step of 3 tics costs about 126 ms, of which 86 ms is spent waiting for
+the engine. That is not overhead to tune away: `I_GetTime` is wall-clock
+based at 35 tics per second, so 3 tics *are* 85.7 ms of real time. The
+remaining 40 ms is six page round trips (telemetry before, agent status,
+queue, step, state, telemetry after).
+
+Three levers, in order of what they buy:
+
+| Lever | Speed-up | Cost |
+|---|---|---|
+| Parallel runs (`--concurrency`) | ~3x on a trial | none; done |
+| A virtual clock in `I_GetTime` | 3-5x on a single run | a C change and a WASM rebuild |
+| One `evaluate` per step, waiting in the page | 1.4x (126 -> 89 ms, measured) | the wait moves into the page, so a hung engine needs its own timeout |
+
+The virtual clock is the only one that touches a single run's speed
+meaningfully, and it is the only one that changes the engine.
 
 ## Pipelined consultation (`--jev-pipeline N`)
 
