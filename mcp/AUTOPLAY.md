@@ -652,11 +652,45 @@ lift rules v3             9/10 (90%)  60-98%   69-180, median 126   121:120 died
   waiting)
 ```
 
-E1M2 at HMP, final for this round: 9 of 10 runs clear with the policy
-(95% interval 60-98%), damage 69-180 against the baseline's 183, at
+E1M2 at HMP with synchronous consultation: 9 of 10 runs clear with the
+policy (95% interval 60-98%), damage 69-180 against the baseline's 183, at
 1.1-1.4x its time (3595-4437 tics, 103-127 s), $0.02 per run. The whole
 improvement from 3/10 came from layer 1 (lifts, keys, triggers, local
 routing, route recovery); the policy itself is unchanged since 0.6.2.
+
+## Pipelined consultation (`--jev-pipeline N`)
+
+A watched run stutters because every consultation holds the world for the
+model's latency (~166 ms, about 6 tics) before the next 3-4 tics run. With
+`--jev-pipeline N` the request for a step's state is sent without waiting;
+the world keeps stepping, and the answer is applied N tics later, waiting
+only if it has not arrived by then, so a trial is still a function of the
+answers rather than of the network. Between arrivals the latest decision
+is re-applied to the current state, and a new request launches only when
+none is in flight, which also spaces the calls out (the "consult less
+often" lever, `--jev-min-steps`, is available on top of it but was not
+needed).
+
+E1M2 at HMP, 10 runs each, same policy 0.6.2:
+
+```text
+                    cleared   damage (cleared)     tics (cleared)     calls/run  cost/run  world pauses/run
+synchronous         9/10      126 [69-180]         3879 [3595-4437]   359        $0.020    359 (one per call, ~166 ms each)
+pipelined, lag 8    10/10     105 [69-150]         4167 [4005-4782]   152        $0.009    1 (avg 83 ms)
+```
+
+The pauses are gone (one short stall per run when an answer takes longer
+than the lag), calls and cost halve because a request is only launched
+when the previous one has landed, and the clear rate and damage did not
+suffer: 10/10 and a lower median. The price is a ~7% longer clear time
+and decisions made on a state that is, on average, older than the nominal
+8 tics (22.9 tics measured, because an answer that lands after a fight
+ends is applied at the next consulted step). Two runs of the ten were
+tic-identical, which says the pipelined policy leans a little more on the
+rules than the synchronous one; watch that if it grows.
+
+This is now the recommended mode for `--headed` watching
+(`autoplay:*:watch` scripts pass `--jev-pipeline 8`).
 
 Note on determinism: with 0.4.2 and 0.4.3 all three runs were tic-identical
 (the rules decided every step), while the combat-budget trial's runs
