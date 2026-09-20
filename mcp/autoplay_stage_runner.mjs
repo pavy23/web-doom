@@ -316,7 +316,10 @@ export async function activateTrigger(page, edge, options = {}) {
     }
     return opening >= PLAYER_HEIGHT_UNITS;
   };
-  return approachAndUseExit(page, { midpoint: edge.midpoint, trigger: edge.action }, { ...options, success, failureLabel: 'trigger', maxTics: options.maxTicsPerEdge });
+  // `line` matters: a wall switch sits on a one-sided line, so the straight
+  // walk to its midpoint always reads as blocked. Without the exception the
+  // approach replans every step and never reaches the switch.
+  return approachAndUseExit(page, { midpoint: edge.midpoint, trigger: edge.action, line: edge.line }, { ...options, success, failureLabel: 'trigger', maxTics: options.maxTicsPerEdge });
 }
 const PLAYER_HEIGHT_UNITS = 56;
 
