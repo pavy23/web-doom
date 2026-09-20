@@ -15,7 +15,7 @@ import { appendFile } from 'node:fs/promises';
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 import { coverPoint, lineOfWalk, movementHazard } from './navigation_graph.js';
 
-export const JEV_POLICY_VERSION = '0.8.1-jev-policy';
+export const JEV_POLICY_VERSION = '0.8.2-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -326,7 +326,7 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
   // coverFight: holding a cover spot, every mode fights from where the
   // player stands (no strafe, no backpedal, no dodge out of the corner).
   if (options.holdPosition && mode !== 'advance') { mode = 'fight'; meta.mode = 'fight'; rules.push('coverFight'); meta.rules = rules; }
-  const strafeVs = options.projectileStrafe !== false && !options.holdPosition && isProjectile(target.name) && !pointBlank
+  const strafeVs = options.projectileStrafe !== false && options.strafeRoomClear !== false && !options.holdPosition && isProjectile(target.name) && !pointBlank
     ? 0.5 * Number(options.dodgeSide ?? 1) : 0;
   if (strafeVs) { rules.push('projectileStrafe'); meta.rules = rules; }
   if (mode === 'fight') {
@@ -420,9 +420,11 @@ export async function createJevPolicy(options = {}) {
     items: [],                 // static map pickups (autoplay_items.mjs) for health / shells loot
     graph: null,               // navigation graph (with geometry) for the terrain guard and walkable loot
     terrainGuard: true,        // never send a combat/loot step that walks into a wall, a drop or a damaging floor
-    projectileStrafe: false,   // strafe while fighting / retreating from projectile monsters. Off: the E1M1 HMP
-                               // ablation went from 87-89 damage to 18 without it; in corridors the strafe
-                               // bounces between the guard's flips and the shots stop landing
+    projectileStrafe: true,    // strafe while fighting / retreating from projectile monsters ...
+    strafeRoom: 64,            // ... only where both sides have this much free floor. The E1M1 HMP ablation
+                               // went from 87-89 damage to 18 without the strafe (in the 64-wide exit corridor
+                               // it bounced between the guard's flips and the shots stopped landing), while
+                               // E1M3 without it took the same two fireballs in every run again
     itemLootSameSectorOnly: true, // only items in the player's current sector: 12 of 16 straight-line
                                   // detours in the 0.6.0 trial ended at a wall ...
     itemLootWalkable: true,       // ... unless the graph shows a clear straight walk to the item (any sector)
@@ -726,7 +728,21 @@ export async function createJevPolicy(options = {}) {
   function ruleOptions(compact, state, context) {
     const stalled = detectStall(state, compact);
     const holding = Boolean(coverSpot?.arrived) && Number(state?.levelTime ?? 0) < Number(coverSpot?.holdUntil ?? 0);
-    return { ...config, dodgeSide, lastTarget, cover: context ? coverInfo(context) : null, holdPosition: holding, ...(stalled ? { forceMode: 'fight' } : {}) };
+    return { ...config, dodgeSide, lastTarget, cover: context ? coverInfo(context) : null, holdPosition: holding, strafeRoomClear: strafeRoomClear(state), ...(stalled ? { forceMode: 'fight' } : {}) };
+  }
+  // Is there room to strafe? Both sides of the player must have
+  // config.strafeRoom units of floor with no wall, drop or nukage shore.
+  function strafeRoomClear(state) {
+    if (!geometry || !config.strafeRoom) return true;
+    const player = state?.player || {};
+    const angle = Number(player.angle) * Math.PI / 180;
+    const rx = Math.cos(angle - Math.PI / 2), ry = Math.sin(angle - Math.PI / 2);
+    const from = { x: Number(player.x), y: Number(player.y) };
+    for (const side of [1, -1]) {
+      const to = { x: from.x + side * rx * config.strafeRoom, y: from.y + side * ry * config.strafeRoom };
+      if (movementHazard(geometry, from, to, { ignoreLines: guardIgnoreLines })) return false;
+    }
+    return true;
   }
 
   // Geometric cover: see config.coverSeek. `coverSpot` is the spot being
