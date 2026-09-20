@@ -610,7 +610,16 @@ export async function runStageClearTrial(input = {}) {
 
   const browser = await launchChromium({ headed: Boolean(config.headed) });
   try {
-    for (let runIndex = 0; runIndex < Number(config.runs); runIndex++) {
+    // Runs are independent: each one gets a fresh page and its own policy, and
+    // a run is a pure function of the commands it sends. Wall-clock time per
+    // run is dominated by waiting for the engine, which paces tics at 35 Hz,
+    // so several runs fit side by side on one machine. Recording and headed
+    // mode stay sequential: both are watched, and N ffmpeg encoders next to N
+    // screenshot streams would compete for the same cores.
+    const concurrency = recording || config.headed ? 1 : Math.max(1, Math.min(Number(config.concurrency || 1), Number(config.runs)));
+    const results = new Array(Number(config.runs));
+    let nextRun = 0;
+    const runOne = async (runIndex) => {
       const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
       const diagnostics = [];
       page.on('pageerror', error => diagnostics.push({ type: 'pageerror', message: String(error?.message || error) }));
@@ -691,7 +700,7 @@ export async function runStageClearTrial(input = {}) {
       }
       attempt.runIndex = runIndex;
       attempt.diagnostics = diagnostics;
-      report.runs.push(attempt);
+      results[runIndex] = attempt;
       if (policy && !attempt.policy) attempt.policy = policy.summary();
       console.error(`autoplay ${config.map} run ${runIndex}: ${attempt.passed ? 'CLEARED' : 'FAILED'} ${JSON.stringify({
         skill: attempt.skill ?? null,
@@ -700,7 +709,12 @@ export async function runStageClearTrial(input = {}) {
         ...(attempt.policy ? { jevCalls: attempt.policy.calls, jevOverrides: attempt.policy.overrides, jevInputTokens: attempt.policy.inputTokens, jevCostUsd: attempt.policy.estimatedInputCostUsd } : {}),
         ...(attempt.video ? { video: attempt.video.path, videoSeconds: attempt.video.seconds, videoBytes: attempt.video.bytes, videoError: attempt.video.error || attempt.video.captureError || null } : {})
       })}`);
-    }
+    };
+    const worker = async () => { while (true) { const index = nextRun++; if (index >= Number(config.runs)) return; await runOne(index); } };
+    if (concurrency > 1) console.error(`autoplay ${config.map}: ${config.runs} runs, ${concurrency} at a time`);
+    await Promise.all(Array.from({ length: concurrency }, worker));
+    report.runs = results.filter(Boolean);
+    report.concurrency = concurrency;
   } finally {
     await browser.close();
   }
@@ -754,6 +768,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       skill: { type: 'string' },
       headed: { type: 'boolean', default: false },
       overlay: { type: 'boolean', default: true },
+      concurrency: { type: 'string', default: '1' },   // runs in flight at once; forced to 1 while recording or headed
       record: { type: 'boolean', default: false },
       'record-every': { type: 'string', default: 'tic' },   // tic: one frame per world tic; step: one per command
       'record-quality': { type: 'string', default: '80' }, // JPEG quality of the captured frames
@@ -771,6 +786,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       skill: parseSkill(values.skill),
       headed: Boolean(values.headed),
       overlay: Boolean(values.overlay),
+      concurrency: Number(values.concurrency),
       record: Boolean(values.record),
       recordEvery: String(values['record-every']),
       recordQuality: Number(values['record-quality']),
