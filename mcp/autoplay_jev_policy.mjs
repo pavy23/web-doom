@@ -15,7 +15,7 @@ import { appendFile } from 'node:fs/promises';
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 import { coverPoint, lineOfWalk, movementHazard } from './navigation_graph.js';
 
-export const JEV_POLICY_VERSION = '1.1.0-jev-policy';
+export const JEV_POLICY_VERSION = '1.2.0-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -472,6 +472,8 @@ export async function createJevPolicy(options = {}) {
     items: [],                 // static map pickups (autoplay_items.mjs) for health / shells loot
     graph: null,               // navigation graph (with geometry) for the terrain guard and walkable loot
     terrainGuard: true,        // never send a combat/loot step that walks into a wall, a drop or a damaging floor
+    guardSidestep: true,       // ... and when the blocked step was a fight or a retreat, sidestep rather than stand still
+    guardSidestepStrafe: 0.6,
     projectileStrafe: true,    // strafe while fighting / retreating from projectile monsters ...
     strafeRoom: 64,            // ... only where both sides have this much free floor. The E1M1 HMP ablation
                                // went from 87-89 damage to 18 without the strafe (in the 64-wide exit corridor
@@ -530,7 +532,7 @@ export async function createJevPolicy(options = {}) {
   const stats = {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, rulesOnly: config.rulesOnly, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
-    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, coverStarts: 0, coverArrived: 0, coverMove: 0, coverFight: 0, retreatDrift: 0, noFightFar: 0, weaponSelect: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
+    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, coverStarts: 0, coverArrived: 0, coverMove: 0, coverFight: 0, retreatDrift: 0, noFightFar: 0, guardSidestep: 0, weaponSelect: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
     loot: { shotgun: 0, health: 0, shells: 0, armor: 0 },
     pipeline: { lagTics: options.pipelineLagTics || 0, inflightLaunched: 0, applied: 0, reused: 0, stalls: 0, stallMsTotal: 0, lagTicsTotal: 0 }
   };
@@ -653,11 +655,26 @@ export async function createJevPolicy(options = {}) {
       loot = null;
       return null;
     }
-    // A sideways component can flip sides; otherwise stand and keep the
-    // aim / attack of the original command.
+    // A sideways component can flip sides.
     if (Number(command.strafe || 0)) {
       const flipped = { ...command, strafe: -Number(command.strafe), rules };
       if (!movementUnsafe(state, flipped)) { dodgeSide *= -1; return flipped; }
+    } else if (config.guardSidestep !== false && command.target && command.target !== 'none') {
+      // guardSidestep: a backpedal into a wall becomes standing still in the
+      // open, which is the worst answer to a fireball. Most of E1M2's damage
+      // is one such chain in the exit rooms, starting with a blocked retreat
+      // that cost 21 hp, and E1M3 lost 51 hp in two steps the same way.
+      // Sidestep instead, keeping the aim and the shot: moving does not
+      // affect the player's own accuracy in vanilla DOOM.
+      const reach = Number(config.guardSidestepStrafe ?? 0.6);
+      for (const side of [dodgeSide, -dodgeSide]) {
+        const step = { ...command, forward: 0, strafe: reach * side, rules: [...rules, 'guardSidestep'] };
+        if (!movementUnsafe(state, step)) {
+          dodgeSide = side;
+          stats.rules.guardSidestep++;
+          return step;
+        }
+      }
     }
     return { ...command, forward: 0, strafe: 0, rules, hazard: hazard.kind };
   }

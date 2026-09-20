@@ -935,11 +935,54 @@ dealt with wherever it stands.
 The brake: the terrain brake thrusts against the current velocity when
 momentum alone would carry the player over an edge. Applied on every
 consecutive step it reverses the velocity, the reversed velocity reads as
-a fresh slide toward the same edge, and the next brake reverses it back —
+a fresh slide toward the same edge, and the next brake reverses it back,
 twenty tics of full forward and full back while the shooting continued.
 The brake now needs a speed above a walking pace (`brakeMinSpeed` 4) and
 never fires on two steps in a row; the engine's own friction (0.90625 per
 tic) finishes the job.
+
+One E1M3 run, against the seven tic-identical 1.0.0 runs it replaces:
+
+```text
+                1.0.0              1.1.0
+died at tic     2857               6479
+died at edge    47:50:686          56:74:496 (two imps inside 70 units)
+kills           17                 31
+damage          146                185
+```
+
+`noFightFar` fired 18 times in that run and the brake 33.
+
+### E1M2 with the corrected profile (policy 1.1.0, 10 runs)
+
+`exports/autoplay/e1m2-jev-hmp-x10-v101`: **10/10 cleared**, 0 deaths, so
+the profile regression is closed. The rest of the numbers are worse than
+the 0.6.2 pipelined trial that last cleared 10/10:
+
+```text
+                    cleared   damage            tics            min health
+0.6.2, pipelined    10/10     105 [69-150]      4167 [4005-4782]
+1.1.0, profile      10/10     152 (185 once)    5258             16
+```
+
+Nine of the ten runs are tic-identical, which by the note under
+[Determinism](#determinism) means the rules are deciding and the model is
+not steering. The post-mortem says where the damage is: six events between
+tics 3321 and 3847 in the exit rooms (sectors 137 and 138), about 111 of
+the 152 points, all against two imps. The first of them is a retreat the
+terrain guard blocked, which is what 1.2.0 addresses.
+
+### Policy 1.2.0: a blocked retreat sidesteps instead of standing still
+
+When the terrain guard rejects a step it keeps the aim and zeroes the
+movement. For a backpedal into a wall that means standing still in the
+open, which is the worst possible answer to a fireball. It is the first
+event in E1M2's damage chain (21 hp) and it cost E1M3 51 hp in two steps.
+
+`guardSidestep` tries a pure sidestep to either side before standing,
+keeping the command's aim and shot. Moving does not affect the player's
+own accuracy in vanilla DOOM, so the sidestep is free: it only has to not
+walk into the next hazard, which the same guard checks.
 
 ## Running a trial in parallel (`--concurrency N`)
 
