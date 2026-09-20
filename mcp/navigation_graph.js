@@ -330,6 +330,11 @@ function thingList(workspace) {
 
 export function buildNavigationGraph(workspace) {
   const g = workspace.geometry;
+  // The graph is rebuilt after edits (auto-repair diagnoses, repairs and
+  // diagnoses again on the same geometry object): drop the per-geometry
+  // caches so local routing sees the current walls, and so the movable
+  // sector set below can be defined again.
+  for (const key of ['__solidLines', '__solidThings', '__movableSectors']) if (Object.prototype.hasOwnProperty.call(g, key)) delete g[key];
   const nodes = g.sectors.map((sector, index) => ({
     sector: index,
     center: sectorCenter(g, index),
@@ -378,7 +383,7 @@ export function buildNavigationGraph(workspace) {
       }
     }
   }
-  Object.defineProperty(g, '__movableSectors', { value: movableSectors, enumerable: false });
+  Object.defineProperty(g, '__movableSectors', { value: movableSectors, enumerable: false, configurable: true });
 
   const things = thingList(workspace).map(thing => ({
     ...thing,
@@ -484,7 +489,7 @@ export function solidLines(g) {
     }
     if (solid) out.push({ index, a: g.vertices[line.v1], b: g.vertices[line.v2], right, left, hazard: hazard || 'wall' });
   });
-  Object.defineProperty(g, '__solidLines', { value: out, enumerable: false });
+  Object.defineProperty(g, '__solidLines', { value: out, enumerable: false, configurable: true });
   return out;
 }
 // The first solid line a straight move from `from` to `to` would cross, or
@@ -521,7 +526,7 @@ export function solidThings(g) {
     const radius = SOLID_THING_RADIUS[type];
     if (radius) out.push({ x: Number(thing.x), y: Number(thing.y), radius });
   }
-  Object.defineProperty(g, '__solidThings', { value: out, enumerable: false });
+  Object.defineProperty(g, '__solidThings', { value: out, enumerable: false, configurable: true });
   return out;
 }
 const PLAYER_RADIUS = 16;
