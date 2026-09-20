@@ -622,7 +622,24 @@ export async function runStageClearTrial(input = {}) {
   if (recording && !recording.ffmpegPath) throw new Error('--record needs ffmpeg: set DOOM_MCP_FFMPEG, install ffmpeg, or run `npx playwright install ffmpeg`');
   if (recording) report.recording = { every: recording.every, quality: recording.quality, bitrate: recording.bitrate, ffmpeg: recording.ffmpegPath };
 
-  const browser = await launchChromium({ headed: Boolean(config.headed) });
+  // One Chromium for the whole trial, with a replacement on hand. A crash of
+  // the shared browser used to take every run in flight with it: an E1M3
+  // trial lost four of ten to "Target page, context or browser has been
+  // closed" from one death, and a lost run is not a result.
+  let browser = await launchChromium({ headed: Boolean(config.headed) });
+  let relaunches = 0;
+  const newRunPage = async () => {
+    try {
+      return await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    } catch (error) {
+      if (relaunches >= 3) throw error;
+      relaunches++;
+      console.error(`autoplay: relaunching Chromium after ${String(error?.message || error).split('\n')[0]}`);
+      await browser.close().catch(() => {});
+      browser = await launchChromium({ headed: Boolean(config.headed) });
+      return browser.newPage({ viewport: { width: 1280, height: 800 } });
+    }
+  };
   try {
     // Runs are independent: each one gets a fresh page and its own policy, and
     // a run is a pure function of the commands it sends. Wall-clock time per
@@ -634,7 +651,7 @@ export async function runStageClearTrial(input = {}) {
     const results = new Array(Number(config.runs));
     let nextRun = 0;
     const runOne = async (runIndex) => {
-      const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+      const page = await newRunPage();
       const diagnostics = [];
       page.on('pageerror', error => diagnostics.push({ type: 'pageerror', message: String(error?.message || error) }));
       page.on('console', message => { if (message.type() === 'error') diagnostics.push({ type: 'console', message: message.text() }); });
