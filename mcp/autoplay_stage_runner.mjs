@@ -609,7 +609,7 @@ export async function runStageClearTrial(input = {}) {
         if (config.policy === 'jev' || config.policy === 'rules') {
           const { createJevPolicy } = await import('./autoplay_jev_policy.mjs');
           policy = await createJevPolicy({
-            ...(config.jev || {}), rulesOnly: config.policy === 'rules', log: policyLog, runIndex, items: mapItems,
+            ...(config.jev || {}), rulesOnly: config.policy === 'rules', log: policyLog, runIndex, items: mapItems, graph: stage.graph,
             onDecision: config.overlay === false ? null : entry => updateOverlay(page, { jev: entry })
           });
         }

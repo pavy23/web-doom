@@ -13,8 +13,9 @@
 import { appendFile } from 'node:fs/promises';
 
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
+import { lineOfWalk, movementHazard } from './navigation_graph.js';
 
-export const JEV_POLICY_VERSION = '0.6.2-jev-policy';
+export const JEV_POLICY_VERSION = '0.7.0-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -203,6 +204,10 @@ function aimTics(bearing) {
 // Monsters whose attack is hitscan: distance and backing away do not reduce
 // their hit chance, only killing them or breaking line of sight does.
 const HITSCAN = new Set(['zombieman', 'shotgun_guy', 'chaingun_guy', 'heavy_weapon_dude', 'spider_mastermind']);
+// Monsters whose ranged attack is a projectile: sidestepping works, standing
+// still (or backing straight away) does not.
+const PROJECTILE = new Set(['imp', 'cacodemon', 'baron_of_hell', 'hell_knight', 'revenant', 'mancubus', 'arachnotron', 'cyberdemon']);
+export function isProjectile(name) { return PROJECTILE.has(String(name || '').toLowerCase()); }
 function isHitscan(name) {
   return HITSCAN.has(String(name || '').toLowerCase().replace(/\s+/g, '_'));
 }
@@ -313,15 +318,23 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
     return null;
   }
   const aligned = Math.abs(target.bearing) <= aimTolerance;
+  // projectileStrafe: against a projectile monster (imp) beyond point-blank
+  // range, fighting and retreating both keep the player moving sideways.
+  // Every E1M3 run took the same two fireballs at tics 699 and 731, once
+  // backing straight away and once standing still; a fireball at 220 units
+  // is 20 tics away and a sidestep of 60 units clears it.
+  const strafeVs = options.projectileStrafe !== false && isProjectile(target.name) && !pointBlank
+    ? 0.5 * Number(options.dodgeSide ?? 1) : 0;
+  if (strafeVs) { rules.push('projectileStrafe'); meta.rules = rules; }
   if (mode === 'fight') {
-    if (!aligned) return { forward: 0, strafe: 0, turn: turnToward(target.bearing), attack: false, use: false, tics: aimTics(target.bearing), ...meta };
+    if (!aligned) return { forward: 0, strafe: strafeVs, turn: turnToward(target.bearing), attack: false, use: false, tics: aimTics(target.bearing), ...meta };
     // fightFires: having chosen to stand and fight, an aligned shot at an
     // enemy that can hit back is never withheld. With one shell left the
     // model answered fire 0.2 and the player stood still, aimed, unhurt and
     // silent, for 130 tics while a zombieman walked up to it.
     let attack = fire;
     if (!attack && target.canHitPlayerNow) { attack = true; rules.push('fightFires'); meta.rules = rules; meta.fire = true; }
-    return { forward: 0, strafe: 0, turn: 0, attack, use: false, tics: 3, ...meta };
+    return { forward: 0, strafe: strafeVs, turn: 0, attack, use: false, tics: 3, ...meta };
   }
   if (mode === 'retreat') {
     // Backing away from an enemy that is already out of its effective range
@@ -334,7 +347,7 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
       meta.mode = 'advance';
       return fire && aligned ? { ...proposal, attack: true, ...meta } : null;
     }
-    return { forward: -0.6, strafe: 0, turn: aligned ? 0 : turnToward(target.bearing, 0.4), attack: fire && aligned, use: false, tics: 4, ...meta };
+    return { forward: strafeVs ? -0.4 : -0.6, strafe: strafeVs, turn: aligned ? 0 : turnToward(target.bearing, 0.4), attack: fire && aligned, use: false, tics: 4, ...meta };
   }
   if (mode === 'dodge') {
     const side = options.dodgeSide ?? 1;
@@ -382,9 +395,13 @@ export async function createJevPolicy(options = {}) {
     lootShotgun: true,         // after killing a shotgun guy with the pistol, walk over its dropped shotgun
     lootTimeoutTics: 140,      // give a detour at most 4 s
     items: [],                 // static map pickups (autoplay_items.mjs) for health / shells loot
+    graph: null,               // navigation graph (with geometry) for the terrain guard and walkable loot
+    terrainGuard: true,        // never send a combat/loot step that walks into a wall, a drop or a damaging floor
+    projectileStrafe: true,    // strafe while fighting / retreating from projectile monsters
     itemLootSameSectorOnly: true, // only items in the player's current sector: 12 of 16 straight-line
-                                  // detours in the 0.6.0 trial ended at a wall
-    lootShells: false,         // shells detours: 7 of 9 blocked in 0.6.0, low value with 4-shell drops around
+                                  // detours in the 0.6.0 trial ended at a wall ...
+    itemLootWalkable: true,       // ... unless the graph shows a clear straight walk to the item (any sector)
+    lootShells: true,          // shells detours: 7 of 9 blocked in 0.6.0 (straight-line targeting); on with the walkability test
     healthLootBelow: 50,       // walk to a health item below this ...
     healthLootDesperate: 30,   // ... even under fire below this
     shellsLootBelow: 6,        // walk to shells when the shotgun has fewer than this
@@ -413,7 +430,7 @@ export async function createJevPolicy(options = {}) {
   const stats = {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, rulesOnly: config.rulesOnly, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
-    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
+    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
     loot: { shotgun: 0, health: 0, shells: 0 },
     pipeline: { lagTics: options.pipelineLagTics || 0, inflightLaunched: 0, applied: 0, reused: 0, stalls: 0, stallMsTotal: 0, lagTicsTotal: 0 }
   };
@@ -424,17 +441,73 @@ export async function createJevPolicy(options = {}) {
   function shootersNow(state) {
     return (state?.enemies || []).filter(enemy => enemy.lineOfSight && Number(enemy.health) > 0 && Number(enemy.distance) <= effectiveRange(enemy.name)).length;
   }
+  const geometry = config.graph?.geometry || null;
   function nearestItem(state, kind) {
     const player = state.player || {};
+    const here = { x: Number(player.x), y: Number(player.y) };
     let best = null;
     const sector = Number(state.currentSector);
     for (const item of config.items || []) {
       if (item.kind !== kind || takenItems.has(item.id)) continue;
-      if (config.itemLootSameSectorOnly && item.sector != null && Number(item.sector) !== sector) continue;
-      const distance = Math.hypot(item.x - Number(player.x), item.y - Number(player.y));
-      if (distance <= config.itemLootRadius && (!best || distance < best.distance)) best = { ...item, distance };
+      const distance = Math.hypot(item.x - here.x, item.y - here.y);
+      if (distance > config.itemLootRadius || (best && distance >= best.distance)) continue;
+      if (config.itemLootSameSectorOnly && item.sector != null && Number(item.sector) !== sector) {
+        // Another sector: only with a clear straight walk (no wall, drop or
+        // nukage shore in between), which the geometry can tell.
+        if (!(config.itemLootWalkable && geometry && lineOfWalk(geometry, here, { x: item.x, y: item.y }))) continue;
+      } else if (geometry && !lineOfWalk(geometry, here, { x: item.x, y: item.y })) {
+        continue; // same sector but a wall/pit between (non-convex room)
+      }
+      best = { ...item, distance };
     }
     return best;
+  }
+  // Terrain guard: predict where a movement command takes the player over
+  // its tics and refuse it when the straight move crosses a wall, a drop or
+  // the shore of a damaging sector. Two E1M3 runs died in the nukage pit of
+  // sector 48 after a retreat/loot step backed into it. The forward vector
+  // is the player's angle; +strafe is to the right (angle - 90).
+  const UNITS_PER_TIC = 10; // deliberately above the engine's top speed
+  function movePreview(state, command) {
+    const player = state?.player || {};
+    const forward = Number(command.forward || 0), strafe = Number(command.strafe || 0);
+    if (!forward && !strafe) return null;
+    const angle = Number(player.angle) * Math.PI / 180;
+    const fx = Math.cos(angle), fy = Math.sin(angle);
+    const rx = Math.cos(angle - Math.PI / 2), ry = Math.sin(angle - Math.PI / 2);
+    const magnitude = Math.hypot(forward, strafe);
+    const length = 16 + UNITS_PER_TIC * Number(command.tics || 3) * magnitude;
+    const dx = (forward * fx + strafe * rx) / magnitude, dy = (forward * fy + strafe * ry) / magnitude;
+    const from = { x: Number(player.x), y: Number(player.y) };
+    return { from, to: { x: from.x + dx * length, y: from.y + dy * length } };
+  }
+  function movementUnsafe(state, command) {
+    if (!config.terrainGuard || !geometry || !command) return null;
+    const preview = movePreview(state, command);
+    if (!preview) return null;
+    return movementHazard(geometry, preview.from, preview.to);
+  }
+  async function guardCommand(state, command) {
+    if (!command) return command;
+    const hazard = movementUnsafe(state, command);
+    if (!hazard) return command;
+    stats.rules.terrainGuard++;
+    const rules = [...(command.rules || []), 'terrainGuard'];
+    if (command.mode === 'loot' && loot) {
+      // The detour would cross a hazard: give the item up for good.
+      stats.rules.lootGivenUp++;
+      if (loot.itemId) takenItems.add(loot.itemId);
+      await record({ kind: 'loot_end', tic: Number(state.levelTime), lootKind: loot.kind, picked: false, reason: `hazard_${hazard.kind}` });
+      loot = null;
+      return null;
+    }
+    // A sideways component can flip sides; otherwise stand and keep the
+    // aim / attack of the original command.
+    if (Number(command.strafe || 0)) {
+      const flipped = { ...command, strafe: -Number(command.strafe), rules };
+      if (!movementUnsafe(state, flipped)) { dodgeSide *= -1; return flipped; }
+    }
+    return { ...command, forward: 0, strafe: 0, rules, hazard: hazard.kind };
   }
   let edgeEntry = null;        // { edgeId, x, y }: where the player entered the current edge (its doorway)
   function coverInfo(context) {
@@ -599,6 +672,10 @@ export async function createJevPolicy(options = {}) {
     return Math.max(0, peak - health);
   }
   async function decide(context) {
+    const command = await decideUnguarded(context);
+    return guardCommand(context.state, command);
+  }
+  async function decideUnguarded(context) {
     const { state, proposal } = context;
     stepsSinceCall++;
     const consult = shouldConsult(state, config, { lastHealth });

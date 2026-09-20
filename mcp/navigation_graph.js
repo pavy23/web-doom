@@ -450,8 +450,18 @@ function segmentsCross(p, q, a, b) {
   const u = ((a.x - p.x) * (q.y - p.y) - (a.y - p.y) * (q.x - p.x)) / d;
   return t > 0.001 && t < 0.999 && u > 0.001 && u < 0.999;
 }
-// Lines the player cannot walk through: one-sided, blocking-flagged, or
-// two-sided with no room / too high a step.
+// Sector specials that hurt a player standing in them (nukage, blood, the
+// exit-on-death one).
+const DAMAGING_SPECIALS = new Set([4, 5, 7, 11, 16]);
+export function isDamagingSector(g, sector) {
+  return sector != null && DAMAGING_SPECIALS.has(Number(g.sectors[sector]?.special));
+}
+// Lines the player cannot (or must not) walk through: one-sided,
+// blocking-flagged, two-sided with no room / too high a step, and the shore
+// of a damaging sector (a line with hazard on exactly one side: crossing it
+// in one direction walks into nukage). The edge being walked is excluded
+// by planLocalPath's `ignoreLines`, so a route that has to enter a nukage
+// sector still can.
 export function solidLines(g) {
   if (g.__solidLines) return g.__solidLines;
   const out = [];
@@ -459,6 +469,7 @@ export function solidLines(g) {
     const right = sideSector(g, line.right);
     const left = sideSector(g, line.left);
     let solid = right == null || left == null || Boolean(Number(line.flags) & ML_BLOCKING);
+    let hazard = null;
     if (!solid && right !== left) {
       const a = g.sectors[right], b = g.sectors[left];
       const opening = Math.min(Number(a.ceiling), Number(b.ceiling)) - Math.max(Number(a.floor), Number(b.floor));
@@ -467,12 +478,28 @@ export function solidLines(g) {
       // (E1M3 sector 48) is a pit now. The edge being walked is excluded by
       // planLocalPath's `ignoreLines` instead.
       const opens = DOOR_SPECIALS[Number(line.special)] || LIFT_SPECIALS.has(Number(line.special)) || REMOTE_DOOR_SPECIALS[Number(line.special)] || (a.tag && Number(a.ceiling) === Number(a.floor)) || (b.tag && Number(b.ceiling) === Number(b.floor));
-      if (!opens && (opening < PLAYER_HEIGHT || Math.abs(Number(a.floor) - Number(b.floor)) > MAX_STEP_UP)) solid = true;
+      const drop = Math.abs(Number(a.floor) - Number(b.floor)) > MAX_STEP_UP;
+      if (!opens && (opening < PLAYER_HEIGHT || drop)) { solid = true; hazard = drop ? 'drop' : 'wall'; }
+      else if (isDamagingSector(g, right) !== isDamagingSector(g, left)) { solid = true; hazard = 'damage'; }
     }
-    if (solid) out.push({ index, a: g.vertices[line.v1], b: g.vertices[line.v2], right, left });
+    if (solid) out.push({ index, a: g.vertices[line.v1], b: g.vertices[line.v2], right, left, hazard: hazard || 'wall' });
   });
   Object.defineProperty(g, '__solidLines', { value: out, enumerable: false });
   return out;
+}
+// The first solid line a straight move from `from` to `to` would cross, or
+// null when the move is clear. Used by the policy's terrain guard before a
+// combat step (retreat, strafe, loot detour) is sent to the engine: a
+// backpedal into a nukage pit is a fatal step no judgment should take.
+export function movementHazard(g, from, to, { ignoreLines = [] } = {}) {
+  const ignored = new Set(ignoreLines.map(Number));
+  for (const line of solidLines(g)) {
+    if (ignored.has(line.index)) continue;
+    if (segmentsCross(from, to, line.a, line.b) || pointSegmentDistance(to, line.a, line.b) < PLAYER_RADIUS) {
+      return { kind: line.hazard, line: line.index };
+    }
+  }
+  return null;
 }
 function pointSegmentDistance(p, a, b) {
   const dx = b.x - a.x, dy = b.y - a.y;
