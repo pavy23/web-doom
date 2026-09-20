@@ -374,7 +374,7 @@ export function shouldConsult(state, options = {}, memory = {}) {
   // side) is a reason as good as one in view: E1M3 runs stood at a door for
   // 130 tics while a zombieman behind them shot 33 hp off, the policy turning
   // toward it on the hurt steps and the follower turning back on the others.
-  const canHit = (state?.enemies || []).some(enemy => enemy.lineOfSight && Number(enemy.health) > 0 && Number(enemy.distance) <= effectiveRange(enemy.name));
+  const canHit = options.consultOnCanHit !== false && (state?.enemies || []).some(enemy => enemy.lineOfSight && Number(enemy.health) > 0 && Number(enemy.distance) <= effectiveRange(enemy.name));
   // ... and once engaged, stay engaged for a while (engageHoldTics), so the
   // follower and the policy stop alternating on the heading.
   const engaged = memory.engagedUntilTic != null && Number(state?.levelTime ?? 0) < Number(memory.engagedUntilTic);
