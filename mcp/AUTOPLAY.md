@@ -1019,6 +1019,22 @@ The exit-room chain is gone: two events for 36 points where there were
 six for 111, and the player never drops below 44 hp. The run is 390 tics
 longer, which the objective ranks below the damage.
 
+E1M1 at HMP, 10 runs under 1.2.0, is the best result the level has had:
+
+```text
+                cleared   damage              min health   tics
+0.8.1           10/10     18-39
+1.2.0           10/10     15 [15-39]          61-85        1554-1912
+```
+
+Six of the ten took exactly 15, which is the two zombiemen's opening
+shots and nothing else. Credit where it is due: across all ten runs
+`guardSidestep` fired once and `noFightFar` not at all, so this is not
+the new rules improving E1M1. It is the map profile (`coverSeek` off, a
+lower loot threshold, a smaller call budget on a three-monster route)
+with the new rules staying out of the way. That is what the trial was
+for: a short level is where a combat rule regresses things.
+
 ## Running a trial in parallel (`--concurrency N`)
 
 Runs in a trial are independent by construction: each one boots its own
