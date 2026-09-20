@@ -15,7 +15,7 @@ import { appendFile } from 'node:fs/promises';
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 import { coverPoint, lineOfWalk, movementHazard } from './navigation_graph.js';
 
-export const JEV_POLICY_VERSION = '0.8.2-jev-policy';
+export const JEV_POLICY_VERSION = '0.9.0-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -415,6 +415,14 @@ export async function createJevPolicy(options = {}) {
     coverHoldTics: 70,         // fight from the spot this long before re-evaluating
     coverTimeoutTics: 105,     // give up walking to it after this
     coverMaxPerEdge: 2,        // never more than this many cover moves on one route edge
+    // Weapon selection (policy 0.9.0, needs an engine build with
+    // doomctl_queue_agent_weapon): the engine switches to a picked-up weapon
+    // and back to the pistol when its ammo runs out, but never back again
+    // when ammo is picked up later. Every E1M3 fight past the first area was
+    // a pistol fight with shells in the pocket. A code rule, no model call:
+    // shotgun when shells are in and the pistol is out, chaingun likewise.
+    weaponSelect: true,
+    weaponSelectHoldTics: 35,  // one request per this many tics (a switch takes ~1 s)
     lootShotgun: true,         // after killing a shotgun guy with the pistol, walk over its dropped shotgun
     lootTimeoutTics: 140,      // give a detour at most 4 s
     items: [],                 // static map pickups (autoplay_items.mjs) for health / shells loot
@@ -460,7 +468,7 @@ export async function createJevPolicy(options = {}) {
   const stats = {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, rulesOnly: config.rulesOnly, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
-    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, coverStarts: 0, coverArrived: 0, coverMove: 0, coverFight: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
+    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, coverStarts: 0, coverArrived: 0, coverMove: 0, coverFight: 0, weaponSelect: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
     loot: { shotgun: 0, health: 0, shells: 0, armor: 0 },
     pipeline: { lagTics: options.pipelineLagTics || 0, inflightLaunched: 0, applied: 0, reused: 0, stalls: 0, stallMsTotal: 0, lagTicsTotal: 0 }
   };
@@ -832,11 +840,40 @@ export async function createJevPolicy(options = {}) {
     const peak = Math.max(...healthHistory.map(h => h.health));
     return Math.max(0, peak - health);
   }
+  // Weapons the player has been seen holding (the state carries the ready
+  // weapon and the ammo, not the owned set): 1 pistol, 2 shotgun, 3 chaingun.
+  const ownedWeapons = new Set([1]);
+  let lastWeaponRequestTic = -Infinity;
+  function weaponWanted(state) {
+    if (!config.weaponSelect) return null;
+    const player = state?.player || {};
+    const weapon = Number(player.weapon);
+    if (Number.isFinite(weapon)) ownedWeapons.add(weapon);
+    const tic = Number(state?.levelTime ?? 0);
+    if (tic - lastWeaponRequestTic < config.weaponSelectHoldTics) return null;
+    const shells = Number(player.ammo?.shells ?? 0), bullets = Number(player.ammo?.bullets ?? 0);
+    let wanted = null;
+    if (weapon === 1 && ownedWeapons.has(2) && shells > 0) wanted = 2;
+    else if (weapon === 1 && ownedWeapons.has(3) && bullets > 0) wanted = 3;
+    else if (weapon === 0 && bullets > 0) wanted = 1;
+    if (wanted == null) return null;
+    lastWeaponRequestTic = tic;
+    stats.rules.weaponSelect++;
+    return wanted;
+  }
   async function decide(context) {
     trackVelocity(context.state);
     guardIgnoreLines = context.edge?.line != null ? [Number(context.edge.line)] : context.exit?.line != null ? [Number(context.exit.line)] : [];
-    const command = await decideUnguarded(context);
-    return guardCommand(context.state, command);
+    let command = await guardCommand(context.state, await decideUnguarded(context));
+    const weapon = weaponWanted(context.state);
+    if (weapon != null) {
+      // Ride the switch on this step's command, the policy's or the follower's.
+      command = command
+        ? { ...command, weapon, rules: [...(command.rules || []), 'weaponSelect'] }
+        : { ...context.proposal, weapon, source: 'jev', mode: 'weapon', target: 'none', fire: false, danger: 0, rules: ['weaponSelect'] };
+      await record({ kind: 'weapon_select', tic: Number(context.state?.levelTime), weapon, from: Number(context.state?.player?.weapon), ammo: context.state?.player?.ammo });
+    }
+    return command;
   }
   async function decideUnguarded(context) {
     const { state, proposal } = context;

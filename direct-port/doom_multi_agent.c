@@ -31,6 +31,7 @@ typedef struct
     int turn_pct;
     int attack;
     int use;
+    int weapon_change;   // 0: none; otherwise weapontype_t + 1, sent as BT_CHANGE until a world tic ran
     int episode;
     int map;
     int executed;
@@ -99,6 +100,35 @@ int doomctl_queue_agent_input(int forward_pct, int strafe_pct, int turn_pct,
                                       turn_pct, attack, use, tics);
 }
 
+// Weapon selection for a queued input: the same BT_CHANGE the keyboard's
+// number keys produce, so P_PlayerThink applies its own rules (the weapon
+// must be owned; the switch takes the usual lower/raise time). `weapon` is
+// a weapontype_t (0 fist .. 8 super shotgun). The change bits ride on every
+// ticcmd until one world tic has run with them, then clear, so a pause
+// between steps cannot swallow the press. Call after queueing the input.
+EMSCRIPTEN_KEEPALIVE
+int doomctl_queue_player_weapon(int player, int weapon)
+{
+    doomctl_player_agent_t *agent;
+    if (gamestate != GS_LEVEL)
+        return -1;
+    if (!doomctl_valid_player(player) || !players[player].mo)
+        return -2;
+    if (weapon < 0 || weapon >= NUMWEAPONS)
+        return -3;
+    agent = &doomctl_agents[player];
+    if (agent->remaining <= 0)
+        return -4;
+    agent->weapon_change = weapon + 1;
+    return weapon;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int doomctl_queue_agent_weapon(int weapon)
+{
+    return doomctl_queue_player_weapon(consoleplayer, weapon);
+}
+
 EMSCRIPTEN_KEEPALIVE
 int doomctl_cancel_player_input(int player)
 {
@@ -158,6 +188,8 @@ void doomctl_apply_player_agent_ticcmd(int player, ticcmd_t *cmd)
         buttons |= BT_ATTACK;
     if (agent->use)
         buttons |= BT_USE;
+    if (agent->weapon_change > 0 && agent->executed == 0)
+        buttons |= BT_CHANGE | (((agent->weapon_change - 1) << BT_WEAPONSHIFT) & BT_WEAPONMASK);
     cmd->buttons = (byte)buttons;
 }
 
@@ -177,6 +209,7 @@ void doomctl_agent_after_world_tic(void)
             continue;
         agent->remaining--;
         agent->executed++;
+        agent->weapon_change = 0;   // the change bits were on the ticcmd of the tic that just ran
         if (agent->remaining <= 0)
             doomctl_clear_player_agent(player);
     }
