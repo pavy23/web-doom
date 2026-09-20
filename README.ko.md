@@ -288,7 +288,17 @@ grok mcp add --scope project doom-p22 -- node D:\web-doom\mcp\p2_human_bot_serve
 |---|---|
 | [![E1M1 오토플레이 미리보기](docs/autoplay/e1m1-hmp-jev.gif)](https://pavy23.github.io/web-doom/docs/autoplay/) | [![E1M2 오토플레이 미리보기](docs/autoplay/e1m2-hmp-jev.gif)](https://pavy23.github.io/web-doom/docs/autoplay/) |
 
-WebM 원본은 `docs/autoplay/e1m1-hmp-jev.webm` 과 `docs/autoplay/e1m2-hmp-jev.webm` 입니다. GitHub 의 파일 보기는 WebM 을 재생하지 못하니 내려받거나 위 페이지를 이용하세요.
+클립 내려받기:
+**[E1M1, 3.4 MB](https://github.com/pavy23/web-doom/raw/main/docs/autoplay/e1m1-hmp-jev.webm)**
+·
+**[E1M2, 10.7 MB](https://github.com/pavy23/web-doom/raw/main/docs/autoplay/e1m2-hmp-jev.webm)**
+입니다. 이 링크는 원본 파일을 그대로 내려보냅니다. 브라우저에 따라 바로 저장되거나 미디어 탭으로 열리는데, 우클릭 저장은 언제나 됩니다. 위 프로젝트 페이지에는 같은 두 개가 진짜 다운로드 버튼으로 걸려 있고 그쪽이 더 확실합니다. GitHub 의 파일 보기는 WebM 을 아예 재생하지 못합니다.
+
+클립은 WebM 컨테이너에 담긴 VP8 입니다. 요즘 브라우저는 전부 재생하지만 발표 자료나 영상 편집 도구는 대개 못 엽니다. 전체 기능이 들어간 ffmpeg 빌드라면 H.264 MP4 로 바꿀 수 있습니다.
+
+```bash
+ffmpeg -i e1m1-hmp-jev.webm -c:v libx264 -preset slow -crf 20 -pix_fmt yuv420p e1m1-hmp-jev.mp4
+```
 
 ### 실행 방법
 

@@ -19,6 +19,9 @@
   .note { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 14px; }
   a { color: var(--accent); }
   code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
+  .get { display: inline-flex; align-items: center; gap: 7px; margin-top: 10px; padding: 7px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text); text-decoration: none; font-size: 14px; }
+  .get:hover { border-color: var(--accent); color: var(--accent); }
+  .get span { color: var(--muted); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -30,16 +33,26 @@
     <h2>E1M1, Hurt Me Plenty</h2>
     <video controls playsinline preload="metadata" src="e1m1-hmp-jev.webm"></video>
     <ul class="stats"><li>game time <b>35 s</b></li><li>deaths <b>0</b></li><li>damage taken <b>26</b> (follower alone: dies)</li><li>kills <b>5</b></li><li>Jev calls <b>70</b></li></ul>
+    <a class="get" href="e1m1-hmp-jev.webm" download="web-doom-e1m1-hmp-jev.webm">Download the clip <span>WebM, 3.4 MB</span></a>
   </section>
 
   <section>
     <h2>E1M2, Hurt Me Plenty</h2>
     <video controls playsinline preload="metadata" src="e1m2-hmp-jev.webm"></video>
     <ul class="stats"><li>game time <b>1:57</b></li><li>deaths <b>0</b></li><li>damage taken <b>69</b> (follower alone: 183)</li><li>kills <b>18</b></li><li>Jev calls <b>127</b></li></ul>
+    <a class="get" href="e1m2-hmp-jev.webm" download="web-doom-e1m2-hmp-jev.webm">Download the clip <span>WebM, 10.7 MB</span></a>
   </section>
 
   <div class="note">
     Reading the panel: <code>advance / fight / retreat / dodge</code> are the mode probabilities (the highlighted bar is the mode applied); <code>fire</code> is the shoot judgment; <code>danger</code> the danger score; <code>target</code> the target probabilities; a yellow badge is a code-owned safety rule overriding the model. How to run it yourself: <a href="../../README.md#autoplay--autonomous-stage-clearing">README, Autoplay</a> and <a href="../../mcp/AUTOPLAY.md">mcp/AUTOPLAY.md</a>.
+  </div>
+
+  <div class="note" style="margin-top: 12px;">
+    The clips are VP8 in a WebM container, which every current browser plays. Slide and video editors often do not. To convert a downloaded clip to H.264 MP4 with any full ffmpeg build:
+    <br><br>
+    <code>ffmpeg -i web-doom-e1m1-hmp-jev.webm -c:v libx264 -preset slow -crf 20 -pix_fmt yuv420p web-doom-e1m1-hmp-jev.mp4</code>
+    <br><br>
+    The recorder itself only needs a VP8 encoder, which is why the build Playwright ships is enough to produce these.
   </div>
 </div>
 </body>
