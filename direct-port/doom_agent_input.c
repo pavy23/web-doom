@@ -23,6 +23,7 @@ static int doomctl_agent_strafe_pct = 0;
 static int doomctl_agent_turn_pct = 0;
 static int doomctl_agent_attack = 0;
 static int doomctl_agent_use = 0;
+static int doomctl_agent_weapon_change = 0; // 0: none; otherwise weapontype_t + 1
 static int doomctl_agent_episode = -1;
 static int doomctl_agent_map = -1;
 static int doomctl_agent_executed = 0;
@@ -45,6 +46,7 @@ static void doomctl_clear_agent_internal(void)
     doomctl_agent_turn_pct = 0;
     doomctl_agent_attack = 0;
     doomctl_agent_use = 0;
+    doomctl_agent_weapon_change = 0;
     doomctl_agent_episode = -1;
     doomctl_agent_map = -1;
 }
@@ -70,6 +72,23 @@ int doomctl_queue_agent_input(int forward_pct, int strafe_pct, int turn_pct,
     doomctl_agent_map = gamemap;
     doomctl_agent_executed = 0;
     return doomctl_agent_remaining;
+}
+
+// Weapon selection for the queued input: the keyboard's BT_CHANGE, applied by
+// P_PlayerThink with its own rules (owned weapons only, normal switch time).
+// `weapon` is a weapontype_t (0 fist .. 8 super shotgun). The bits ride on
+// every ticcmd until one world tic has run, so a pause cannot swallow them.
+EMSCRIPTEN_KEEPALIVE
+int doomctl_queue_agent_weapon(int weapon)
+{
+    if (gamestate != GS_LEVEL || !players[consoleplayer].mo)
+        return -1;
+    if (weapon < 0 || weapon >= NUMWEAPONS)
+        return -3;
+    if (doomctl_agent_remaining <= 0)
+        return -4;
+    doomctl_agent_weapon_change = weapon + 1;
+    return weapon;
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -111,12 +130,15 @@ void doomctl_apply_agent_ticcmd(ticcmd_t *cmd)
     cmd->chatchar = 0;
 
     // This is an autonomous override for movement/action bits. Never synthesize
-    // BT_SPECIAL, save, pause or weapon-change commands here.
+    // BT_SPECIAL, save or pause commands here; a weapon change is a gameplay
+    // input and goes through the same BT_CHANGE the keyboard uses.
     buttons = 0;
     if (doomctl_agent_attack)
         buttons |= BT_ATTACK;
     if (doomctl_agent_use)
         buttons |= BT_USE;
+    if (doomctl_agent_weapon_change > 0 && doomctl_agent_executed == 0)
+        buttons |= BT_CHANGE | (((doomctl_agent_weapon_change - 1) << BT_WEAPONSHIFT) & BT_WEAPONMASK);
     cmd->buttons = (byte)buttons;
 }
 
@@ -129,6 +151,7 @@ void doomctl_agent_after_world_tic(void)
 
     doomctl_agent_remaining--;
     doomctl_agent_executed++;
+    doomctl_agent_weapon_change = 0; // the change bits were on the ticcmd of the tic that just ran
 
     if (doomctl_agent_remaining <= 0)
         doomctl_clear_agent_internal();

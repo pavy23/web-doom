@@ -23,6 +23,17 @@
       [forward, strafe, turn, params.attack ? 1 : 0, params.use ? 1 : 0, tics]
     );
     if (remaining < 0) throw new Error(`Agent input rejected with engine code ${remaining}`);
+    // Optional weapon selection (weapontype_t 0..8) for this input, when the
+    // engine build carries doomctl_queue_agent_weapon. Rejections are not
+    // fatal: an unowned weapon is simply not selected.
+    if (params.weapon != null && Number.isFinite(Number(params.weapon))) {
+      try {
+        const code = Module.ccall('doomctl_queue_agent_weapon', 'number', ['number'], [Math.trunc(Number(params.weapon))]);
+        if (code < 0) console.warn(`Agent weapon change rejected with engine code ${code}`);
+      } catch (error) {
+        console.warn('Agent weapon change unavailable in this engine build', error);
+      }
+    }
     return window.DoomControl.getAgentInputStatus();
   };
 
