@@ -725,6 +725,36 @@ policy (95% interval 60-98%), damage 69-180 against the baseline's 183, at
 improvement from 3/10 came from layer 1 (lifts, keys, triggers, local
 routing, route recovery); the policy itself is unchanged since 0.6.2.
 
+## E1M3: floor movers, stairs and a long detour
+
+`--map E1M3` planned a route at once, but the wrong one and through a wall:
+the progression picked the **secret exit** (special 51, to E1M9) because
+its sector came up first in the BFS, and the first step of that route was
+the door sector 51 from the nukage pit 66, a door whose sill is 64 units
+above the pit floor. Three gaps in layer 1, and one in the budget:
+
+| Gap | Symptom | Fix |
+|---|---|---|
+| Door sills | `classifyPortal` took a tagged closed sector as `door/remote` before checking the step height, so 66→51 (+64) was passable on paper and `edge_no_progress` in the engine | doors and remote doors fail with `door_step_up_too_high` when the sill is more than 24 units above the approach; lifts are exempt, their floor is what moves |
+| Exit choice | the secret exit is a valid exit but not the stage clear | `prepareStagePwad` plans with `includeSecret:false` first and falls back to any exit |
+| **Floor movers** | with the secret route gone, `no_reachable_exit`: the only way into the exit corridor is 13→14, an 88-unit step. Line 967 (W1 special 8, tag 14) is a **stair builder**: sector 16 rises 8, and the chain 17, 18, 19, 8, 9, 10, 11, 12, 13 rises 16..80 more, leaving an 8-unit step into 14 | `FLOOR_SPECIALS`: stairs (7/8/100/127), raise to next higher floor (18/20/22/69/95), lower to lowest (23/38/60/82), lower to highest (19/45/83/102, +8 for the turbo 36/70/71/98). `collectTriggers` computes each trigger's resulting floors with the vanilla rules (EV_BuildStairs follows the first two-sided line in linedef order whose back shares the floor texture; P_FindNextHighestFloor; ...Surrounding), and the graph gets an `edge@tag` variant for every edge that those floors make passable. `activateTrigger` waits for the predicted floors (stairs move at 0.25 units/tic: the top step takes 320 tics) |
+| Progress measure | sector 67 is a ring around a nukage pit and two raised platforms; the local path from the west door to the north portal goes 700 units south first. The no-progress budget measured straight-line distance to the portal, so the detour was "no progress" and the edge failed after 280 tics | the budget now measures the **remaining local path length** (to the current waypoint, waypoint to waypoint, then to the portal). A detour that follows the plan is progress |
+
+One regression on the way: making floor-moving sectors exempt from the
+solid-line test (as doors are) let the local planner walk straight through
+the sunken pit 48/49 in sector 47, which a switch raises later. A pit that
+opens later is a pit now; instead `planLocalPath` takes `ignoreLines`, and
+the portal line being walked is never an obstacle (that covers the
+post-trigger case, where the static heights still say "solid").
+
+```text
+E1M3 god mode      CLEARED  4384 tics (125 s), 61 transitions: blue key detour
+                   (sectors 28 and back), tags 11, 9, 14, stairs at tic ~3900
+E1M3 HMP follower  FAILED   dies at tic 587 at edge 103:98:335, 1 kill
+E1M1 HMP follower  1216 tics, 45 damage: identical steps.jsonl to before
+E1M2 HMP follower  3094 tics, 180 damage (was 3247 / 183): clears
+```
+
 ## Pipelined consultation (`--jev-pipeline N`)
 
 A watched run stutters because every consultation holds the world for the
