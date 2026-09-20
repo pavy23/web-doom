@@ -175,18 +175,41 @@ export async function coldBoot(page, config, wadBase64) {
   await page.click('#start');
   return config.pauseOnReady ? warpAndPause(page, config.map) : warp(page, config.map);
 }
+// Optional per-tic hook (video recording). When one is set for a page,
+// exactInput releases the step budget one tic at a time and calls the hook
+// after each world tic, so the caller can capture a frame per tic. Agent input
+// lifetime is counted in world tics by the engine (doom_agent_input.c), so the
+// paused browser frames between the single steps do not change the simulation:
+// a recorded run replays the same tics as an unrecorded one.
+const ticHooks = new WeakMap();
+export function setTicHook(page, hook) {
+  if (typeof hook === 'function') ticHooks.set(page, hook);
+  else ticHooks.delete(page);
+}
+
+const budgetReached = target => {
+  const telemetry = window.DoomControl.getPlaytestTelemetry();
+  return Number(telemetry?.worldTics || 0) >= target && Number(telemetry?.stepBudget || 0) === 0;
+};
+
 export async function exactInput(page, command) {
   const tics = Math.max(1, Math.min(12, Math.trunc(command.tics || 1)));
   const before = await page.evaluate(() => window.DoomControl.getPlaytestTelemetry());
   const status = await page.evaluate(() => window.DoomControl.getAgentInputStatus());
   if (status?.active) await page.evaluate(() => window.DoomControl.cancelAgentInput());
   await page.evaluate(cmd => window.DoomControl.queueAgentInput(cmd), { ...command, tics });
-  await page.evaluate(count => window.DoomControl.stepPlaytestTics(count), tics);
-  const targetTics = Number(before.worldTics || 0) + tics;
-  await page.waitForFunction(target => {
-    const telemetry = window.DoomControl.getPlaytestTelemetry();
-    return Number(telemetry?.worldTics || 0) >= target && Number(telemetry?.stepBudget || 0) === 0;
-  }, targetTics, { timeout: 8000 });
+  const startTics = Number(before.worldTics || 0);
+  const ticHook = ticHooks.get(page);
+  if (ticHook) {
+    for (let tic = 1; tic <= tics; tic++) {
+      await page.evaluate(() => window.DoomControl.stepPlaytestTics(1));
+      await page.waitForFunction(budgetReached, startTics + tic, { timeout: 8000 });
+      await ticHook({ worldTics: startTics + tic, tic, tics, command });
+    }
+  } else {
+    await page.evaluate(count => window.DoomControl.stepPlaytestTics(count), tics);
+    await page.waitForFunction(budgetReached, startTics + tics, { timeout: 8000 });
+  }
   return {
     state: await page.evaluate(() => window.DoomControl.getState()),
     telemetry: await page.evaluate(() => window.DoomControl.getPlaytestTelemetry()),

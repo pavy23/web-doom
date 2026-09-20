@@ -166,8 +166,9 @@ node autoplay_stage_runner.mjs ... --no-overlay      # overlay off
 trial itself is unchanged, since the world only advances through exact-tic
 steps and stays paused while the policy thinks. Expect the game to look
 stop-motion in combat: every Jev consultation holds the world for its
-latency (~160 ms), so a smooth video is better made by replaying the logged
-command sequence than by recording the live trial.
+latency (~160 ms) unless `--jev-pipeline N` is on (see below). A smooth video
+does not need a smooth trial at all: `--record` (next section) captures one
+frame per world tic and plays them back at game time.
 
 `autoplay_overlay.mjs` installs a panel on the runtime page's `#hud` layer
 (pointer-events: none, DOM only, never touches the engine) and updates it
@@ -178,6 +179,57 @@ the resulting command, the safety rules that fired, calls/overrides and cost
 so far). It is on by default because it is also what the run screenshot
 captures: `run-N.png` is now a page screenshot (overlay included) instead of
 the canvas capture, which came back black once the level was left.
+
+## Recording a run: `--record`
+
+```bash
+npm run autoplay:e1m1:hmp:record    # Jev, HMP, pipelined, writes exports/autoplay/e1m1-jev-hmp-rec/run-0.webm
+npm run autoplay:e1m2:hmp:record
+node autoplay_stage_runner.mjs --map E1M1 --runs 1 --no-god --skill hmp --record \
+    [--record-every tic|step] [--record-quality 80] [--record-bitrate 1500k] [--no-hide-pause]
+```
+
+`--record` writes `<reportDir>/run-N.webm` (VP8, 1280x800, 35 fps) next to
+the report. The video runs at **game time**: one frame per world tic, so a
+1216-tic run is a 34.7 s clip whatever the wall-clock pace of the trial was.
+Jev latency, screenshot cost and CPU load never show up as stutter, which is
+the difference from watching `--headed` (wall-clock) or from Playwright's own
+`recordVideo` (also wall-clock, and it would record every pause).
+
+How it works (`autoplay_recorder.mjs`, `setTicHook` in the browser agent):
+
+1. While a tic hook is set, `exactInput` releases the step budget one tic at
+   a time instead of all at once and calls the hook after every world tic.
+   Agent input lifetime is counted in world tics by the engine
+   (`doom_agent_input.c`), so the paused browser frames between the single
+   steps do not touch the simulation. Verified: the E1M1 HMP follower run
+   with and without `--record` produced identical `steps.jsonl` files (467
+   steps, same position, angle, health and command at every step, 1216 tics).
+2. The hook takes a JPEG page screenshot (game canvas plus the overlay,
+   ~50 ms) and pipes it into ffmpeg as an MJPEG stream at 35 fps; ffmpeg
+   encodes VP8/WebM. `--record-every step` captures once per command instead
+   and holds the frame for the command's tics (cheaper, stop-motion at step
+   granularity, same timing).
+3. The stage PWAD gets a 1x1 transparent `M_PAUSE` patch, because
+   `D_Display` draws the "Pause" banner whenever the world is paused, which is
+   the state every frame is captured in. Rendering only; `--no-hide-pause`
+   keeps the banner, `--hide-pause` removes it in unrecorded runs too.
+4. The last frame is held for 35 tics so the exit screen (or the death) is
+   visible, then `report.json` records `runs[N].video` (path, frames,
+   seconds, bytes).
+
+ffmpeg comes from `DOOM_MCP_FFMPEG`, else the build Playwright ships for its
+own recorder (`ffmpeg-*/ffmpeg-linux` under `PLAYWRIGHT_BROWSERS_PATH` or the
+default cache; `npx playwright install ffmpeg` fetches it), else `ffmpeg` on
+PATH. The Playwright build is minimal but carries exactly this pipeline
+(image2pipe + mjpeg in, libvpx VP8 + webm out).
+
+Cost: a recorded run is ~2.5x slower in wall-clock than an unrecorded one
+(2m29s vs 1m03s for the 1216-tic E1M1 follower run), all of it screenshot
+time, and the file is ~0.3 MB per second of game time at the defaults
+(`-crf 10`, `-b:v 1500k`). Pipelined Jev (`--jev-pipeline 8`) gets more
+wall-clock per tic while recording, so stalls are rarer than in an unrecorded
+run; the decisions still apply at the same tics.
 
 ## Skill level: `--skill`
 

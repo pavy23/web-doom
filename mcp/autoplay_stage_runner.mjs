@@ -13,6 +13,12 @@
 //                                  [--report-dir DIR] [--baseline other/report.json]
 //                                  [--skill 1-5|uv|nightmare] [--headed] [--no-overlay]
 //                                  [--max-combat-tics 600]   (fight/retreat steps per edge, separate from --max-edge-tics)
+//                                  [--record] [--record-every tic|step] [--record-quality 80] [--record-bitrate 1500k]
+//
+// --record writes <reportDir>/run-N.webm: one frame per world tic at 35 fps
+// (game time, never wall-clock), captured as page screenshots so the overlay
+// is in the picture. Recording drives the engine tic by tic; the simulation
+// stays identical to an unrecorded run (see setTicHook in the browser agent).
 //
 // Every step is appended to <reportDir>/steps.jsonl and a summary is written to
 // <reportDir>/report.json so later policy layers can be compared tic-for-tic.
@@ -25,18 +31,19 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
-import { GeometryWorkspace } from './geometry.js';
+import { GeometryWorkspace, parseWad, writeWad } from './geometry.js';
 import { EpisodeWorkspace } from './episode_workspace.js';
 import { installFullTopologyValidator } from './topology_validator.js';
 import { installThingAuthoring } from './thing_authoring.js';
 import { installSemanticGeometry } from './semantic_geometry.js';
 import { buildNavigationGraph, findExitProgression, locatePointSector, planLocalPath } from './navigation_graph.js';
 import {
-  coldBoot, exactInput, isCombatCommand, launchChromium, liveSectorOpening, navigateEdge
+  coldBoot, exactInput, isCombatCommand, launchChromium, liveSectorOpening, navigateEdge, setTicHook
 } from './navigation_browser_agent.mjs';
 import { OBJECTIVE_ORDER, OBJECTIVE_VERSION, compareToBaseline, rankRuns, runMetrics } from './autoplay_objective.mjs';
 import { installOverlay, updateOverlay } from './autoplay_overlay.mjs';
 import { loadMapItems } from './autoplay_items.mjs';
+import { createRecorder, findFfmpeg } from './autoplay_recorder.mjs';
 
 // LinuxDOOM skill_t: 0 ITYTD, 1 HNTR, 2 HMP, 3 UV, 4 Nightmare. The CLI takes
 // the vanilla 1-5 number or a name; the engine receives "-skill <1-5>".
@@ -88,7 +95,23 @@ function distance(a, b) { return Math.hypot(Number(b.x) - Number(a.x), Number(b.
 // Extract the requested IWAD map as a rebuilt single-map PWAD. The browser
 // cold-boot path only accepts PWAD candidates, so the original level is passed
 // through the same pinned node-builder pipeline the authoring tools use.
-export async function prepareStagePwad({ iwadPath = DEFAULT_IWAD, map = 'E1M1', exportDir = DEFAULT_EXPORT_DIR } = {}) {
+// A 1x1 fully transparent patch (one column, no posts). Placed in the stage
+// PWAD under the name M_PAUSE it replaces the IWAD's "Pause" banner, which
+// D_Display draws whenever the world is paused: every captured frame of a
+// recording is taken in that state, so without this the video would carry the
+// banner throughout. Rendering only; the simulation never reads the lump.
+export function transparentPatchLump(name = 'M_PAUSE') {
+  const data = Buffer.alloc(13);
+  data.writeInt16LE(1, 0);   // width
+  data.writeInt16LE(1, 2);   // height
+  data.writeInt16LE(0, 4);   // leftoffset
+  data.writeInt16LE(0, 6);   // topoffset
+  data.writeUInt32LE(12, 8); // columnofs[0]
+  data[12] = 0xff;           // column terminator: no posts
+  return { name, data };
+}
+
+export async function prepareStagePwad({ iwadPath = DEFAULT_IWAD, map = 'E1M1', exportDir = DEFAULT_EXPORT_DIR, hidePauseGraphic = false } = {}) {
   ensureAuthoring();
   const source = await readFile(iwadPath);
   const episode = new EpisodeWorkspace(source, [map], path.basename(iwadPath));
@@ -103,8 +126,14 @@ export async function prepareStagePwad({ iwadPath = DEFAULT_IWAD, map = 'E1M1', 
   const candidate = await episode.build({ filename });
   await mkdir(exportDir, { recursive: true });
   const wadPath = path.join(exportDir, candidate.filename);
-  await writeFile(wadPath, candidate.bytes);
-  return { map, filename: candidate.filename, wadPath, graph, start, progression, workspace };
+  let bytes = candidate.bytes;
+  if (hidePauseGraphic) {
+    const doc = parseWad(bytes);
+    doc.lumps.push(transparentPatchLump('M_PAUSE'));
+    bytes = writeWad(doc, 'PWAD');
+  }
+  await writeFile(wadPath, bytes);
+  return { map, filename: candidate.filename, wadPath, graph, start, progression, workspace, hidePauseGraphic: Boolean(hidePauseGraphic) };
 }
 
 async function engineState(page) { return page.evaluate(() => window.DoomControl.getState()); }
@@ -482,7 +511,9 @@ export async function runStageClearTrial(input = {}) {
   const stepLog = path.join(config.reportDir, 'steps.jsonl');
   await writeFile(stepLog, '');
 
-  const stage = await prepareStagePwad(config);
+  // Recording hides the engine's "Pause" banner (see transparentPatchLump);
+  // --hide-pause / --no-hide-pause overrides that default either way.
+  const stage = await prepareStagePwad({ ...config, hidePauseGraphic: config.hidePause ?? Boolean(config.record) });
   const wadBase64 = (await readFile(stage.wadPath)).toString('base64');
   const policyLog = path.join(config.reportDir, 'jev.jsonl');
   const usesPolicy = config.policy === 'jev' || config.policy === 'rules';
@@ -513,6 +544,12 @@ export async function runStageClearTrial(input = {}) {
     stepLog
   };
 
+  const recording = config.record
+    ? { ffmpegPath: await findFfmpeg(), every: config.recordEvery === 'step' ? 'step' : 'tic', quality: Number(config.recordQuality ?? 80), bitrate: config.recordBitrate || '1500k' }
+    : null;
+  if (recording && !recording.ffmpegPath) throw new Error('--record needs ffmpeg: set DOOM_MCP_FFMPEG, install ffmpeg, or run `npx playwright install ffmpeg`');
+  if (recording) report.recording = { every: recording.every, quality: recording.quality, bitrate: recording.bitrate, ffmpeg: recording.ffmpegPath };
+
   const browser = await launchChromium({ headed: Boolean(config.headed) });
   try {
     for (let runIndex = 0; runIndex < Number(config.runs); runIndex++) {
@@ -522,6 +559,24 @@ export async function runStageClearTrial(input = {}) {
       page.on('console', message => { if (message.type() === 'error') diagnostics.push({ type: 'console', message: message.text() }); });
       let attempt;
       let policy = null;
+      let recorder = null;
+      let recordError = null;
+      if (recording) {
+        recorder = await createRecorder({ outputPath: path.join(config.reportDir, `run-${runIndex}.webm`), ffmpegPath: recording.ffmpegPath, bitrate: recording.bitrate });
+        // One JPEG page screenshot per world tic (or per command with
+        // `every: 'step'`, held for the command's tics). A capture failure is
+        // recorded and the trial goes on: the video is a by-product, the
+        // outcome must not depend on it.
+        setTicHook(page, async ({ tic, tics }) => {
+          if (recording.every === 'step' && tic !== tics) return;
+          try {
+            const jpeg = await page.screenshot({ type: 'jpeg', quality: recording.quality });
+            await recorder.frame(jpeg, recording.every === 'step' ? tics : 1);
+          } catch (error) {
+            if (!recordError) recordError = String(error?.message || error);
+          }
+        });
+      }
       try {
         if (config.policy === 'jev' || config.policy === 'rules') {
           const { createJevPolicy } = await import('./autoplay_jev_policy.mjs');
@@ -545,6 +600,18 @@ export async function runStageClearTrial(input = {}) {
       } catch (error) {
         attempt = { passed: false, failure: 'browser_trial_error', error: String(error?.stack || error?.message || error) };
       } finally {
+        if (recorder) {
+          setTicHook(page, null);
+          try {
+            // Hold the end state (exit screen, death) for a second.
+            await recorder.hold(35);
+            const video = await recorder.finish();
+            if (attempt) attempt.video = { ...video, every: recording.every, ...(recordError ? { captureError: recordError } : {}) };
+          } catch (error) {
+            await recorder.abort();
+            if (attempt) attempt.video = { path: null, error: String(error?.message || error) };
+          }
+        }
         if (config.captureFrame !== false) {
           // A page screenshot keeps the overlay and works after the level has
           // been left; the canvas capture (toDataURL) comes back black then.
@@ -572,7 +639,8 @@ export async function runStageClearTrial(input = {}) {
         skill: attempt.skill ?? null,
         totalTics: attempt.totalTics, steps: attempt.steps, failure: attempt.failure || null, failedEdge: attempt.failedEdge || null,
         deaths: attempt.telemetry?.deaths ?? null, damageTaken: attempt.telemetry?.damageTaken ?? null, kills: attempt.telemetry?.kills ?? null,
-        ...(attempt.policy ? { jevCalls: attempt.policy.calls, jevOverrides: attempt.policy.overrides, jevInputTokens: attempt.policy.inputTokens, jevCostUsd: attempt.policy.estimatedInputCostUsd } : {})
+        ...(attempt.policy ? { jevCalls: attempt.policy.calls, jevOverrides: attempt.policy.overrides, jevInputTokens: attempt.policy.inputTokens, jevCostUsd: attempt.policy.estimatedInputCostUsd } : {}),
+        ...(attempt.video ? { video: attempt.video.path, videoSeconds: attempt.video.seconds, videoBytes: attempt.video.bytes, videoError: attempt.video.error || attempt.video.captureError || null } : {})
       })}`);
     }
   } finally {
@@ -626,7 +694,12 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       baseline: { type: 'string' },
       skill: { type: 'string' },
       headed: { type: 'boolean', default: false },
-      overlay: { type: 'boolean', default: true }
+      overlay: { type: 'boolean', default: true },
+      record: { type: 'boolean', default: false },
+      'record-every': { type: 'string', default: 'tic' },   // tic: one frame per world tic; step: one per command
+      'record-quality': { type: 'string', default: '80' }, // JPEG quality of the captured frames
+      'record-bitrate': { type: 'string', default: '1500k' },
+      'hide-pause': { type: 'boolean' }                    // default: hidden while recording, shown otherwise
     },
     allowNegative: true
   });
@@ -639,6 +712,11 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       skill: parseSkill(values.skill),
       headed: Boolean(values.headed),
       overlay: Boolean(values.overlay),
+      record: Boolean(values.record),
+      recordEvery: String(values['record-every']),
+      recordQuality: Number(values['record-quality']),
+      recordBitrate: String(values['record-bitrate']),
+      ...(values['hide-pause'] == null ? {} : { hidePause: Boolean(values['hide-pause']) }),
       map: String(values.map).toUpperCase(),
       runs: Number(values.runs),
       godMode: Boolean(values.god),
