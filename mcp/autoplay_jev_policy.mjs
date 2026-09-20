@@ -15,7 +15,7 @@ import { appendFile } from 'node:fs/promises';
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 import { coverPoint, lineOfWalk, movementHazard } from './navigation_graph.js';
 
-export const JEV_POLICY_VERSION = '1.3.0-jev-policy';
+export const JEV_POLICY_VERSION = '1.4.0-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -291,6 +291,13 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
   const pointBlank = Boolean(target) && Number(target.distance) <= Number(options.pointBlankDistance ?? 96);
   let fire = Number(answers.fire?.noul ?? 0) >= Number(options.fireThreshold ?? 0.4);
   if (pointBlank && !fire) { fire = true; rules.push('pointBlank'); }
+  // barrelBlock: a barrel stands in the line of fire, close enough that its
+  // blast reaches the shooter. One shot into a barrel 44 units away is 97
+  // damage, which is how all ten E1M3 runs at Hey Not Too Rough died at the
+  // same tic. Hold fire whatever the model and the other fire rules say, and
+  // step out of the line rather than stand in it.
+  const barrel = options.barrelInAim || null;
+  if (barrel) { fire = false; rules.push('barrelBlock'); }
   let mode = answers.mode?.choice;
   if (options.forceMode && options.forceMode !== mode) { mode = options.forceMode; rules.push('stall'); }
   else if (options.forceMode) { rules.push('stall'); }
@@ -371,6 +378,13 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
     // enemy that can hit back is never withheld. With one shell left the
     // model answered fire 0.2 and the player stood still, aimed, unhurt and
     // silent, for 130 tics while a zombieman walked up to it.
+    if (barrel) {
+      // Aligned on the target and a barrel is in the way: sidestep so the
+      // barrel falls off the line, keeping the facing. Agent +strafe is
+      // right, so step away from the side the barrel sits on.
+      const away = Number(barrel.bearing) > 0 ? 1 : -1;
+      return { forward: 0, strafe: 0.6 * away, turn: 0, attack: false, use: false, tics: 3, ...meta };
+    }
     let attack = fire;
     if (!attack && target.canHitPlayerNow) { attack = true; rules.push('fightFires'); meta.rules = rules; meta.fire = true; }
     return { forward: 0, strafe: strafeVs, turn: 0, attack, use: false, tics: 3, ...meta };
@@ -470,6 +484,14 @@ export async function createJevPolicy(options = {}) {
     lootShotgun: true,         // after killing a shotgun guy with the pistol, walk over its dropped shotgun
     lootTimeoutTics: 140,      // give a detour at most 4 s
     items: [],                 // static map pickups (autoplay_items.mjs) for health / shells loot
+    // Explosive barrels. A barrel's blast is 128 units at its centre and
+    // falls off linearly, so one shot into a barrel 44 units away is 97
+    // damage to the shooter: that killed all ten E1M3 runs at Hey Not Too
+    // Rough, at the same tic, while the player aimed at a zombieman standing
+    // behind it. Nothing in the policy knew barrels existed.
+    barrels: [],
+    barrelBlast: 128,          // never fire through a barrel closer than this
+    barrelAimRadius: 24,       // half-width of the shot cone a barrel blocks
     graph: null,               // navigation graph (with geometry) for the terrain guard and walkable loot
     terrainGuard: true,        // never send a combat/loot step that walks into a wall, a drop or a damaging floor
     guardSidestep: true,       // ... and when the blocked step was a fight or a retreat, sidestep rather than stand still
@@ -536,7 +558,7 @@ export async function createJevPolicy(options = {}) {
   const stats = {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, rulesOnly: config.rulesOnly, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
-    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, coverStarts: 0, coverArrived: 0, coverMove: 0, coverFight: 0, retreatDrift: 0, noFightFar: 0, guardSidestep: 0, weaponSelect: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
+    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, coverStarts: 0, coverArrived: 0, coverMove: 0, coverFight: 0, retreatDrift: 0, noFightFar: 0, guardSidestep: 0, barrelBlock: 0, weaponSelect: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
     loot: { shotgun: 0, health: 0, shells: 0, armor: 0 },
     pipeline: { lagTics: options.pipelineLagTics || 0, inflightLaunched: 0, applied: 0, reused: 0, stalls: 0, stallMsTotal: 0, lagTicsTotal: 0 }
   };
@@ -848,10 +870,37 @@ export async function createJevPolicy(options = {}) {
   // A rule that hands the step back to the follower (returning null) has no
   // command to carry its name on, so it reports itself here.
   const onRule = rule => { stats.rules[rule] = (stats.rules[rule] || 0) + 1; };
+
+  // Is a barrel standing in the line of fire, close enough that its blast
+  // would reach the player? Hitscan shots travel along the player's facing,
+  // so the test is the barrel's bearing off that facing against the angle it
+  // subtends. Returns the nearest offender, which the fire rules then refuse
+  // to shoot through.
+  function barrelInAim(state) {
+    const barrels = config.barrels || [];
+    if (!barrels.length) return null;
+    const player = state?.player || {};
+    const px = Number(player.x), py = Number(player.y), facing = Number(player.angle);
+    if (!Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(facing)) return null;
+    const blast = Number(config.barrelBlast ?? 128);
+    let nearest = null;
+    for (const barrel of barrels) {
+      const dx = barrel.x - px, dy = barrel.y - py;
+      const distance = Math.hypot(dx, dy);
+      if (distance > blast || distance < 1) continue;
+      let bearing = Math.atan2(dy, dx) * 180 / Math.PI - facing;
+      while (bearing > 180) bearing -= 360;
+      while (bearing < -180) bearing += 360;
+      const halfWidth = Math.atan2(Number(config.barrelAimRadius ?? 24), distance) * 180 / Math.PI;
+      if (Math.abs(bearing) > halfWidth) continue;
+      if (!nearest || distance < nearest.distance) nearest = { ...barrel, distance: round(distance, 1), bearing: round(bearing, 1) };
+    }
+    return nearest;
+  }
   function ruleOptions(compact, state, context) {
     const stalled = detectStall(state, compact);
     const holding = Boolean(coverSpot?.arrived) && Number(state?.levelTime ?? 0) < Number(coverSpot?.holdUntil ?? 0);
-    return { ...config, dodgeSide, lastTarget, cover: context ? coverInfo(context) : null, holdPosition: holding, strafeRoomClear: strafeRoomClear(state), targetDrift: targetDrift(context), playerWeapon: Number(state?.player?.weapon), onRule, ...(stalled ? { forceMode: 'fight' } : {}) };
+    return { ...config, dodgeSide, lastTarget, cover: context ? coverInfo(context) : null, holdPosition: holding, strafeRoomClear: strafeRoomClear(state), targetDrift: targetDrift(context), playerWeapon: Number(state?.player?.weapon), barrelInAim: barrelInAim(state), onRule, ...(stalled ? { forceMode: 'fight' } : {}) };
   }
   // Is there room to strafe? Both sides of the player must have
   // config.strafeRoom units of floor with no wall, drop or nukage shore.

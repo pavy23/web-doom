@@ -581,6 +581,15 @@ export async function runStageClearTrial(input = {}) {
     ? (await loadMapItems(config.iwadPath, config.map, { skill: config.skill ?? 0 }))
       .map(item => ({ ...item, sector: locatePointSector(stage.workspace, { x: item.x, y: item.y }) }))
     : [];
+  // Explosive barrels (doomednum 2035). They are not skill-filtered and are
+  // not pickups, so they come straight from the map's things. Every one of
+  // ten E1M3 runs at Hey Not Too Rough died at tic 827 to a barrel 44 units
+  // away that the policy shot itself while aiming at a zombieman behind it.
+  const mapBarrels = usesPolicy
+    ? (stage.workspace.geometry?.things || [])
+      .filter(thing => Number(thing.doomEdNum ?? thing.type) === 2035)
+      .map(thing => ({ x: Number(thing.x), y: Number(thing.y) }))
+    : [];
   // What kind of level this is: drives the policy's thresholds (under any
   // explicit --jev-opt) and tells the model what it is walking into.
   const mapProfile = usesPolicy
@@ -653,7 +662,7 @@ export async function runStageClearTrial(input = {}) {
         if (config.policy === 'jev' || config.policy === 'rules') {
           const { createJevPolicy } = await import('./autoplay_jev_policy.mjs');
           policy = await createJevPolicy({
-            profile: mapProfile, ...(config.jev || {}), rulesOnly: config.policy === 'rules', log: policyLog, runIndex, items: mapItems, graph: stage.graph,
+            profile: mapProfile, ...(config.jev || {}), rulesOnly: config.policy === 'rules', log: policyLog, runIndex, items: mapItems, barrels: mapBarrels, graph: stage.graph,
             onDecision: config.overlay === false ? null : entry => updateOverlay(page, { jev: entry })
           });
         }
