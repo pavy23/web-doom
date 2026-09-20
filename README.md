@@ -311,9 +311,22 @@ judgment at each consultation.
 |---|---|
 | [![E1M1 autoplay preview](docs/autoplay/e1m1-hmp-jev.gif)](https://pavy23.github.io/web-doom/docs/autoplay/) | [![E1M2 autoplay preview](docs/autoplay/e1m2-hmp-jev.gif)](https://pavy23.github.io/web-doom/docs/autoplay/) |
 
-The WebM files themselves are `docs/autoplay/e1m1-hmp-jev.webm` and
-`docs/autoplay/e1m2-hmp-jev.webm` (GitHub's file view does not play WebM;
-download them or use the page above).
+Download the clips:
+**[E1M1, 3.4 MB](https://github.com/pavy23/web-doom/raw/main/docs/autoplay/e1m1-hmp-jev.webm)**
+·
+**[E1M2, 10.7 MB](https://github.com/pavy23/web-doom/raw/main/docs/autoplay/e1m2-hmp-jev.webm)**.
+Those links serve the raw file; depending on the browser it either saves
+or opens in a media tab, and right-click to save always works. The
+project page above has the same two behind a real download button, which
+is the reliable route. GitHub's own file view does not play WebM at all.
+
+The clips are VP8 in a WebM container, which every current browser plays
+and most slide and video editors do not. Any full ffmpeg build converts
+one to H.264 MP4:
+
+```bash
+ffmpeg -i e1m1-hmp-jev.webm -c:v libx264 -preset slow -crf 20 -pix_fmt yuv420p e1m1-hmp-jev.mp4
+```
 
 ### Running it
 
