@@ -43,6 +43,7 @@ import {
 import { OBJECTIVE_ORDER, OBJECTIVE_VERSION, compareToBaseline, rankRuns, runMetrics } from './autoplay_objective.mjs';
 import { installOverlay, updateOverlay } from './autoplay_overlay.mjs';
 import { loadMapItems } from './autoplay_items.mjs';
+import { buildMapProfile } from './autoplay_map_profile.mjs';
 import { createRecorder, findFfmpeg } from './autoplay_recorder.mjs';
 
 // LinuxDOOM skill_t: 0 ITYTD, 1 HNTR, 2 HMP, 3 UV, 4 Nightmare. The CLI takes
@@ -575,9 +576,16 @@ export async function runStageClearTrial(input = {}) {
     ? (await loadMapItems(config.iwadPath, config.map, { skill: config.skill ?? 0 }))
       .map(item => ({ ...item, sector: locatePointSector(stage.workspace, { x: item.x, y: item.y }) }))
     : [];
+  // What kind of level this is: drives the policy's thresholds (under any
+  // explicit --jev-opt) and tells the model what it is walking into.
+  const mapProfile = usesPolicy
+    ? await buildMapProfile({ workspace: stage.workspace, graph: stage.graph, progression: stage.progression, iwadPath: config.iwadPath, map: config.map, skill: config.skill ?? 0 })
+    : null;
+  if (mapProfile) console.error(`autoplay profile ${config.map}: ${mapProfile.brief} config ${JSON.stringify(mapProfile.config)}`);
   const report = {
     version: AUTOPLAY_VERSION,
     map: config.map,
+    mapProfile,
     godMode: Boolean(config.godMode),
     skill: config.skill ?? null,
     policy: config.policy || 'none',
@@ -631,7 +639,7 @@ export async function runStageClearTrial(input = {}) {
         if (config.policy === 'jev' || config.policy === 'rules') {
           const { createJevPolicy } = await import('./autoplay_jev_policy.mjs');
           policy = await createJevPolicy({
-            ...(config.jev || {}), rulesOnly: config.policy === 'rules', log: policyLog, runIndex, items: mapItems, graph: stage.graph,
+            profile: mapProfile, ...(config.jev || {}), rulesOnly: config.policy === 'rules', log: policyLog, runIndex, items: mapItems, graph: stage.graph,
             onDecision: config.overlay === false ? null : entry => updateOverlay(page, { jev: entry })
           });
         }
@@ -737,7 +745,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       'report-dir': { type: 'string' },
       policy: { type: 'string', default: 'none' },
       'jev-dry-run': { type: 'boolean', default: false },
-      'jev-max-calls': { type: 'string', default: '600' },
+      'jev-max-calls': { type: 'string' },   // no default: the map profile sets it unless given
       'jev-model': { type: 'string' },
       'jev-pipeline': { type: 'string' },      // lag in tics; answers apply this long after their state
       'jev-min-steps': { type: 'string', default: '1' },
@@ -775,7 +783,8 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       maxCombatTicsPerEdge: Number(values['max-combat-tics']),
       policy: String(values.policy),
       jev: {
-        dryRun: Boolean(values['jev-dry-run']), maxCalls: Number(values['jev-max-calls']), model: values['jev-model'],
+        dryRun: Boolean(values['jev-dry-run']), model: values['jev-model'],
+        ...(values['jev-max-calls'] ? { maxCalls: Number(values['jev-max-calls']) } : {}),
         pipelineLagTics: values['jev-pipeline'] ? Number(values['jev-pipeline']) : 0,
         minStepsBetweenCalls: Number(values['jev-min-steps']),
         ...Object.fromEntries((values['jev-opt'] || []).map(pair => {

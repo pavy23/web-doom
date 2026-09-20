@@ -116,6 +116,17 @@ export function compactState(state, context = {}) {
       distanceToWaypoint: round(context.targetDistance ?? 0),
       waypointBearing: round(context.delta ?? 0)
     },
+    // What kind of level this is (autoplay_map_profile.mjs). Without it every
+    // level reads the same to the model: six monsters with two stimpacks and
+    // forty-five with ten look identical from one consultation.
+    ...(context.profile ? {
+      level: {
+        kind: context.profile.brief,
+        monstersOnRoute: context.profile.monsters.onRoute,
+        killedSoFar: Number(player.kills ?? 0),
+        healthPickupsOnRoute: context.profile.items.onRoute.health
+      }
+    } : {}),
     visibleEnemies: enemies,
     enemyCountTotal: Number(state?.enemyCount ?? 0)
   };
@@ -454,6 +465,11 @@ export async function createJevPolicy(options = {}) {
     model: undefined,
     log: null,                 // JSONL path
     onDecision: null,          // async (entry) => void, called after every consultation (overlay, live views)
+    profile: null,             // autoplay_map_profile.mjs: thresholds the level's shape justifies
+    // Order: these defaults, then the map profile, then what the caller asked
+    // for explicitly (the runner's --jev-opt), so a profile never overrides a
+    // deliberate setting and a deliberate setting never has to repeat one.
+    ...(options.profile?.config || {}),
     ...options
   };
   const sdk = await import('@typesafe-ai/sdk');
@@ -922,7 +938,7 @@ export async function createJevPolicy(options = {}) {
     }
     if (stats.calls >= config.maxCalls) { stats.capped = true; return null; }
 
-    const compact = compactState(state, { ...context, maxEnemies: config.maxEnemies, meleeRange: config.meleeRange, recentDamage: lost });
+    const compact = compactState(state, { ...context, maxEnemies: config.maxEnemies, meleeRange: config.meleeRange, recentDamage: lost, profile: config.profile });
     if (compact.visibleEnemies.length) engagedUntilTic = Number(state.levelTime) + config.engageHoldTics;
     const questions = buildQuestions(compact, sdk);
     const request = { state: compact, questions, ...(config.model ? { model: config.model } : {}) };
