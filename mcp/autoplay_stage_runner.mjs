@@ -38,7 +38,7 @@ import { installThingAuthoring } from './thing_authoring.js';
 import { installSemanticGeometry } from './semantic_geometry.js';
 import { buildNavigationGraph, findExitProgression, lineOfWalk, locatePointSector, planLocalPath, solidLines } from './navigation_graph.js';
 import {
-  coldBoot, exactInput, interruptedFailure, isCombatCommand, launchChromium, liveSectorFloor, liveSectorOpening, mergeTelemetry, navigateEdge, remainingPathDistance, safeRecovery, setTicHook
+  BLOCKER_STEPS, blockerCommand, blockingEnemy, coldBoot, exactInput, interruptedFailure, isCombatCommand, launchChromium, liveSectorFloor, liveSectorOpening, mergeTelemetry, navigateEdge, remainingPathDistance, safeRecovery, setTicHook
 } from './navigation_browser_agent.mjs';
 import { OBJECTIVE_ORDER, OBJECTIVE_VERSION, compareToBaseline, rankRuns, runMetrics } from './autoplay_objective.mjs';
 import { installOverlay, updateOverlay } from './autoplay_overlay.mjs';
@@ -174,6 +174,7 @@ export async function approachAndUseExit(page, exit, options = {}) {
   let stalled = 0;
   let recoverySide = 1;
   let recoveries = 0;
+  let clearing = 0;        // steps left on a blocking monster (see blockerCommand)
   let lastUse = false;
 
   while (ticsSinceProgress < maxTics && combatTics < maxCombatTics) {
@@ -209,8 +210,16 @@ export async function approachAndUseExit(page, exit, options = {}) {
     else stalled = Math.max(0, stalled - 1);
     lastDistance = targetDistance;
 
-    if (stalled >= 7) {
+    // Same hold as navigateEdge: a monster between the player and the exit
+    // switch needs a run of steps to clear, not one recovery in seven.
+    const blocker = clearing > 0 ? blockingEnemy(state) : null;
+    if (blocker) clearing--; else clearing = 0;
+
+    if (blocker) {
+      command = blockerCommand(blocker, { use: exit.trigger === 'use' });
+    } else if (stalled >= 7) {
       command = safeRecovery(options.graph, state, recoverySide, { use: exit.trigger === 'use' }, recoveries++);
+      if (command.recovery === 'blocker') clearing = BLOCKER_STEPS;
       recoverySide *= -1;
       stalled = 0;
     } else if (Math.abs(delta) > 8) {
