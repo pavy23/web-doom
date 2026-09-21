@@ -15,7 +15,7 @@ import { appendFile } from 'node:fs/promises';
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 import { coverPoint, lineOfWalk, movementHazard } from './navigation_graph.js';
 
-export const JEV_POLICY_VERSION = '1.5.0-jev-policy';
+export const JEV_POLICY_VERSION = '1.6.0-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -302,12 +302,32 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
   if (options.forceMode && options.forceMode !== mode) { mode = options.forceMode; rules.push('stall'); }
   else if (options.forceMode) { rules.push('stall'); }
   if (options.forceMode === 'fight') fire = true;
+  // shotgunStandoff: the hitscan doctrine below is right about hit chance and
+  // wrong about damage. A shotgun guy fires three pellets that spread with
+  // angle, so at close range all three land and at range one or two do.
+  // Measured over every E1M3 trial, damage per hit from a shotgun guy that
+  // could reach the player: 30.9 inside 100 units, 18.4 between 100 and 200,
+  // 13.5 beyond. An imp averages 13.3 and a zombieman 9.1 at any distance.
+  // So backing out of a shotgun guy's face is worth the exposure it costs,
+  // and only for shotgun guys: every other hitscan monster fires one bullet
+  // whose damage does not fall off.
+  const shotgunClose = options.shotgunStandoff !== false && target
+    && String(target.name).toLowerCase() === 'shotgun_guy'
+    && target.canHitPlayerNow
+    && Number(target.distance) <= Number(options.shotgunStandoffRange ?? 100);
+  if (shotgunClose) rules.push('shotgunStandoff');
   // Retreating from a hitscan enemy that can already hit the player only
   // prolongs the exposure (its hit chance does not fall with distance):
-  // shoot it instead. Retreat stays for projectile and melee monsters.
-  if (mode === 'retreat' && target && isHitscan(target.name) && target.canHitPlayerNow) {
+  // shoot it instead. Retreat stays for projectile and melee monsters, and
+  // for a shotgun guy close enough that its pellets all land.
+  if (mode === 'retreat' && target && isHitscan(target.name) && target.canHitPlayerNow && !shotgunClose) {
     mode = 'fight'; fire = true; rules.push('hitscanFight');
   }
+  // Back out of that range whatever the model asked for, shooting on the way:
+  // standing still or advancing inside 100 units is where the 31-point hits
+  // come from. pointBlank still overrides, since something that close is
+  // past backing away from.
+  if (shotgunClose && !pointBlank && mode !== 'retreat') { mode = 'retreat'; fire = true; }
   // lowHealthHold: under `lowHealth` with something able to hit the player,
   // never advance into it; every UV death came from walking into the
   // courtyard at ~44 hp. Fight from where the player stands instead.
@@ -544,6 +564,8 @@ export async function createJevPolicy(options = {}) {
     // switch's room, up a lift into another sector, and the trigger approach
     // (which routes inside one sector) could never walk back.
     retreatDriftLimit: 192,
+    shotgunStandoff: true,     // back out of a shotgun guy's pellet-spread range (see shotgunStandoff)
+    shotgunStandoffRange: 100,
     // How far past a weapon's useful range a fight is still worth standing
     // still for (see WEAPON_RANGE and the noFightFar rule). Seven tic-identical
     // E1M3 runs died holding a shotgun on an imp 348 units away, which is past
@@ -580,7 +602,7 @@ export async function createJevPolicy(options = {}) {
   const stats = {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, rulesOnly: config.rulesOnly, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
-    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, coverStarts: 0, coverArrived: 0, coverMove: 0, coverFight: 0, retreatDrift: 0, noFightFar: 0, guardSidestep: 0, barrelBlock: 0, barrelStandoff: 0, weaponSelect: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
+    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, coverStarts: 0, coverArrived: 0, coverMove: 0, coverFight: 0, retreatDrift: 0, shotgunStandoff: 0, noFightFar: 0, guardSidestep: 0, barrelBlock: 0, barrelStandoff: 0, weaponSelect: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
     loot: { shotgun: 0, health: 0, shells: 0, armor: 0 },
     pipeline: { lagTics: options.pipelineLagTics || 0, inflightLaunched: 0, applied: 0, reused: 0, stalls: 0, stallMsTotal: 0, lagTicsTotal: 0 }
   };
