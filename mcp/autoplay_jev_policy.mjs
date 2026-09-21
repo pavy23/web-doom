@@ -585,7 +585,17 @@ export async function createJevPolicy(options = {}) {
     // (which routes inside one sector) could never walk back.
     retreatDriftLimit: 192,
     // sprintHazardRings: suppress fighting on a hazard ring (see the sprint
-    // rule). Off by default until the controlled experiment says otherwise.
+    // rule). Off, and the controlled experiment says it should stay off. Same
+    // build (1.8.0), E1M3 HMP, 10 runs per arm, the arms differing only in
+    // this flag: sprinting died 10/10 inside the ring (sector 67) against a
+    // control that crossed it 10/10 and died later, and route progress fell
+    // from a median of 16.5 waypoints of 20 to 5. It is worse on the ring's
+    // own metric too: 0.48 points of damage per step on the ring sprinting
+    // against 0.18 fighting, 2.7x. The route does not run the outer edge the
+    // speedrun doctrine describes; it funnels through the door at 67:97 and
+    // the platform at 97:103, and a follower that holds its fire there
+    // oscillates 67 <-> 97 while the shooters it left alive keep firing.
+    // Fighting on the ring is what makes the ring survivable.
     sprintHazardRings: false,
     // Off by default. A same-build controlled experiment on E1M3 HMP (10 runs
     // per arm, 1.6.0, the arms differing only in this flag) showed the rule
