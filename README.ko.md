@@ -302,22 +302,62 @@ ffmpeg -i e1m1-hmp-jev.webm -c:v libx264 -preset slow -crf 20 -pix_fmt yuv420p e
 
 ### 실행 방법
 
-Node 20 이상, `mcp/` 에서 `npm install` 이 필요합니다. Playwright 가 Chromium 을 받아옵니다. 정책 런에는 TypeSafe 키가 필요합니다. 녹화에는 ffmpeg 가 필요한데, Playwright 가 함께 배포하는 빌드를 자동으로 찾습니다 (`npx playwright install ffmpeg`).
+**준비**, 한 번만 하면 됩니다. 필요한 것은 Node 20 이상뿐입니다. 셰어웨어 IWAD 는 저장소에 들어 있으니 따로 구하실 것이 없습니다.
 
 ```bash
-cd mcp && npm install
-export TYPESAFE_API_KEY=...            # --policy jev 일 때만 필요
-npm run autoplay:e1m1                  # 추종기, 갓 모드, 3 런 + 결정성 확인
-npm run autoplay:e1m1:hmp:baseline     # HMP 추종기 단독: 정책을 견주는 기준선
-npm run autoplay:e1m1:hmp:watch        # HMP 에서 Jev 를 보이는 창으로, 파이프라인 모드
-npm run autoplay:e1m1:hmp:record       # 같은 실행을 exports/autoplay/.../run-0.webm 으로 기록
-npm run autoplay:e1m2:hmp:x10          # 10 런 프로토콜 (report.json, steps.jsonl, jev.jsonl)
-npm run autoplay:compare:e1m2          # 95% 신뢰구간 클리어율, 피해, 틱, 엣지별 표
-npm run autoplay:dashboard             # 오프라인 HTML 대시보드
+git clone https://github.com/pavy23/web-doom.git
+cd web-doom/mcp
+npm install
+npx playwright install chromium    # npm install 이 보통 같이 받습니다. 브라우저가 없을 때만 실행하세요
+```
+
+**첫 실행**, 키가 필요 없습니다. 준비가 제대로 됐는지 확인하는 용도입니다.
+
+```bash
+npm run autoplay:e1m1
+```
+
+E1M1 을 무적 모드로 세 번 돌고 틱 단위 결정성까지 확인합니다. 런마다 `autoplay E1M1 run N: CLEARED` 가 찍히고, 마지막 `autoplay summary` 줄에 `"cleared":3` 이 나오면 환경이 준비된 것입니다.
+
+**몬스터를 살려두고 실제로 보려면** 이렇게 합니다. 추종기 단독이고 AI 는 쓰지 않습니다.
+
+```bash
+npm run autoplay:e1m1:live
+```
+
+**Jev 정책을 붙이려면** 여기서부터 키가 필요합니다. 명령에 `--policy jev` 가 들어간 스크립트만 해당됩니다.
+
+```bash
+export TYPESAFE_API_KEY=...
+npm run autoplay:e1m1:hmp:watch    # 창을 띄워서 판단 패널과 함께 봅니다
+npm run autoplay:e1m2:hmp:x10      # 10 런 프로토콜, 창 없이, 4 런씩 병렬
+npm run autoplay:compare:e1m2      # 95% 신뢰구간 클리어율, 피해, 틱, 엣지별 표
+```
+
+10 런 시험 하나에 약 0.10 달러에서 0.30 달러가 들고, 맵에 따라 7 분에서 26 분 걸립니다.
+
+**나머지 도구들입니다.**
+
+```bash
+npm run autoplay:e1m1:hmp:baseline   # 추종기 단독 결과. 정책을 견주는 기준선
+npm run autoplay:e1m1:uv:control     # 규칙만, 모델은 한 번도 부르지 않는 대조군
+npm run autoplay:e1m1:hmp:record     # exports/autoplay/.../run-0.webm 으로 기록 (정책을 쓰므로 키가 필요합니다)
+npm run autoplay:dashboard           # 오프라인 HTML 대시보드
 node autoplay_postmortem.mjs exports/autoplay/e1m3-jev-hmp-x10   # 각 런이 어디서 피해를 받고 죽었는지
 ```
 
-플래그는 다음과 같습니다. `--map E1M1..E1M3`, `--skill itytd|hntr|hmp|uv|nightmare`, `--policy jev|rules|none`, `--jev-pipeline 8` (답을 해당 상태보다 8 틱 뒤에 적용해 모델이 생각하는 동안 세계가 멈추지 않게 합니다), `--concurrency N` (한 시험의 런을 병렬로 돌립니다. 4 로 두면 10 런 시험의 실소요가 약 3 분의 1 로 줄고 출력은 스텝 단위로 동일합니다), `--jev-opt key=value` (정책 설정 하나를 덮어씁니다. 대조 실험용입니다), `--headed`, `--record`, `--runs N`, `--baseline other/report.json`.
+**결과가 쌓이는 곳입니다.** 시험마다 `mcp/exports/autoplay/` 아래에 폴더가 하나씩 생기고 `report.json`, `steps.jsonl`, `jev.jsonl` 이 들어갑니다. 이 디렉터리는 gitignore 에 걸려 있어서 무엇을 돌리든 커밋에 섞이지 않습니다.
+
+**실행이 안 될 때 확인할 것들입니다.**
+
+| 증상 | 해결 |
+|---|---|
+| Chromium 을 못 찾거나 버전이 안 맞음 | `export DOOM_MCP_CHROMIUM_EXECUTABLE=/path/to/chromium` |
+| 포트 3777 이 이미 사용 중이거나 두 개를 동시에 돌릴 때 | `export DOOM_MCP_PORT=3778` |
+| `--record` 가 ffmpeg 를 못 찾음 | `npx playwright install ffmpeg` 또는 `DOOM_MCP_FFMPEG` 로 경로 지정 |
+| 정책 호출에서 401 | `TYPESAFE_API_KEY` 가 없거나 틀렸습니다. 위의 키 없는 스크립트들은 그대로 돕니다 |
+
+**플래그입니다.** npm 스크립트 대신 CLI 를 직접 부를 때 씁니다. `--map E1M1..E1M3`, `--skill itytd|hntr|hmp|uv|nightmare`, `--policy jev|rules|none`, `--jev-pipeline 8` (답을 해당 상태보다 8 틱 뒤에 적용해 모델이 생각하는 동안 세계가 멈추지 않게 합니다), `--concurrency N` (한 시험의 런을 병렬로 돌립니다. 4 로 두면 10 런 시험의 실소요가 약 3 분의 1 로 줄고 출력은 스텝 단위로 동일합니다), `--jev-opt key=value` (정책 설정 하나를 덮어씁니다. 대조 실험용입니다), `--headed`, `--record`, `--runs N`, `--baseline other/report.json`.
 
 ### 결과 (표기가 없으면 10 런 시험, 정책 0.7.x, `--jev-pipeline 8`)
 
