@@ -36,7 +36,7 @@ import { EpisodeWorkspace } from './episode_workspace.js';
 import { installFullTopologyValidator } from './topology_validator.js';
 import { installThingAuthoring } from './thing_authoring.js';
 import { installSemanticGeometry } from './semantic_geometry.js';
-import { buildNavigationGraph, findExitProgression, lineOfWalk, locatePointSector, planLocalPath, solidLines } from './navigation_graph.js';
+import { buildNavigationGraph, findExitProgression, isDamagingSector, lineOfWalk, locatePointSector, planLocalPath, solidLines } from './navigation_graph.js';
 import {
   BLOCKER_STEPS, blockerCommand, blockingEnemy, coldBoot, exactInput, interruptedFailure, isCombatCommand, launchChromium, liveSectorFloor, liveSectorOpening, mergeTelemetry, navigateEdge, remainingPathDistance, safeRecovery, setTicHook
 } from './navigation_browser_agent.mjs';
@@ -138,6 +138,50 @@ export async function prepareStagePwad({ iwadPath = DEFAULT_IWAD, map = 'E1M1', 
   }
   await writeFile(wadPath, bytes);
   return { map, filename: candidate.filename, wadPath, graph, start, progression, workspace, hidePauseGraphic: Boolean(hidePauseGraphic) };
+}
+
+// A sidedef index of 0xffff means the linedef has no side there (one-sided).
+const NO_SIDEDEF = 65535;
+
+// Sectors that wrap a damaging sector: the bounding box of the sector holds
+// the whole bounding box of a nukage (or blood) pit, so walking it means
+// circling a hazard. Only route sectors are reported, since a ring the run
+// never enters is not a decision the policy has to make.
+export function hazardRingSectors(stage) {
+  const geometry = stage.workspace?.geometry;
+  if (!geometry) return [];
+  const { vertices, linedefs, sidedefs, sectors } = geometry;
+  const boxes = new Map();
+  for (const line of linedefs) {
+    for (const side of [line.right, line.left]) {
+      if (side == null || side === NO_SIDEDEF) continue;
+      const sector = sidedefs[side]?.sector;
+      if (sector == null) continue;
+      const box = boxes.get(sector) || { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+      for (const index of [line.v1, line.v2]) {
+        const vertex = vertices[index];
+        if (!vertex) continue;
+        box.minX = Math.min(box.minX, vertex.x); box.maxX = Math.max(box.maxX, vertex.x);
+        box.minY = Math.min(box.minY, vertex.y); box.maxY = Math.max(box.maxY, vertex.y);
+      }
+      boxes.set(sector, box);
+    }
+  }
+  const hazards = [];
+  for (let sector = 0; sector < sectors.length; sector++) {
+    if (isDamagingSector(geometry, sector) && boxes.has(sector)) hazards.push(boxes.get(sector));
+  }
+  if (!hazards.length) return [];
+  const route = new Set([stage.start.sector, ...(stage.progression.transitions || []).map(step => step.edge.to)]);
+  const rings = [];
+  for (const sector of route) {
+    const box = boxes.get(sector);
+    if (!box || isDamagingSector(geometry, sector)) continue;
+    const wraps = hazards.some(hazard => hazard.minX >= box.minX && hazard.maxX <= box.maxX
+      && hazard.minY >= box.minY && hazard.maxY <= box.maxY);
+    if (wraps) rings.push(sector);
+  }
+  return rings.sort((a, b) => a - b);
 }
 
 async function engineState(page) { return page.evaluate(() => window.DoomControl.getState()); }
@@ -602,6 +646,16 @@ export async function runStageClearTrial(input = {}) {
       .filter(thing => Number(thing.doomEdNum ?? thing.type) === 2035)
       .map(thing => ({ x: Number(thing.x), y: Number(thing.y) }))
     : [];
+  // Hazard rings: a route sector whose own bounding box encloses one or more
+  // damaging sectors, i.e. a walkway that wraps a nukage pit. Derived from the
+  // WAD and the route, never from a map name. On E1M3 this finds sectors 67
+  // (the donut walkway around three nukage pools), 47 and 56; on E1M1 sector
+  // 60, the courtyard; on E1M2 sector 142. Measured over the twenty 1.6.0
+  // E1M3 runs, sector 67 alone carried 1478 of 2891 points of damage taken
+  // (51%) although no run died there, which is what `sprintHazardRings` is
+  // there to test.
+  const hazardRings = usesPolicy ? hazardRingSectors(stage) : [];
+  if (hazardRings.length) console.error(`autoplay hazard rings ${config.map}: ${hazardRings.join(', ')}`);
   // What kind of level this is: drives the policy's thresholds (under any
   // explicit --jev-opt) and tells the model what it is walking into.
   const mapProfile = usesPolicy
@@ -691,7 +745,7 @@ export async function runStageClearTrial(input = {}) {
         if (config.policy === 'jev' || config.policy === 'rules') {
           const { createJevPolicy } = await import('./autoplay_jev_policy.mjs');
           policy = await createJevPolicy({
-            profile: mapProfile, ...(config.jev || {}), rulesOnly: config.policy === 'rules', log: policyLog, runIndex, items: mapItems, barrels: mapBarrels, graph: stage.graph,
+            profile: mapProfile, ...(config.jev || {}), rulesOnly: config.policy === 'rules', log: policyLog, runIndex, items: mapItems, barrels: mapBarrels, graph: stage.graph, hazardRings,
             onDecision: config.overlay === false ? null : entry => updateOverlay(page, { jev: entry })
           });
         }

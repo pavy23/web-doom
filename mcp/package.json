@@ -74,7 +74,10 @@
     "test:experiment": "node p0_experiment_selftest.mjs",
     "prepare-experiment": "playwright install chromium",
     "prepare-geometry": "node --input-type=module -e \"import('./nodebuilder.js').then(m => m.prepareNodeBuilder()).then(s => console.log(JSON.stringify(s, null, 2)))\"",
-    "prepare-game": "node --input-type=module -e \"import('./server.js').then(m => m.prepareGameCache()).then(s => console.log(JSON.stringify(s, null, 2)))\""
+    "prepare-game": "node --input-type=module -e \"import('./server.js').then(m => m.prepareGameCache()).then(s => console.log(JSON.stringify(s, null, 2)))\"",
+    "autoplay:e1m3:sprint:on": "node autoplay_stage_runner.mjs --map E1M3 --runs 10 --concurrency 4 --no-god --policy jev --skill hmp --jev-pipeline 8 --jev-opt sprintHazardRings=true --report-dir exports/autoplay/e1m3-v180-sprint-on --baseline exports/autoplay/e1m3-hmp/report.json",
+    "autoplay:e1m3:sprint:off": "node autoplay_stage_runner.mjs --map E1M3 --runs 10 --concurrency 4 --no-god --policy jev --skill hmp --jev-pipeline 8 --report-dir exports/autoplay/e1m3-v180-sprint-off --baseline exports/autoplay/e1m3-hmp/report.json",
+    "autoplay:compare:e1m3:sprint": "node autoplay_compare.mjs exports/autoplay/e1m3-v180-sprint-off exports/autoplay/e1m3-v180-sprint-on"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
