@@ -330,24 +330,71 @@ ffmpeg -i e1m1-hmp-jev.webm -c:v libx264 -preset slow -crf 20 -pix_fmt yuv420p e
 
 ### Running it
 
-Node 20+, `npm install` in `mcp/` (Playwright fetches Chromium), and a
-TypeSafe key for the policy runs. Recording needs an ffmpeg; the build
-Playwright ships is found automatically (`npx playwright install ffmpeg`).
+**Setup**, once. Node 20 or newer is the only prerequisite. The shareware
+IWAD is already in the repository, so there is nothing else to obtain.
 
 ```bash
-cd mcp && npm install
-export TYPESAFE_API_KEY=...            # only for --policy jev
-npm run autoplay:e1m1                  # follower, god mode, 3 runs + determinism check
-npm run autoplay:e1m1:hmp:baseline     # follower at HMP: the baseline the policy is measured against
-npm run autoplay:e1m1:hmp:watch        # Jev at HMP in a visible window, pipelined
-npm run autoplay:e1m1:hmp:record       # same, written to exports/autoplay/.../run-0.webm
-npm run autoplay:e1m2:hmp:x10          # the 10-run protocol (report.json, steps.jsonl, jev.jsonl)
-npm run autoplay:compare:e1m2          # clear rate with 95% CI, damage, tics, per-edge tables
-npm run autoplay:dashboard             # offline HTML dashboard of a trial
+git clone https://github.com/pavy23/web-doom.git
+cd web-doom/mcp
+npm install
+npx playwright install chromium    # npm install usually does this; run it if the browser is missing
+```
+
+**First run**, no API key needed. This is the check that the setup works:
+
+```bash
+npm run autoplay:e1m1
+```
+
+Three god-mode runs of E1M1 plus the tic-for-tic determinism check. Each
+run prints `autoplay E1M1 run N: CLEARED`, and the closing
+`autoplay summary` line carries `"cleared":3`. That means the environment
+is ready.
+
+**Watch it play for real.** The follower alone, monsters live, no AI:
+
+```bash
+npm run autoplay:e1m1:live
+```
+
+**Add the Jev policy.** This is the only part that needs a key, and only
+the scripts whose command contains `--policy jev` use it:
+
+```bash
+export TYPESAFE_API_KEY=...
+npm run autoplay:e1m1:hmp:watch    # a visible window, with the judgment panel
+npm run autoplay:e1m2:hmp:x10      # the 10-run protocol, headless, 4 runs at a time
+npm run autoplay:compare:e1m2      # clear rate with 95% CI, damage, tics, per-edge tables
+```
+
+A 10-run trial costs about $0.10 to $0.30 and takes 7 to 26 minutes
+depending on the map.
+
+**Everything else:**
+
+```bash
+npm run autoplay:e1m1:hmp:baseline   # the follower's own result, the baseline a policy is measured against
+npm run autoplay:e1m1:uv:control     # rules only, the model never asked: the control arm
+npm run autoplay:e1m1:hmp:record     # writes exports/autoplay/.../run-0.webm (uses the policy, so it needs the key)
+npm run autoplay:dashboard           # offline HTML dashboard of a trial
 node autoplay_postmortem.mjs exports/autoplay/e1m3-jev-hmp-x10   # where each run took damage and died
 ```
 
-Flags: `--map E1M1..E1M3`, `--skill itytd|hntr|hmp|uv|nightmare`, `--policy
+**Where the output goes.** Each trial writes `report.json`, `steps.jsonl`
+and `jev.jsonl` to its own folder under `mcp/exports/autoplay/`. That
+directory is gitignored, so nothing you run lands in a commit.
+
+**If something does not start:**
+
+| Symptom | Fix |
+|---|---|
+| Chromium not found or the wrong revision | `export DOOM_MCP_CHROMIUM_EXECUTABLE=/path/to/chromium` |
+| Port 3777 already in use, or two trials at once | `export DOOM_MCP_PORT=3778` |
+| `--record` cannot find ffmpeg | `npx playwright install ffmpeg`, or point `DOOM_MCP_FFMPEG` at one |
+| 401 from the policy | `TYPESAFE_API_KEY` is unset or wrong; the key-free scripts above still work |
+
+**Flags**, for running the CLI directly instead of an npm script:
+`--map E1M1..E1M3`, `--skill itytd|hntr|hmp|uv|nightmare`, `--policy
 jev|rules|none`, `--jev-pipeline 8` (answers applied 8 tics after their state,
 no pauses while the model thinks), `--concurrency N` (runs of a trial in
 parallel; 4 cuts a 10-run trial to about a third of the wall clock and the

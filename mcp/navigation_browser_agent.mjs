@@ -38,9 +38,55 @@ function distance(a, b) { return Math.hypot(Number(b.x) - Number(a.x), Number(b.
 // and damaging shores; the side flips when the first side is unsafe, and
 // both sides unsafe means a short backstep or, if that is unsafe too, a turn
 // in place.
+// A monster standing in a doorway is not an obstacle the geometry knows
+// about, and no sidestep gets round one in a corridor. E1M1's exit corridor
+// (edge 72:74:309) held the god-mode follower for 375 tics with an enemy in
+// front the whole time, the route planner insisting the way was clear,
+// because layer 1 never pulls the trigger. So when a recovery is already
+// under way and something living is close and roughly ahead, shoot it. This
+// is the same kind of deterministic rule as the sidestep it replaces, and it
+// only fires while the follower is stalled.
+const BLOCKER_RANGE = 112;      // player radius 16 + monster radius up to 31, plus reach
+const BLOCKER_CONE = 50;        // degrees off the facing that count as "in the way"
+const BLOCKER_AIM = 12;         // degrees that count as on target
+export const BLOCKER_STEPS = 24; // steps to stay on a blocker once one is found
+// The exact turn and tic count that zero a bearing in one step, capped at
+// four tics. The same arithmetic the policy aims with, kept here so this
+// layer does not depend on the policy above it: the engine turns about
+// 7 degrees per tic at full deflection, and the agent's turn is capped at 0.7.
+const DEGREES_PER_TURN_TIC = 7;
+const MAX_TURN = 0.7;
+function aimAt(bearing) {
+  const degrees = Math.abs(Number(bearing) || 0);
+  const tics = Math.max(1, Math.min(4, Math.ceil(degrees / (DEGREES_PER_TURN_TIC * MAX_TURN))));
+  const magnitude = Math.min(MAX_TURN, degrees / (DEGREES_PER_TURN_TIC * tics));
+  return { turn: bearing > 0 ? -magnitude : magnitude, tics };
+}
+// Turn onto the blocker and fire once on target. Standing still to shoot is a
+// fight, so the source makes isCombatCommand true and the step is budgeted
+// against maxCombatTics rather than draining the edge's no-progress budget.
+export function blockerCommand(blocker, extra = {}) {
+  const aligned = Math.abs(Number(blocker.bearing)) <= BLOCKER_AIM;
+  const aim = aligned ? { turn: 0, tics: 3 } : aimAt(blocker.bearing);
+  return { forward: 0, strafe: 0, turn: aim.turn, attack: aligned, tics: aim.tics, ...extra, source: 'recovery', recovery: 'blocker' };
+}
+export function blockingEnemy(state) {
+  let nearest = null;
+  for (const enemy of state?.enemies || []) {
+    if (!(Number(enemy.health) > 0)) continue;
+    const distance = Number(enemy.distance);
+    const bearing = Number(enemy.relativeAngle);
+    if (!Number.isFinite(distance) || !Number.isFinite(bearing)) continue;
+    if (distance > BLOCKER_RANGE || Math.abs(bearing) > BLOCKER_CONE) continue;
+    if (!nearest || distance < nearest.distance) nearest = { distance, bearing };
+  }
+  return nearest;
+}
 export function safeRecovery(graph, state, side, extra = {}, attempt = 0) {
   const geometry = graph?.geometry;
   const player = state?.player || {};
+  const blocker = blockingEnemy(state);
+  if (blocker) return blockerCommand(blocker, extra);
   const sidestep = { forward: 0.25, strafe: 0.55 * side, turn: -0.18 * side, tics: 3 };
   const otherSide = { forward: 0.25, strafe: -0.55 * side, turn: 0.18 * side, tics: 3 };
   const backstep = { forward: -0.5, strafe: 0, turn: 0, tics: 4 };
@@ -381,6 +427,7 @@ export async function navigateEdge(page, graph, edge, options = {}) {
   let stalled = 0;
   let recoverySide = 1;
   let recoveries = 0;
+  let clearing = 0;        // steps left on a blocking monster (see blockerCommand)
   let lastUse = false;
   // Door awareness: a door edge tracks its own target sector; an edge that
   // ends in a thin door frame tracks the door behind it (options.doorSector).
@@ -460,8 +507,19 @@ export async function navigateEdge(page, graph, edge, options = {}) {
     else stalled = Math.max(0, stalled - 1);
     lastDistance = targetDistance;
 
-    if (stalled >= 7) {
+    // Clearing a blocker takes a run of steps, not one in seven. A single
+    // recovery step turned 0.15 onto the monster and the next route step
+    // turned straight back toward the waypoint, so the aim never finished and
+    // the trigger never came. Once a blocker is found, stay on it until it is
+    // gone or the budget runs out.
+    const blocker = clearing > 0 ? blockingEnemy(state) : null;
+    if (blocker) clearing--; else clearing = 0;
+
+    if (blocker) {
+      command = blockerCommand(blocker, { use: wantUse });
+    } else if (stalled >= 7) {
       command = safeRecovery(graph, state, recoverySide, { use: wantUse }, recoveries++);
+      if (command.recovery === 'blocker') clearing = BLOCKER_STEPS;
       recoverySide *= -1;
       stalled = 0;
     } else if (Math.abs(delta) > 10) {

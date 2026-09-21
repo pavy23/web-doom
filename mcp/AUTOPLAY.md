@@ -1239,6 +1239,66 @@ is a policy the model is not steering.
 5. **Skill 2 (HMP)** as the intermediate benchmark: UV kills the baseline
    outright, so there is no partial-credit signal there yet.
 
+## A monster in a doorway, and the trials it distorted
+
+`npm run autoplay:e1m1` failed 0/3 from 19 September until this was found.
+The god-mode follower reached E1M1's exit corridor and stopped: its y
+coordinate pinned for 375 tics while it rocked sideways, `visibleEnemies`
+at 1 the whole time.
+
+Nothing was wrong with the route. The geometry has no linedef anywhere
+near that spot, so the planner kept answering, correctly, that a straight
+walk to the portal was clear. What blocked was a monster, which is a
+thing and not a line. The stall recovery only ever sidesteps, backsteps
+and turns in place, none of which gets round a monster in a 192-wide
+corridor, and with `--policy none` nothing pulls the trigger. So the
+block was permanent.
+
+`safeRecovery` now looks for a living enemy within 112 units and 50
+degrees of the facing before reaching for a sidestep, and turns onto it
+and fires. A first version of this moved the follower 78 units up the
+corridor and stalled again with nothing killed: the recovery only got one
+step in seven and the route command spent the other six turning the
+heading back to the waypoint, so the aim never closed. The follower now
+holds on a blocker for up to 24 steps with the route locked out, and aims
+with the exact turn and tic count rather than a ratio. E1M1 in god mode:
+**3/3, 1683 tics, deterministic**.
+
+### Which numbers this moved
+
+Across every trial in `exports/autoplay`, 29 runs ended in
+`edge_no_progress`, and 11 of them had an enemy in view on the last step:
+
+```text
+e1m1-jev-uv-x10-v061b     UV    1/10 cleared    6 runs blocked in front of an enemy
+e1m2 ... -nosidestep      HMP   4/10 cleared    1
+e1m3-jev-hmp-x10-v100     HMP   1/10 cleared    1
+e1m3-jev-hmp-x10-v091     HMP   0/10 cleared    1
+e1m1-godcheck             -     0/1  cleared    1
+```
+
+The policy has its own stall rule that forces a fight, and it did not
+save these: it fires only with an enemy inside `meleeRange`, 96 units,
+and the blocker sat outside that. In all eight affected policy runs the
+stall counter is 0. Sixteen units of range is where this hid.
+
+The bias runs one way. A run that ended blocked is recorded as a failure
+though nothing about the policy's judgment failed, so the clear rates
+above are **understated**, most of all E1M1 at Ultra-Violence, where six
+of ten ended that way. None of the session's conclusions rest on those
+runs: the brake regression, the barrels and the Hey Not Too Rough result
+were all read off deaths, of which there are 163.
+
+The `--policy none` baselines move further, because the follower never
+fired at all before this. "The follower dies in E1M1's exit corridor" is
+this same corridor. Re-measuring the baselines will narrow the gap the
+results table shows between the policy and the follower.
+
+### Worth re-running
+
+E1M1 at Ultra-Violence, ten runs, is the one whose headline number is
+likely wrong. The `--policy none` baselines on all three maps come next.
+
 ## Determinism
 
 The world only advances through exact-tic steps, so a trial is a pure function
@@ -1261,10 +1321,14 @@ Shareware E1M1, this environment (Chromium headless, Playwright 1.55):
 route          20 transitions (5 doors, 1 lift), 0 keys
 exit           line 330, special 11 (switch)
 
-god mode x3    CLEARED 3/3, 1296 world tics each (~37 s game time), 488 steps
-               levelTimeAtPause 2/1/0 -> startLevelTic 3/3/3, deterministic: true
+god mode x3    CLEARED 3/3, 1683 world tics each (~48 s game time), 658 steps
+               levelTimeAtPause 0/2/1 -> startLevelTic 3/3/3, deterministic: true
 live monsters  CLEARED 1/1, 1167 world tics, 0 deaths, min health 67
 ```
+
+The god-mode figure was 1296 tics and 488 steps until the blocking-monster
+fix below; the follower now stops to clear the exit corridor, which is two
+kills and about 11 seconds of game time.
 
 The live run cleared without any combat policy: the route follower simply
 outran the E1M1 opposition while taking 33 damage. That is the baseline a
