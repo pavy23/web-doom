@@ -576,9 +576,12 @@ export async function runStageClearTrial(input = {}) {
   const stepLog = path.join(config.reportDir, 'steps.jsonl');
   await writeFile(stepLog, '');
 
-  // Recording hides the engine's "Pause" banner (see transparentPatchLump);
-  // --hide-pause / --no-hide-pause overrides that default either way.
-  const stage = await prepareStagePwad({ ...config, hidePauseGraphic: config.hidePause ?? Boolean(config.record) });
+  // The engine draws its "Pause" banner whenever the world is paused, which
+  // for this harness is every frame between exact-tic steps: the banner is an
+  // artefact of how the runner drives the engine, not a state anyone wants to
+  // see. It is hidden by default (see transparentPatchLump, a rendering-only
+  // override the simulation never reads); --no-hide-pause brings it back.
+  const stage = await prepareStagePwad({ ...config, hidePauseGraphic: config.hidePause ?? true });
   const wadBase64 = (await readFile(stage.wadPath)).toString('base64');
   const policyLog = path.join(config.reportDir, 'jev.jsonl');
   const usesPolicy = config.policy === 'jev' || config.policy === 'rules';
@@ -813,7 +816,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       'record-every': { type: 'string', default: 'tic' },   // tic: one frame per world tic; step: one per command
       'record-quality': { type: 'string', default: '80' }, // JPEG quality of the captured frames
       'record-bitrate': { type: 'string', default: '1000k' },
-      'hide-pause': { type: 'boolean' }                    // default: hidden while recording, shown otherwise
+      'hide-pause': { type: 'boolean' }                    // default: hidden; --no-hide-pause shows the engine's banner
     },
     allowNegative: true
   });

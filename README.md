@@ -367,6 +367,16 @@ npm run autoplay:e1m2:hmp:x10      # the 10-run protocol, headless, 4 runs at a 
 npm run autoplay:compare:e1m2      # clear rate with 95% CI, damage, tics, per-edge tables
 ```
 
+A `:watch` script exists for every shareware map the route planner can
+solve: `e1m1` through `e1m6` and `e1m9`. E1M7 and E1M8 have no reachable
+exit yet, so no script promises one. Only E1M1 to E1M3 have been measured;
+the rest are there to watch, not to expect a clear from.
+
+The engine draws its "Pause" banner on every frame between exact-tic
+steps, which is most of them, so it is hidden by default. Pass
+`--no-hide-pause` to see it. The override is a transparent patch in the
+stage WAD, rendering only, and the simulation never reads it.
+
 A 10-run trial costs about $0.10 to $0.30 and takes 7 to 26 minutes
 depending on the map.
 
