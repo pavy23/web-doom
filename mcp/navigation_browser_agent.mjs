@@ -38,9 +38,51 @@ function distance(a, b) { return Math.hypot(Number(b.x) - Number(a.x), Number(b.
 // and damaging shores; the side flips when the first side is unsafe, and
 // both sides unsafe means a short backstep or, if that is unsafe too, a turn
 // in place.
+// A monster standing in a doorway is not an obstacle the geometry knows
+// about, and no sidestep gets round one in a corridor. E1M1's exit corridor
+// (edge 72:74:309) held the god-mode follower for 375 tics with an enemy in
+// front the whole time, the route planner insisting the way was clear,
+// because layer 1 never pulls the trigger. So when a recovery is already
+// under way and something living is close and roughly ahead, shoot it. This
+// is the same kind of deterministic rule as the sidestep it replaces, and it
+// only fires while the follower is stalled.
+const BLOCKER_RANGE = 112;      // player radius 16 + monster radius up to 31, plus reach
+const BLOCKER_CONE = 50;        // degrees off the facing that count as "in the way"
+export function blockingEnemy(state) {
+  let nearest = null;
+  for (const enemy of state?.enemies || []) {
+    if (!(Number(enemy.health) > 0)) continue;
+    const distance = Number(enemy.distance);
+    const bearing = Number(enemy.relativeAngle);
+    if (!Number.isFinite(distance) || !Number.isFinite(bearing)) continue;
+    if (distance > BLOCKER_RANGE || Math.abs(bearing) > BLOCKER_CONE) continue;
+    if (!nearest || distance < nearest.distance) nearest = { distance, bearing };
+  }
+  return nearest;
+}
 export function safeRecovery(graph, state, side, extra = {}, attempt = 0) {
   const geometry = graph?.geometry;
   const player = state?.player || {};
+  const blocker = blockingEnemy(state);
+  if (blocker) {
+    // Positive bearing is to the left and agent +turn is to the right.
+    const aligned = Math.abs(blocker.bearing) <= 12;
+    const magnitude = Math.min(0.5, Math.max(0.15, Math.abs(blocker.bearing) / 90 * 0.5));
+    return {
+      forward: 0,
+      strafe: 0,
+      turn: aligned ? 0 : (blocker.bearing > 0 ? -magnitude : magnitude),
+      attack: aligned,
+      tics: 3,
+      ...extra,
+      // Standing still to shoot is a fight, so it is budgeted against
+      // maxCombatTics rather than the edge's no-progress budget. A source
+      // other than 'geometric' with no forward component is what
+      // isCombatCommand reads.
+      source: 'recovery',
+      recovery: 'blocker'
+    };
+  }
   const sidestep = { forward: 0.25, strafe: 0.55 * side, turn: -0.18 * side, tics: 3 };
   const otherSide = { forward: 0.25, strafe: -0.55 * side, turn: 0.18 * side, tics: 3 };
   const backstep = { forward: -0.5, strafe: 0, turn: 0, tics: 4 };
