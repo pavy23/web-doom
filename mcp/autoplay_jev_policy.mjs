@@ -15,7 +15,7 @@ import { appendFile } from 'node:fs/promises';
 import { OBJECTIVE_BRIEF } from './autoplay_objective.mjs';
 import { coverPoint, lineOfWalk, movementHazard } from './navigation_graph.js';
 
-export const JEV_POLICY_VERSION = '1.5.0-jev-policy';
+export const JEV_POLICY_VERSION = '1.8.0-jev-policy';
 
 // Safety rules the code owns regardless of what the model answers. They were
 // added after the first live E1M1 trial, where the player was pinned in a
@@ -302,17 +302,53 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
   if (options.forceMode && options.forceMode !== mode) { mode = options.forceMode; rules.push('stall'); }
   else if (options.forceMode) { rules.push('stall'); }
   if (options.forceMode === 'fight') fire = true;
+  // sprint: on a hazard ring (a walkway wrapping a nukage pit, derived from
+  // the WAD by hazardRingSectors) stop fighting and just run the route. The
+  // speedrun doctrine for E1M3's donut walkway is to "race around the extreme
+  // outer edge without bothering to kill any of the monsters first", and the
+  // measurement agrees that the ring is what costs: over the twenty 1.6.0
+  // E1M3 runs sector 67 carried 1478 of 2891 points of damage taken (51%,
+  // 101 hits) and no run died there — the health leaves on the ring and the
+  // run dies later, in the blue key rooms. Standing to fight on a ring buys
+  // nothing the route needs; every tic spent there is another tic in the open
+  // with nukage on one side. The stall recovery still overrides this, so a
+  // monster that physically blocks the walkway is still shot.
+  const sprinting = options.sprintSector === true && !options.forceMode;
+  if (sprinting) { mode = 'advance'; fire = false; rules.push('sprint'); }
+  // shotgunStandoff: the hitscan doctrine below is right about hit chance and
+  // wrong about damage. A shotgun guy fires three pellets that spread with
+  // angle, so at close range all three land and at range one or two do.
+  // Measured over every E1M3 trial, damage per hit from a shotgun guy that
+  // could reach the player: 30.9 inside 100 units, 18.4 between 100 and 200,
+  // 13.5 beyond. An imp averages 13.3 and a zombieman 9.1 at any distance.
+  // So backing out of a shotgun guy's face is worth the exposure it costs,
+  // and only for shotgun guys: every other hitscan monster fires one bullet
+  // whose damage does not fall off. That reasoning held on its own metric and
+  // failed on the objective, so the rule ships off (see shotgunStandoff in the
+  // defaults for the controlled-experiment numbers); it stays here as an
+  // ablation arm.
+  const shotgunClose = options.shotgunStandoff === true && target
+    && String(target.name).toLowerCase() === 'shotgun_guy'
+    && target.canHitPlayerNow
+    && Number(target.distance) <= Number(options.shotgunStandoffRange ?? 100);
+  if (shotgunClose) rules.push('shotgunStandoff');
   // Retreating from a hitscan enemy that can already hit the player only
   // prolongs the exposure (its hit chance does not fall with distance):
-  // shoot it instead. Retreat stays for projectile and melee monsters.
-  if (mode === 'retreat' && target && isHitscan(target.name) && target.canHitPlayerNow) {
+  // shoot it instead. Retreat stays for projectile and melee monsters, and
+  // for a shotgun guy close enough that its pellets all land.
+  if (!sprinting && mode === 'retreat' && target && isHitscan(target.name) && target.canHitPlayerNow && !shotgunClose) {
     mode = 'fight'; fire = true; rules.push('hitscanFight');
   }
+  // Back out of that range whatever the model asked for, shooting on the way:
+  // standing still or advancing inside 100 units is where the 31-point hits
+  // come from. pointBlank still overrides, since something that close is
+  // past backing away from.
+  if (shotgunClose && !pointBlank && mode !== 'retreat') { mode = 'retreat'; fire = true; }
   // lowHealthHold: under `lowHealth` with something able to hit the player,
   // never advance into it; every UV death came from walking into the
   // courtyard at ~44 hp. Fight from where the player stands instead.
   const shooters = Number(compact.threat?.enemiesThatCanHitPlayerNow ?? 0);
-  if (mode === 'advance' && target && shooters > 0 && Number(compact.player?.health) < Number(options.lowHealth ?? 40)) {
+  if (!sprinting && mode === 'advance' && target && shooters > 0 && Number(compact.player?.health) < Number(options.lowHealth ?? 40)) {
     mode = 'fight'; fire = true; rules.push('lowHealthHold');
   }
   // barrelStandoff: a barrel within blast range while something can shoot is
@@ -340,7 +376,7 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
   // up to that point while keeping the target in front. In a doorway the
   // enemies arrive one or two at a time instead of all at once.
   const cover = options.cover;
-  const takeCover = mode === 'fight' && target && shooters >= 2 && cover
+  const takeCover = !sprinting && mode === 'fight' && target && shooters >= 2 && cover
     && cover.distance > Number(options.coverArrive ?? 40) && cover.distance <= Number(options.coverMaxDistance ?? 300);
   if (takeCover) { mode = 'cover'; rules.push('cover'); }
   const meta = { source: 'jev', mode, target: target?.id || 'none', fire, danger: round(answers.danger?.score ?? 0, 2), ...(rules.length ? { rules } : {}) };
@@ -359,6 +395,10 @@ export function answersToCommand(rawAnswers, compact, proposal, options = {}) {
 
   if (!target || mode === 'advance') {
     if (fire && target && Math.abs(target.bearing) <= aimTolerance) return { ...proposal, attack: true, ...meta };
+    // A sprint step hands the route command back unchanged, which loses the
+    // rule names with the command, so the counter is bumped here instead (as
+    // noFightFar does below).
+    if (sprinting && typeof options.onRule === 'function') options.onRule('sprint');
     // Not aligned: keep the route command untouched. Turning toward a
     // point-blank enemy while advancing was tried and it stalled the follower
     // on monsters behind the player, which the stall rule then fought.
@@ -544,6 +584,30 @@ export async function createJevPolicy(options = {}) {
     // switch's room, up a lift into another sector, and the trigger approach
     // (which routes inside one sector) could never walk back.
     retreatDriftLimit: 192,
+    // sprintHazardRings: suppress fighting on a hazard ring (see the sprint
+    // rule). Off, and the controlled experiment says it should stay off. Same
+    // build (1.8.0), E1M3 HMP, 10 runs per arm, the arms differing only in
+    // this flag: sprinting died 10/10 inside the ring (sector 67) against a
+    // control that crossed it 10/10 and died later, and route progress fell
+    // from a median of 16.5 waypoints of 20 to 5. It is worse on the ring's
+    // own metric too: 0.48 points of damage per step on the ring sprinting
+    // against 0.18 fighting, 2.7x. The route does not run the outer edge the
+    // speedrun doctrine describes; it funnels through the door at 67:97 and
+    // the platform at 97:103, and a follower that holds its fire there
+    // oscillates 67 <-> 97 while the shooters it left alive keep firing.
+    // Fighting on the ring is what makes the ring survivable.
+    sprintHazardRings: false,
+    // Off by default. A same-build controlled experiment on E1M3 HMP (10 runs
+    // per arm, 1.6.0, the arms differing only in this flag) showed the rule
+    // hitting its own target and missing the objective: close-range shotgun
+    // damage fell from 484 to 302 over the trial and per-event damage from
+    // 30.3 to 21.6, but total damage rose (mean 140.8 -> 154.8, permutation
+    // p = 0.45) because the backing away moved damage to long range (104 ->
+    // 250) and to other monsters (418 -> 593), and the clear rate stayed 0/10
+    // in both arms. E1M3 kills by accumulation, not by one blast. Kept as an
+    // ablation arm: --jev-opt shotgunStandoff=true.
+    shotgunStandoff: false,    // back out of a shotgun guy's pellet-spread range (see shotgunStandoff)
+    shotgunStandoffRange: 100,
     // How far past a weapon's useful range a fight is still worth standing
     // still for (see WEAPON_RANGE and the noFightFar rule). Seven tic-identical
     // E1M3 runs died holding a shotgun on an imp 348 units away, which is past
@@ -580,7 +644,7 @@ export async function createJevPolicy(options = {}) {
   const stats = {
     version: JEV_POLICY_VERSION, dryRun: config.dryRun, rulesOnly: config.rulesOnly, eligibleSteps: 0, calls: 0, overrides: 0,
     capped: false, errors: 0, inputTokens: 0, outputTokens: 0, latencyMsTotal: 0, modes: {},
-    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, coverStarts: 0, coverArrived: 0, coverMove: 0, coverFight: 0, retreatDrift: 0, noFightFar: 0, guardSidestep: 0, barrelBlock: 0, barrelStandoff: 0, weaponSelect: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
+    rules: { stall: 0, dodgeHold: 0, pointBlank: 0, noRetreatFar: 0, hitscanFight: 0, lowHealthHold: 0, cover: 0, threatTarget: 0, fightFires: 0, projectileStrafe: 0, terrainGuard: 0, terrainBrake: 0, coverStarts: 0, coverArrived: 0, coverMove: 0, coverFight: 0, retreatDrift: 0, sprint: 0, shotgunStandoff: 0, noFightFar: 0, guardSidestep: 0, barrelBlock: 0, barrelStandoff: 0, weaponSelect: 0, lootSteps: 0, lootPicked: 0, lootGivenUp: 0 },
     loot: { shotgun: 0, health: 0, shells: 0, armor: 0 },
     pipeline: { lagTics: options.pipelineLagTics || 0, inflightLaunched: 0, applied: 0, reused: 0, stalls: 0, stallMsTotal: 0, lagTicsTotal: 0 }
   };
@@ -925,11 +989,19 @@ export async function createJevPolicy(options = {}) {
     }
     return { aim, near };
   }
+  // Is the player standing on one of the map's hazard rings? The runner
+  // derives the list from the WAD; an empty list (or the flag off) makes this
+  // always false, which is the shipped behaviour.
+  const hazardRings = new Set((config.hazardRings || []).map(Number));
+  function onHazardRing(state) {
+    if (config.sprintHazardRings !== true || !hazardRings.size) return false;
+    return hazardRings.has(Number(state?.currentSector));
+  }
   function ruleOptions(compact, state, context) {
     const stalled = detectStall(state, compact);
     const barrels = barrelInfo(state);
     const holding = Boolean(coverSpot?.arrived) && Number(state?.levelTime ?? 0) < Number(coverSpot?.holdUntil ?? 0);
-    return { ...config, dodgeSide, lastTarget, cover: context ? coverInfo(context) : null, holdPosition: holding, strafeRoomClear: strafeRoomClear(state), targetDrift: targetDrift(context), playerWeapon: Number(state?.player?.weapon), barrelInAim: barrels.aim, barrelNear: barrels.near, onRule, ...(stalled ? { forceMode: 'fight' } : {}) };
+    return { ...config, dodgeSide, lastTarget, cover: context ? coverInfo(context) : null, holdPosition: holding, strafeRoomClear: strafeRoomClear(state), targetDrift: targetDrift(context), playerWeapon: Number(state?.player?.weapon), barrelInAim: barrels.aim, barrelNear: barrels.near, sprintSector: onHazardRing(state), onRule, ...(stalled ? { forceMode: 'fight' } : {}) };
   }
   // Is there room to strafe? Both sides of the player must have
   // config.strafeRoom units of floor with no wall, drop or nukage shore.
@@ -972,6 +1044,12 @@ export async function createJevPolicy(options = {}) {
   }
   async function coverCheck(state, context) {
     if (!config.coverSeek || !geometry || loot) return null;
+    // Seeking cover is part of the fight loop, so a sprint suppresses it too
+    // (see the sprint rule). Drop any spot already being walked to rather
+    // than resuming a stale one on the far side of the ring. Hazard rules
+    // (the terrain guard, the barrel standoff) and item detours are not
+    // engagement and are left alone, so the arms differ only in fighting.
+    if (onHazardRing(state)) { coverSpot = null; return null; }
     const tic = Number(state.levelTime);
     const player = state.player || {};
     const edgeId = context?.edge?.id || 'exit';

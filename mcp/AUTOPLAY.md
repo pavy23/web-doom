@@ -1294,10 +1294,87 @@ fired at all before this. "The follower dies in E1M1's exit corridor" is
 this same corridor. Re-measuring the baselines will narrow the gap the
 results table shows between the policy and the follower.
 
+## Two tactical rules, and what the experiments said
+
+Both were same-build controlled experiments on E1M3 at Hurt Me Plenty, ten
+runs per arm, the arms differing only in the one flag. Both rules ship off.
+
+### shotgunStandoff (policy 1.6.0)
+
+A shotgun guy fires three pellets that spread with angle, so its damage falls
+off with distance in a way no other hitscan monster's does. Measured over
+every E1M3 trial: 30.9 per hit inside 100 units, 18.4 between 100 and 200,
+13.5 beyond, against 13.3 for an imp and 9.1 for a zombieman at any distance.
+The rule backs out of that inner band.
+
+It hit its own target and missed the objective.
+
+| | rule on | rule off |
+| --- | --- | --- |
+| cleared | 0/10 | 0/10 |
+| damage taken, mean | 154.8 | 140.8 |
+| damage taken, median | 163 | 141.5 |
+| close-range (<100) shotgun events | 14, avg 21.6, sum 302 | 16, avg 30.3, sum 484 |
+| 200+ shotgun damage | 250 | 104 |
+| non-shotgun damage | 593 | 418 |
+
+Close-range shotgun damage fell 38%, and total damage rose: backing away
+moves the damage to long range and to the other monsters that keep shooting
+while the player gives ground. The mean difference of 14 is not significant
+on ten runs a side (two-sided permutation test, p = 0.45), so the honest
+reading is that the rule bought nothing, not that it cost 14 points.
+
+### sprintHazardRings (policy 1.8.0)
+
+`hazardRingSectors()` in the stage runner derives, from the WAD and the
+planned route, every route sector whose bounding box encloses a damaging
+sector: a walkway wrapping a nukage pit. E1M3 gives 47, 56 and 67; E1M1 gives
+60, the courtyard; E1M2 gives 142. No map names are involved.
+
+Sector 67 is E1M3's donut walkway, 960x768 with three NUKAGE3 pits (65, 66,
+68) inside it. Over the twenty 1.6.0 runs it carried 1478 of 2891 points of
+damage taken (51%, 101 hits) while no run died there: the health leaves on
+the ring and the run dies later, in the blue key rooms. The speedrun doctrine
+for that walkway is to race its outer edge without stopping to kill anything,
+which is what the rule does - forced advance, no firing, no cover seeking,
+with the stall recovery still able to override.
+
+It failed, and not marginally.
+
+| | sprint on | sprint off |
+| --- | --- | --- |
+| cleared | 0/10 | 0/10 |
+| died inside the ring (sector 67) | 10/10 | 0/10 |
+| route waypoints reached, median (of 20 to the blue key) | 5 | 16.5 |
+| tics, range | 663-1056 | 1844-3563 |
+| kills, range | 5-6 | 10-24 |
+| damage per step while on a ring | 0.48 | 0.18 |
+
+The damage-taken column is the trap here: the sprint arm's damage looks lower
+(100-110 against 100-181) only because it dies sooner, and `damageTaken` stops
+at death. Route progress is the metric that separates the arms when neither
+clears.
+
+The mechanism is in the route, not the tactic. Our planned route does not run
+the ring's outer edge: it funnels through the door at `67:97` and the platform
+at `97:103`. A follower that holds its fire there oscillates 67 -> 97 -> 67 ->
+97 while every shooter it declined to kill keeps firing. Fighting on the ring
+is what makes the ring crossable; the 51% of damage it costs is the price of
+the crossing, not waste.
+
+Both rules stay in the code as ablation arms: `--jev-opt shotgunStandoff=true`,
+`--jev-opt sprintHazardRings=true`. `npm run autoplay:e1m3:sprint:on` and
+`:off` run the pair.
+
 ### Worth re-running
 
 E1M1 at Ultra-Violence, ten runs, is the one whose headline number is
 likely wrong. The `--policy none` baselines on all three maps come next.
+
+E1M3's blue key rooms (sectors 24-27) are where the runs actually die once
+the ring is crossed: 9 of 10 deaths in the sprint control arm were at 24, 25,
+27, 38 or 109. That is the next thing to look at, and it is a routing and
+approach question rather than another tactical flag.
 
 ## Determinism
 
